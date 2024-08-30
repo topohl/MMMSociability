@@ -13,7 +13,7 @@ library(purrr)
 library(ggplot2)      #for plots
 library(reshape2)     #for heatmap plot
 library(scales)       # for heatmap rescale
-library("stringr")    # for sorting vector of strings   
+library(stringr)    # for sorting vector of strings   
 
 # customisable variables
 show_plots = FALSE
@@ -23,10 +23,10 @@ save_tables= TRUE
 
 
 # paths
-working_directory <- "S:/Lab_Member/Anja/Git/MDC_Bachelor/E9_SIS_AnimalPos"
+working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
 #working_directory <- "/home/anja/Dokumente/FU BERLIN/BA/Git/MDC_Bachelor/E9_SIS_AnimalPos"
 
-saving_directory <- "S:/Lab_Member/Anja/Git/MDC_Bachelor/E9_SIS_AnimalPos"
+saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
 #saving_directory <- "/home/anja/Dokumente/FU BERLIN/BA/Git/MDC_Bachelor/E9_SIS_AnimalPos"
 plots_directory <- "/plots"
 #plots_directory <- "/R-plots"
@@ -44,36 +44,42 @@ con_animals <- readLines(paste0(working_directory,"/raw_data/con_animals.csv"))
 
 ################################################################################################################################
 ## INITIALIZE RESULT TIBBLES ##
+# These tibbles will store the results of the analysis.
 
-#cage probability result tibble
-result_cage_prob <- tibble(Batch=character(),
-                           System=character(),
-                           CageChange=character(),
-                           Phase=character(),
-                           Position=numeric(),
-                           Probability=numeric())
+# cagePosProb: Stores the probability of each position in the cage for each phase and system.
+# cagePosEntropy: Stores the Shannon entropy of the cage for each phase and system.
+# mousePosEntropy: Stores the Shannon entropy of each mouse for each phase, system, and cage change.
 
-#initialize cage entropy result tibble
-result_cage_entropy <- tibble(Batch=character(),
-                              Sex=character(),
-                              System=character(),
-                              CageChange=character(),
-                              Phase=character(),
-                              CageEntropy=numeric())
+# The tibbles are initialized with empty columns to be filled with the analysis results.
 
-result_mice_entropy <- tibble(Batch=character(),
-                              Sex=character(),
-                             System=character(),
-                             CageChange=character(),
-                             Phase=character(),
-                             AnimalID=character(),
-                             MiceEntropy=numeric())
+# Initialize the result tibbles for cage probability, cage entropy, and mouse entropy
+cagePosProb <- tibble(Batch = character(),
+               System = character(),
+               CageChange = character(),
+               Phase = character(),
+               Position = numeric(),
+               Probability = numeric())
+
+cagePosEntropy <- tibble(Batch = character(),
+                Sex = character(),
+                System = character(),
+                CageChange = character(),
+                Phase = character(),
+                CageEntropy = numeric())
+
+mousePosEntropy <- tibble(Batch = character(),
+                Sex = character(),
+                System = character(),
+                CageChange = character(),
+                Phase = character(),
+                AnimalID = character(),
+                MiceEntropy = numeric())
 
 ################################################################################################################################
 
 
 # define batch and cage change
-batches <- c("B1", "B2", "B3", "B4", "B5", "B6")#
+batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
 cageChanges <- c("CC1", "CC2", "CC3", "CC4")
 
 for(batch in batches){
@@ -291,7 +297,7 @@ for(batch in batches){
             #enter information in big result tibble for every phase and system(later used for plotting)
             for(i in 1:8){#for every position in cage
               p <- paste0(substr(phase, 1, 1),nr) #the current phase
-              result_cage_prob <- result_cage_prob%>%
+              cagePosProb <- cagePosProb%>%
                 add_row(Batch=batch,
                         System=systemName,
                         CageChange = cageChange, 
@@ -307,7 +313,7 @@ for(batch in batches){
           if(system_complete){
             ##cage
             #extract vector with the probs of every position
-            cage_prob_vec <- result_cage_prob%>%
+            cage_prob_vec <- cagePosProb%>%
               filter(Batch==batch)%>%
               filter(System==systemName)%>%
               filter(CageChange==cageChange)%>%
@@ -316,7 +322,7 @@ for(batch in batches){
             #enter vector with the rest of inform. into calc function and calcuate the shannon entropy
             cage_shannon_entropy <- calc_shannon_entropy(cage_prob_vec)
             #enter new row with shannon entropy into result tibble
-            result_cage_entropy <- result_cage_entropy%>%
+            cagePosEntropy <- cagePosEntropy%>%
               add_row(Batch=batch,
                       Sex=sex,
                       System=systemName,
@@ -339,7 +345,7 @@ for(batch in batches){
               #calc entropy
               mice_shannon_entropy <- calc_shannon_entropy(mice_prob_vec)
               #add row
-              result_mice_entropy<- result_mice_entropy%>%
+              mousePosEntropy<- mousePosEntropy%>%
                 add_row(Batch=batch,
                         Sex=sex,
                         System=systemName,
@@ -371,46 +377,46 @@ if(save_tables==TRUE){
   message("save analysis tables")
   
   #result cage entropy
-  write.csv(result_cage_entropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_result_cage_entropy.csv"), row.names = FALSE)
+  write.csv(cagePosEntropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_cagePosEntropy.csv"), row.names = FALSE)
   #result mice entropy
-  write.csv(result_mice_entropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_result_mice_entropy.csv"), row.names = FALSE)
+  write.csv(mousePosEntropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_mousePosEntropy.csv"), row.names = FALSE)
 }
 
 ############### read saved tables into a tibble(if you skip the analysis part on top) ########################################################################
 
-result_cage_entropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_result_cage_entropy.csv"),delim = ",", show_col_types = FALSE))
+cagePosEntropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_cagePosEntropy.csv"),delim = ",", show_col_types = FALSE))
 
-result_mice_entropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_result_mice_entropy.csv"),delim = ",", show_col_types = FALSE))
+mousePosEntropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_mousePosEntropy.csv"),delim = ",", show_col_types = FALSE))
 
 
 
 ####################################### CONSEC COLUMNS ##########################################################################################
 #PREPROCESS
 #rename tibbles to make a copy
-consec_cage_entropy <- result_cage_entropy
-consec_mice_entropy <- result_mice_entropy
+consecCagePosEntropy <- cagePosEntropy
+consecMousePosEntropy <- mousePosEntropy
 
 #definitions for dynamic processing
-entropy_tibble_names <- c("consec_cage_entropy", "consec_mice_entropy")
+entropy_tibble_names <- c("consecCagePosEntropy ", "consecMousePosEntropy ")
 values <- c('CageEntropy', 'MiceEntropy')
 
 for (i in seq_along(entropy_tibble_names)) {
   name <- entropy_tibble_names[i]
-  ifelse(name=="consec_cage_entropy", e_tibble <- consec_cage_entropy, e_tibble <- consec_mice_entropy)
+  ifelse(name=="consecCagePosEntropy ", e_tibble <- consecCagePosEntropy , e_tibble <- consecMousePosEntropy )
   
   #create consec colums:
   #split Phase column
   e_tibble[c('Phase', 'Consec')] <- str_split_fixed(e_tibble$Phase, '', 2)
   
-  #change consec column to ConsecAct and Inact
-  #and change content of Phase column to active and inactive
-  e_tibble <- e_tibble%>%
-    filter(Batch!= "B6")%>%
-    mutate(ConsecActive = ifelse(Phase=="A", as.numeric(Consec), 0))%>%
-    mutate(ConsecInactive = ifelse(Phase=="I", as.numeric(Consec)-1, 0))%>%
-    mutate(Phase = ifelse(Phase=="A", "active", "inactive"))
+  # Change the consec column to ConsecActive and ConsecInactive
+  # and change the content of the Phase column to "active" and "inactive"
+  e_tibble <- e_tibble %>%
+    filter(Batch != "B6") %>%
+    mutate(ConsecActive = ifelse(Phase == "A", as.numeric(Consec), 0)) %>%
+    mutate(ConsecInactive = ifelse(Phase == "I", as.numeric(Consec) - 1, 0)) %>%
+    mutate(Phase = ifelse(Phase == "A", "active", "inactive"))
   
-  if(name=="consec_mice_entropy")e_tibble <- e_tibble%>%mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res")))
+  if(name=="consecMousePosEntropy ")e_tibble <- e_tibble%>%mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res")))
   
   for(cc in c("CC1","CC2", "CC3", "CC4")){
     
@@ -437,11 +443,11 @@ for (i in seq_along(entropy_tibble_names)) {
   }
   
   #bring columns into right order
-  if(name=="consec_mice_entropy")e_tibble <- e_tibble[c('CageChange', 'Batch', 'System', 'AnimalID', 'Sex', 'Group', 'Phase', 'ConsecActive', 'ConsecInactive', 'MiceEntropy')]
-  if(name=="consec_cage_entropy")e_tibble <- e_tibble[c('CageChange', 'Batch', 'System', 'Sex', 'Phase', 'ConsecActive', 'ConsecInactive', 'CageEntropy')]
+  if(name=="consecMousePosEntropy ")e_tibble <- e_tibble[c('CageChange', 'Batch', 'System', 'AnimalID', 'Sex', 'Group', 'Phase', 'ConsecActive', 'ConsecInactive', 'MiceEntropy')]
+  if(name=="consecCagePosEntropy ")e_tibble <- e_tibble[c('CageChange', 'Batch', 'System', 'Sex', 'Phase', 'ConsecActive', 'ConsecInactive', 'CageEntropy')]
   
   #overwrite old tibbles with new processed tibbles
-  ifelse(name=="consec_cage_entropy", consec_cage_entropy <- e_tibble, consec_mice_entropy <- e_tibble)
+  ifelse(name=="consecCagePosEntropy ", consecCagePosEntropy  <- e_tibble, consecMousePosEntropy  <- e_tibble)
 }
 
 
@@ -455,9 +461,9 @@ if(save_tables==TRUE){
   message("save consec tables")
   
   #result cage entropy
-  write.csv(consec_cage_entropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_consec_cage_entropy.csv"), row.names = FALSE)
+  write.csv(consecCagePosEntropy , file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_consecCagePosEntropy .csv"), row.names = FALSE)
   #result mice entropy
-  write.csv(consec_mice_entropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_consec_mice_entropy.csv"), row.names = FALSE)
+  write.csv(consecMousePosEntropy , file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_consecMousePosEntropy .csv"), row.names = FALSE)
 }
 
 ############### show plots in R with new table structure ########################################################################
@@ -468,18 +474,18 @@ if(save_tables==TRUE){
 #PREPROCESS
 #create consec colums:
 #split Phase column
-result_cage_entropy[c('Phase', 'Consec')] <- str_split_fixed(result_cage_entropy$Phase, '', 2)
-result_mice_entropy[c('Phase', 'Consec')] <- str_split_fixed(result_mice_entropy$Phase, '', 2)
+cagePosEntropy[c('Phase', 'Consec')] <- str_split_fixed(cagePosEntropy$Phase, '', 2)
+mousePosEntropy[c('Phase', 'Consec')] <- str_split_fixed(mousePosEntropy$Phase, '', 2)
 
-#change consec column to ConsecAct and Inact
-#and change content of Phase column to active and inactive
-result_cage_entropy <- result_cage_entropy%>%
+# Change consec column to ConsecAct and ConsecInact
+# Change content of Phase column to "active" and "inactive"
+cagePosEntropy <- cagePosEntropy%>%
   filter(Batch!= "B6")%>%
   mutate(ConsecActive = ifelse(Phase=="A", Consec, 0))%>%
   mutate(ConsecInactive = ifelse(Phase=="I", Consec, 0))%>%
   mutate(Phase = ifelse(Phase=="A", "active", "inactive"))
 
-result_mice_entropy <- result_mice_entropy%>%
+mousePosEntropy <- mousePosEntropy%>%
   filter(Batch!= "B6")%>%
   mutate(ConsecActive = ifelse(Phase=="A", Consec, 0))%>%
   mutate(ConsecInactive = ifelse(Phase=="I", Consec, 0))%>%
@@ -494,24 +500,24 @@ x_axis <- list("Group","CageChange", "Group", "Group")
 phasecount <- 1
 
 ###
-# Initialisieren einer Liste für die Ergebnisse
+# Initialize lists to store the results and plots
 results <- list()
 plots <- list()
 
-# For-Loop
+# Loop through the columns to group by
 for (i in seq_along(columns_to_group)) {
   
-  #variables from dynamic lists
+  # Get the group variables and the x-axis variable
   group_vars <- columns_to_group[[i]]
   x_var <- x_axis[[i]]
-  #working copy of data(needed)
-  data <- result_mice_entropy
+  # Filter the data based on the group variables
+  data <- mousePosEntropy
   
-  #dynamic filtering/grouping:
+  # When looking at phases, we want to divide the tibble
   
-  #when looking at phases we want to divide the tibble
+  # Filter the data based on the group variables
   if("Phase" %in% group_vars) data <- filter(data, Phase == ifelse(phasecount==1,"active", "inactive"))
-  #increase phasecount for the second phase
+  # Count the number of phases
   if("Phase" %in% group_vars) phasecount <- phasecount+1
   
   #group tibble and calculate mean
@@ -568,13 +574,13 @@ for (i in seq_along(plots)) {
 ##plots outside of loop for consec, not perfect consec tibble as base
 ##consec plots active/inactive
 #filter phases
-result_mice_entropy_act <- result_mice_entropy%>%
+mousePosEntropy_act <- mousePosEntropy%>%
   filter(Phase == "active")
 
-result_mice_entropy_inact <- result_mice_entropy%>%
+mousePosEntropy_inact <- mousePosEntropy%>%
   filter(Phase == "inactive")
 
-p <- ggplot(data = result_mice_entropy_inact, aes(x = Consec, y = MiceEntropy, color = Group, group = Group)) + 
+p <- ggplot(data = mousePosEntropy_inact, aes(x = Consec, y = MiceEntropy, color = Group, group = Group)) + 
   geom_jitter(aes(fill=Group), size=4, alpha=0.7, shape=16, position=position_dodge(width = 0.75)) +
   labs(title = paste("Mice-Entropy-Plot\n Inactive Phases")) +
   scale_color_manual(values = c("sus" = "tomato", "res" = "darkgreen", "con" = "deepskyblue4")) +
@@ -604,20 +610,20 @@ if(show_plots==TRUE){
 }
 
 ### CAGE ENTROPY ###
-cage_ent_plot <- ggplot(data=result_cage_entropy, aes(x=Phase, y=CageEntropy, color=System))+
+cage_ent_plot <- ggplot(data=cagePosEntropy, aes(x=Phase, y=CageEntropy, color=System))+
   geom_point()+
   geom_line(aes(group = System)) +  # connects the dots between the phases with a line
   scale_x_discrete(limits = c("I1", "A1", "I2", "A2", "I3", "A3", "I4", "A4", "I5"))+
   facet_grid(~CageChange)
 
 #divide into active/inactive
-result_cage_entropy_act <- result_cage_entropy%>%
+cagePosEntropy_act <- cagePosEntropy%>%
   filter(grepl("^A\\d+", Phase))
 
-result_cage_entropy_inact<- result_cage_entropy%>%
+cagePosEntropy_inact<- cagePosEntropy%>%
   filter(grepl("^I\\d+", Phase))
 
-cage_ent_plot_act <- ggplot(data=result_cage_entropy_act, aes(x=Phase, y=CageEntropy, color=System))+
+cage_ent_plot_act <- ggplot(data=cagePosEntropy_act, aes(x=Phase, y=CageEntropy, color=System))+
   geom_jitter(aes(fill=System), size=4, alpha=0.7, width=0.2, shape=16)+
   scale_y_continuous("Cage Entropy all batches")+
   scale_x_discrete("active Phases")+
@@ -639,7 +645,7 @@ cage_ent_plot_act <- ggplot(data=result_cage_entropy_act, aes(x=Phase, y=CageEnt
         axis.title = element_text(size = 22), 
         strip.text = element_text(size = 20))
 
-cage_ent_plot_inact <- ggplot(data=result_cage_entropy_inact, aes(x=Phase, y=CageEntropy, color=System))+
+cage_ent_plot_inact <- ggplot(data=cagePosEntropy_inact, aes(x=Phase, y=CageEntropy, color=System))+
   geom_jitter(aes(fill=System), size=4, alpha=0.7, width=0.2, shape=16)+
   scale_y_continuous("Cage Entropy all batches")+
   scale_x_discrete("inactive Phases")+
