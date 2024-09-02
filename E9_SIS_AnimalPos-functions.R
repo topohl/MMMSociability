@@ -47,51 +47,65 @@ find_id <- function(x_Pos, y_Pos, lookup_tibble) {
     return(NA) # Return NA if no match found
   }
 }
+
 ################################################################################################################
-# input:  overallData - the tibble with the whole data that we want to change 
-#         
-#        
+# Function: addPhaseTransitionMarkers
+# 
+# Description:
+#   Inserts additional rows into the dataset to mark phase transitions at specific times (6:30 AM and 6:30 PM). 
+#   These markers are essential for tracking the start and end of active/inactive phases for each mouse in each system.
 #
-# output: overallData
-# effect: - adds extra rows of RFID information to the time when a Phase changes(6h30 a.m. &6h30 p.m.)
-#         - we need a row for every mouse in every system bc the data will later filtered by the phases 
-#         and we need a start value of every mouse for every phase
-addPhaseMarkerRows <- function(overallData){
+# Input:
+#   data - A tibble containing the experiment data, including timestamped observations for various subjects across systems.
+#
+# Output:
+#   A tibble with added rows corresponding to the phase transition times. The dataset is sorted by DateTime, 
+#   and the additional rows provide a start value for every subject at the beginning of each phase.
+#
+# Effects:
+#   - Inserts rows at 6:30 AM and 6:30 PM for each date in the dataset.
+#   - Ensures there is a record for each subject in every system at these critical phase change times.
+#
+################################################################################################################
+
+addPhaseTransitionMarkers <- function(data) {
   
   #save dates of experiment(the date of the days)
-  onlyDates <- as.Date(overallData$DateTime)
+  onlyDates <- as.Date(data$DateTime)
   uniqueDates <- unique(onlyDates)
   #print(uniqueDates)
   
+  #uniqueExperimentDates <- unique(as.Date(data$DateTime))
   
   #save existing systems
-  uniqueSystems <- unique(overallData$System)
+  uniqueSystems <- unique(data$System)
   #print(uniqueSystems)
   
   
   for(i in 1:length(uniqueDates)){
     date <- uniqueDates[i]
-    
-    #print(date)
-    
+  #  
+  #  #print(date)
+
+  #for (experimentDate in uniqueExperimentDates) {  
     
     #define marker points depending on actual date
     # "GMT" means "UTC"
-    early_marker_end_active <- as.POSIXct(paste(date,"06:29:59"), tz="GMT")  #end active phase
-    early_marker_start_inactive <- as.POSIXct(paste(date,"06:30:00"), tz="GMT")  #start inactive phase
-    early_marker_end_inactive <- as.POSIXct(paste(date,"18:29:59"), tz="GMT")  #end inactive phase
-    late_marker_start_active <- as.POSIXct(paste(date,"18:30:00"), tz="GMT")   #start active phase
-    
-    #print(early_marker)
-    #print(late_marker)
+    # Define the specific phase transition markers for the current date
+    phaseMarkers <- list(
+      endOfActivePhaseAM = as.POSIXct(paste(date, "06:29:59"), tz = "GMT"),   # End of active phase (morning)
+      startOfInactivePhaseAM = as.POSIXct(paste(date, "06:30:00"), tz = "GMT"), # Start of inactive phase (morning)
+      endOfInactivePhasePM = as.POSIXct(paste(date, "18:29:59"), tz = "GMT"),   # End of inactive phase (evening)
+      startOfActivePhasePM = as.POSIXct(paste(date, "18:30:00"), tz = "GMT")    # Start of active phase (evening)
+    )
     
     #we have 2 early markers and 2 late markers
-    for(marker in c(early_marker_end_active,early_marker_start_inactive, early_marker_end_inactive, late_marker_start_active)){
+    for(phaseMarker in phaseMarkers){
      
       # filter rows which are earlier than the marker
-      filtered_time <- overallData %>%
+      filtered_time <- data %>%
         as_tibble()%>%
-        filter(DateTime < marker)
+        filter(DateTime < phaseMarker)
       
       #we need a marker for every existing system and for every mouse in every system
       for(system in uniqueSystems){
@@ -120,10 +134,10 @@ addPhaseMarkerRows <- function(overallData){
           if(length(filtered_row) != 0){
             #use copied row as new one and change the date to marker date
             filtered_row <- filtered_row%>%
-              mutate(DateTime = as.POSIXct(marker, tz="UTC"))
+              mutate(DateTime = as.POSIXct(phaseMarker, tz="UTC"))
             
-            #add new row to overallData
-            overallData <- add_row(overallData,filtered_row)
+            #add new row to data
+            data <- add_row(data,filtered_row)
           }
         
         
@@ -136,33 +150,33 @@ addPhaseMarkerRows <- function(overallData){
   }
   
   #sort tibble again by dateTime to bring new entries to correct position
-  overallData <- overallData%>%
+  data <- data%>%
     as_tibble()%>%
     arrange(., DateTime)
   
   
   #remove last 20 rows because they are 20 unnecessary marker rows of the last day and the late marker
-  overallData <- overallData %>% filter(row_number() <= n()-20)
+  data <- data %>% filter(row_number() <= n()-20)
   
-  return(overallData)
+  return(data)
 }
 
 
 
 ################################################################################################################
-# input:  overallData - the tibble with the whole data that we want to change 
+# input:  data - the tibble with the whole data that we want to change 
 #         
 #        
 #
-# output: overallData 
+# output: data 
 # effect: - adds extra rows of RFID information to the time when a day changes(midnight)
-addDayMarkerRows <- function(overallData){
+addDayMarkerRows <- function(data){
   #save dates of experiment
-  onlyDates <- as.Date(overallData$DateTime)
+  onlyDates <- as.Date(data$DateTime)
   uniqueDates <- unique(onlyDates)
   
   #save existing systems
-  uniqueSystems <- unique(overallData$System)
+  uniqueSystems <- unique(data$System)
   
   for(i in 1:length(uniqueDates)){
     date <- uniqueDates[i]
@@ -172,7 +186,7 @@ addDayMarkerRows <- function(overallData){
     marker <- as.POSIXct(paste(date,"00:00:00"), tz="GMT")  #start of new day
     
     # filter rows which are earlier than the marker
-    filtered_time <- overallData %>%
+    filtered_time <- data %>%
       as_tibble()%>%
       filter(DateTime < marker)
     
@@ -202,8 +216,8 @@ addDayMarkerRows <- function(overallData){
           filtered_row <- filtered_row%>%
             mutate(DateTime = as.POSIXct(marker, tz="UTC"))
           
-          #add new row to overallData
-          overallData <- add_row(overallData,filtered_row)
+          #add new row to data
+          data <- add_row(data,filtered_row)
         }
         
         
@@ -214,12 +228,12 @@ addDayMarkerRows <- function(overallData){
     
   }
   #sort tibble again by dateTime to bring new entries to correct position
-  overallData <- overallData%>%
+  data <- data%>%
     as_tibble()%>%
     arrange(., DateTime)
   
   
-  return(overallData)
+  return(data)
 }
 
 ##############################################################################################################
@@ -298,7 +312,7 @@ consecPhases <- function(data){
 #         - takes the first entry of every mouse in data and copies the time and position that we know the start position of each mouse
 
 # find the FIRST TIME where mouse is tracked in the cage
-# aka first value of mouse in overallData_final
+# aka first value of mouse in data_final
 find_first_pos_and_time <- function(system_mouse_names, data, mice_list){
   
   # create empty vector with 4 variables
@@ -632,24 +646,32 @@ update_mice_list <- function(system_mouse_names, mice_list, data, time, line){
 ## functions for comparing-file
 
 # input:  
-#         
-#        
+#   rank_tibble - the tibble containing the ranks
+#   vector - the vector to be ranked
+#   system - the system identifier
+#   cageChange - the cage change identifier
+#   batch - the batch identifier
+#   hours_column_name - the name of the column containing the hours
+#   rank_column_name - the name of the column containing the ranks
 #
 # output: 
+#   rank_tibble - the updated tibble with ranks
+#
 # effect:
+#   Computes the ranks for the given vector and updates the rank_tibble with the ranks for the corresponding system, cageChange, and batch.
 
-
-compute_rank <- function(rank_tibble, vector, system, cageChange, batch, hours_column_name, rank_column_name){
+compute_rank <- function(rank_tibble, vector, system, cageChange, batch, hours_column_name, rank_column_name) {
   
-  #sort the total hour system vec by size, largest value gets rank 1
+  # Sort the total hour system vector by size, with the largest value getting rank 1
   vector <- sort(vector)
-  #print(vector)
-  #enter ranks in rank tibble
-  for(i in 1:length(vector)){
-    #enter rank in corresponding line in rank tibble
-    rank_tibble <- rank_tibble%>%
-      mutate({{rank_column_name}} := ifelse((Batch==batch)&(CageChange==cageChange)&(System==system) & (.data[[hours_column_name]]==vector[i]), i,.data[[rank_column_name]])) #new r version & instead of && 
+  
+  # Enter ranks in rank tibble
+  for (i in 1:length(vector)) {
+  # Enter rank in corresponding line in rank tibble
+  rank_tibble <- rank_tibble %>%
+    mutate({{rank_column_name}} := ifelse((Batch == batch) & (CageChange == cageChange) & (System == system) & (.data[[hours_column_name]] == vector[i]), i, .data[[rank_column_name]])) # New R version & instead of &&
   }
+  
   return(rank_tibble)
 }
 
@@ -739,7 +761,9 @@ check_mice_prob <- function(old_mice_list,new_mice_list,mice_prob_tibble,secTemp
   for(i in 1:4){#for every mouse
     
     #if mouse is not tracked(incomplete system)
-    if(is.na(mouse_names[i])){next}
+    if(is.na(mouse_names[i])){
+      next
+    }
     
     #define old and new(current) position
     old_pos <- as.numeric(old_mice_list[[i]][[3]])
@@ -1130,8 +1154,8 @@ testAndPlotVariable <- function(data, value, variableName, phase, sex) {
 }
 
 # Function to generate plots for each variable and phase
-generatePlot <- function(overallData, value, variableName, phase, sex) {
-  filteredData <- overallData #%>%
+generatePlot <- function(data, value, variableName, phase, sex) {
+  filteredData <- data #%>%
   #  filter(if (include_phase) Phase == phase else TRUE) %>%  # Include/exclude "Phase" based on the variable
   #  filter(if (include_sex) Sex == sex else TRUE)  # Include/exclude "Sex" based on the variable
   
