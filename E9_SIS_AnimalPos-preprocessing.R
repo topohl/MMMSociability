@@ -18,16 +18,19 @@ for (package in required_packages) {
 }
 
 # Set paths
-working_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-source_dir <- "C:/Users/topohl/Documents/GitHub/MMMSociability/"
-output_dir <- file.path(working_dir, "preprocessed_data")
+setwd("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability")
+source('C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-functions.R')
+
+#working_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
+#source_dir <- "C:/Users/topohl/Documents/GitHub/MMMSociability/"
+output_dir <- file.path(getwd(), "preprocessed_data")
 
 # Define batch and cage change
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
 cageChanges <- c("CC1", "CC2", "CC3", "CC4")
 
 # Read excluded animals
-excl_animals <- readLines(file.path(working_dir, "raw_data", "excluded_animals.csv"))
+excl_animals <- readLines(file.path(getwd(), "raw_data", "excluded_animals.csv"))
 
 for (batch in batches) {
   for (cageChange in cageChanges) {
@@ -37,10 +40,10 @@ for (batch in batches) {
     filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
     
     # Path of csv file 
-    csvFilePath <-  paste0(working_dir, "/raw_data", "/", batch, "/", filename, ".csv")
+    csvFilePath <-  paste0(getwd(), "/raw_data", "/", batch, "/", filename, ".csv")
     
     # Load functions
-    source(paste0(source_dir, "E9_SIS_AnimalPos-functions.R"))
+    # source(paste0(source_dir, "E9_SIS_AnimalPos-functions.R"))
     
     # Read csv file into tibble
     data <- as_tibble(read_delim(csvFilePath, delim = ";", show_col_types = FALSE))
@@ -127,7 +130,7 @@ for (batch in batches) {
     # SAVING #
     
     ## Saving data in csv file
-    output_dir <- file.path(working_dir, "preprocessed_data")
+    output_dir <- file.path(getwd(), "preprocessed_data")
     
     if (!dir.exists(output_dir)) {
       dir.create(output_dir, recursive = TRUE)
