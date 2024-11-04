@@ -4,12 +4,57 @@
 ## ANALYSIS OF ANIMAL POSITIONS - FUNCTIONS ##
 ##
 
-
-
-
-
-
-
+## Preprocessing
+# Define function to preprocess a single file
+preprocess_file <- function(batch, cageChange, exclAnimals) {
+  filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
+  csvFilePath <- file.path(getwd(), "raw_data", batch, paste0(filename, ".csv"))
+  
+  if (!file.exists(csvFilePath)) {
+    warning(paste("File", csvFilePath, "does not exist. Skipping to next file."))
+    return(NULL)
+  }
+  
+  # Read CSV file
+  data <- as_tibble(read_delim(csvFilePath, delim = ";", show_col_types = FALSE))
+  
+  # Preprocessing steps
+  data <- data %>%
+    select(-c(RFID, AM, zPos)) %>%
+    mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC")) %>%
+    separate(Animal, into = c("AnimalID", "System"), sep = "[-_]") 
+  
+  # Define Position Mapping Table
+  tblPosition <- tibble(
+    PositionID = 1:8, 
+    xPos = c(0, 100, 200, 300, 0, 100, 200, 300), 
+    yPos = c(0, 0, 0, 0, 116, 116, 116, 116)
+  )
+  
+  # Add PositionID to the data
+  data <- data %>%
+    rowwise() %>%
+    mutate(PositionID = find_id(xPos, yPos, lookup_tibble = tblPosition)) %>%
+    select(DateTime, AnimalID, System, PositionID) %>%
+    filter(!AnimalID %in% exclAnimals) %>%
+    arrange(DateTime)
+  
+  # Add phase information and markers
+  data <- data %>%
+    addPhaseTransitionMarkers() %>%
+    mutate(Phase = ifelse(format(DateTime, "%H:%M", tz = "UTC") >= "18:30" | 
+                          format(DateTime, "%H:%M", tz = "UTC") < "06:30", 
+                          "Active", "Inactive")) %>%
+    mutate(ConsecActive = 0, ConsecInactive = 0) %>%
+    consecPhases() %>%
+    addDayMarkerRows()
+  
+  # Save the preprocessed data
+  outputFileDir <- file.path(outputDir, paste0(filename, "_preprocessed.csv"))
+  write_csv(data, outputFileDir)
+  
+  message(paste("File saved at", outputFileDir))
+}
 
 ##############################################################################################################
 # input:  x_Pos - x coordinate of cage
@@ -93,10 +138,10 @@ addPhaseTransitionMarkers <- function(data) {
     # "GMT" means "UTC"
     # Define the specific phase transition markers for the current date
     phaseMarkers <- list(
-      endOfActivePhaseAM = as.POSIXct(paste(date, "06:29:59"), tz = "GMT"),   # End of active phase (morning)
-      startOfInactivePhaseAM = as.POSIXct(paste(date, "06:30:00"), tz = "GMT"), # Start of inactive phase (morning)
-      endOfInactivePhasePM = as.POSIXct(paste(date, "18:29:59"), tz = "GMT"),   # End of inactive phase (evening)
-      startOfActivePhasePM = as.POSIXct(paste(date, "18:30:00"), tz = "GMT")    # Start of active phase (evening)
+      endOfActivePhaseAM = as.POSIXct(paste(date, "06:29:59"), tz = "GMT"),
+      startOfInactivePhaseAM = as.POSIXct(paste(date, "06:30:00"), tz = "GMT"),
+      endOfInactivePhasePM = as.POSIXct(paste(date, "18:29:59"), tz = "GMT"),
+      startOfActivePhasePM = as.POSIXct(paste(date, "18:30:00"), tz = "GMT")
     )
     
     #we have 2 early markers and 2 late markers
@@ -111,7 +156,6 @@ addPhaseTransitionMarkers <- function(data) {
       for(system in uniqueSystems){
         
         #print(system)
-        
         
         # filter rows from specific system 
         filtered_system <- filtered_time%>%
