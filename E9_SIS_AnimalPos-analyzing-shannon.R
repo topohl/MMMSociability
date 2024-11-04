@@ -4,34 +4,33 @@
 ##
 ##
 
-# libraries
-library(readr)        # load readr package for reading csv files
-library(dplyr)
-library(lubridate)    # for rounding time, time operations in general
-library(tibble)       #important for tibble operations
-library(purrr)
-library(ggplot2)      #for plots
-library(reshape2)     #for heatmap plot
-library(scales)       # for heatmap rescale
-library(stringr)    # for sorting vector of strings   
+# Load required packages
+required_packages <- c("readr", "dplyr", "lubridate", "tibble", "purrr", "ggplot2", "reshape2", "scales", "stringr")
+
+# Install required packages if not already installed
+for (package in required_packages) {
+  if (!requireNamespace(package, quietly = TRUE)) {
+    install.packages(package)
+  } 
+  library(package, character.only = TRUE)
+}
 
 # customisable variables
-show_plots = FALSE
-save_plots = FALSE
+show_plots = TRUE
+save_plots = TRUE
 save_tables= TRUE
 
-
-
 # paths
+
+#setwd("C:/Users/topohl/Documents/GitHub/DLCAnalyzer")
+#source('R/DLCAnalyzer_Functions_final.R')
+
 working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-#working_directory <- "/home/anja/Dokumente/FU BERLIN/BA/Git/MDC_Bachelor/E9_SIS_AnimalPos"
 
 saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-#saving_directory <- "/home/anja/Dokumente/FU BERLIN/BA/Git/MDC_Bachelor/E9_SIS_AnimalPos"
 plots_directory <- "/plots"
 #plots_directory <- "/R-plots"
 tables_directory <- "/tables"
-
 
 #functions
 source(paste0(working_directory,"/E9_SIS_AnimalPos-functions.R"))
@@ -77,7 +76,6 @@ mousePosEntropy <- tibble(Batch = character(),
 
 ################################################################################################################################
 
-
 # define batch and cage change
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
 cageChanges <- c("CC1", "CC2", "CC3", "CC4")
@@ -119,7 +117,6 @@ for(batch in batches){
     #every mouse in the data batch
     unique_mice <- unique(overallData$AnimalID)
     
-   
     ################################################################################################################################
     ## ANALYSIS ##
     ##########################################################
@@ -129,7 +126,6 @@ for(batch in batches){
     
     ## FOR LOOP ## (goes through every of the 5 systems)
     for(systemName in uniqueSystems){
-      
       
       print(systemName)
       #sort overallData to the actual system
@@ -144,7 +140,6 @@ for(batch in batches){
       system_complete <- ifelse(length(mouse_names)<4,FALSE,TRUE)
       #fill vector with NAs if incomplete system(we need 4 values in vector)
       while(length(mouse_names)<4){mouse_names <- append(mouse_names,NA)}#if there are less than 4 mice in a system(lost chip ...)
-      
       
       ## FOR LOOP ## (difference between 2 phases)
       for(phase in phases){
@@ -175,8 +170,6 @@ for(batch in batches){
           
           
           ##INITIALIZATIONS##
-          
-          
           # initialize mice lists with empty name, start time and start position of every mouse in one system(4mice together)
           mouseOne    <- list(name="", time="", position=0)
           mouseTwo    <- list(name="", time="", position=0)
@@ -194,7 +187,6 @@ for(batch in batches){
           
           
           #initialize probability lists
-          #
           #cage probability
           #c(cagePosition, number of general observed seconds,number of added probabilitys that a mouse was on this position at this second, space for later calclated probability)
           #last number of each vector has to be divided through the second number-> sum of probabilitys of every second/number of seconds= average
@@ -239,7 +231,7 @@ for(batch in batches){
           #define ending for while loop
           theEnd <- nrow(systemPhaseData)+1
           
-          ## WHILE LOOP ## (goes throught the data rows of one systemPhaseData)
+          ## WHILE LOOP ## (goes through the data rows of one systemPhaseData)
           while(lineTemp!=theEnd && lineTemp<theEnd){
             
             #create a copy of the old version of the mice list for comparison to new list(to calculate differences between the gaps of two rows)
@@ -289,9 +281,6 @@ for(batch in batches){
           message("mice_prob_tibble")
           print(mice_prob_tibble)
           
-          
-          
-         
           if(system_complete){
             message("enter data from this phase in total result tibble")
             #enter information in big result tibble for every phase and system(later used for plotting)
@@ -354,16 +343,10 @@ for(batch in batches){
                         AnimalID=mouse,
                         MiceEntropy=mice_shannon_entropy)
             }
-            
-          
         }## END FOR LOOP ##(nr of phases)
-        
-        
       }## END FOR LOOP ##(phases)
-      
     }
     ## END FOR LOOP ##(systems)
-    
   }
 }
 
@@ -397,64 +380,73 @@ consecCagePosEntropy <- cagePosEntropy
 consecMousePosEntropy <- mousePosEntropy
 
 #definitions for dynamic processing
-entropy_tibble_names <- c("consecCagePosEntropy ", "consecMousePosEntropy ")
+tibbleNames <- c("consecCagePosEntropy ", "consecMousePosEntropy ")
 values <- c('CageEntropy', 'MiceEntropy')
 
-for (i in seq_along(entropy_tibble_names)) {
-  name <- entropy_tibble_names[i]
-  ifelse(name=="consecCagePosEntropy ", e_tibble <- consecCagePosEntropy , e_tibble <- consecMousePosEntropy )
+for (i in seq_along(tibbleNames)) {
+  name <- tibbleNames[i]
+  if (name == "consecCagePosEntropy ") {
+    dataTibble <- consecCagePosEntropy
+  } else {
+    dataTibble <- consecMousePosEntropy
+  }
   
   #create consec colums:
   #split Phase column
-  e_tibble[c('Phase', 'Consec')] <- str_split_fixed(e_tibble$Phase, '', 2)
+  dataTibble[c('Phase', 'Consec')] <- str_split_fixed(dataTibble$Phase, '', 2)
   
   # Change the consec column to ConsecActive and ConsecInactive
   # and change the content of the Phase column to "active" and "inactive"
-  e_tibble <- e_tibble %>%
-    filter(Batch != "B6") %>%
+  dataTibble <- dataTibble %>%
+    # filter(Batch != "B6") %>% # filter out batch B6
     mutate(ConsecActive = ifelse(Phase == "A", as.numeric(Consec), 0)) %>%
     mutate(ConsecInactive = ifelse(Phase == "I", as.numeric(Consec) - 1, 0)) %>%
     mutate(Phase = ifelse(Phase == "A", "active", "inactive"))
   
-  if(name=="consecMousePosEntropy ")e_tibble <- e_tibble%>%mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res")))
+  if (name == "consecMousePosEntropy ") {
+    dataTibble <- dataTibble %>% mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res")))
+  }
   
-  for(cc in c("CC1","CC2", "CC3", "CC4")){
+  for (cc in c("CC1", "CC2", "CC3", "CC4")) {
     
-    if(cc!="CC1"){
-      e_tibble <- e_tibble%>%
-        mutate(ConsecActive=ifelse(CageChange==cc&Phase=="active",ConsecActive+max_consecAct,ConsecActive))%>%
-        mutate(ConsecInactive=ifelse(CageChange==cc&Phase=="inactive",ConsecInactive+max_consecInact,ConsecInactive))
-      
+    if (cc != "CC1") {
+      dataTibble <- dataTibble %>%
+        mutate(ConsecActive = ifelse(CageChange == cc & Phase == "active", ConsecActive + max_consecAct, ConsecActive)) %>%
+        mutate(ConsecInactive = ifelse(CageChange == cc & Phase == "inactive", ConsecInactive + max_consecInact, ConsecInactive))
     }
     
-    max_consecAct <- e_tibble%>%
-      filter(CageChange==cc)%>%
-      pull(ConsecActive)%>%
-      unique()%>%
+    max_consecAct <- dataTibble %>%
+      filter(CageChange == cc) %>%
+      pull(ConsecActive) %>%
+      unique() %>%
       max()
     #print(max_consecAct)
     
-    max_consecInact <- e_tibble%>%
-      filter(CageChange==cc)%>%
-      pull(ConsecInactive)%>%
-      unique()%>%
+    max_consecInact <- dataTibble %>%
+      filter(CageChange == cc) %>%
+      pull(ConsecInactive) %>%
+      unique() %>%
       max()
     #print(max_consecInact)
   }
   
   #bring columns into right order
-  if(name=="consecMousePosEntropy ")e_tibble <- e_tibble[c('CageChange', 'Batch', 'System', 'AnimalID', 'Sex', 'Group', 'Phase', 'ConsecActive', 'ConsecInactive', 'MiceEntropy')]
-  if(name=="consecCagePosEntropy ")e_tibble <- e_tibble[c('CageChange', 'Batch', 'System', 'Sex', 'Phase', 'ConsecActive', 'ConsecInactive', 'CageEntropy')]
+  if (name == "consecMousePosEntropy ") {
+    dataTibble <- dataTibble[c('CageChange', 'Batch', 'System', 'AnimalID', 'Sex', 'Group', 'Phase', 'ConsecActive', 'ConsecInactive', 'MiceEntropy')]
+  }
+  if (name == "consecCagePosEntropy ") {
+    dataTibble <- dataTibble[c('CageChange', 'Batch', 'System', 'Sex', 'Phase', 'ConsecActive', 'ConsecInactive', 'CageEntropy')]
+  }
   
   #overwrite old tibbles with new processed tibbles
-  ifelse(name=="consecCagePosEntropy ", consecCagePosEntropy  <- e_tibble, consecMousePosEntropy  <- e_tibble)
+  if (name == "consecCagePosEntropy ") {
+    consecCagePosEntropy <- dataTibble
+  } else {
+    consecMousePosEntropy <- dataTibble
+  }
 }
 
-
-
-
 ############### save consec tables ########################################################################
-
 
 #tables as csv data
 if(save_tables==TRUE){
@@ -480,13 +472,13 @@ mousePosEntropy[c('Phase', 'Consec')] <- str_split_fixed(mousePosEntropy$Phase, 
 # Change consec column to ConsecAct and ConsecInact
 # Change content of Phase column to "active" and "inactive"
 cagePosEntropy <- cagePosEntropy%>%
-  filter(Batch!= "B6")%>%
+  # filter(Batch!= "B6")%>% # filter out batch B6
   mutate(ConsecActive = ifelse(Phase=="A", Consec, 0))%>%
   mutate(ConsecInactive = ifelse(Phase=="I", Consec, 0))%>%
   mutate(Phase = ifelse(Phase=="A", "active", "inactive"))
 
 mousePosEntropy <- mousePosEntropy%>%
-  filter(Batch!= "B6")%>%
+  # filter(Batch!= "B6")%>% # filter out batch B6
   mutate(ConsecActive = ifelse(Phase=="A", Consec, 0))%>%
   mutate(ConsecInactive = ifelse(Phase=="I", Consec, 0))%>%
   mutate(Phase = ifelse(Phase=="A", "active", "inactive"))%>%
@@ -525,10 +517,8 @@ for (i in seq_along(columns_to_group)) {
     group_by(across(all_of(group_vars))) %>%
     summarise(Mean_Entropy = mean(MiceEntropy, na.rm = TRUE), .groups = 'drop')
   
-  
   print(paste("Grouping by:", paste(group_vars, collapse = ", ")))
   print(paste("X axis:", x_var))
-  
   
   # dynamic scatterplot
   p <- ggplot(data = result, aes(x = !!sym(x_var), y = Mean_Entropy, color = Group, group = Group)) + 
@@ -559,17 +549,12 @@ for (i in seq_along(columns_to_group)) {
   #print(p)
   
   plots[[i]] <- p
-  
- 
-
 }
 
 # Print all generated plots
 for (i in seq_along(plots)) {
   print(plots[[i]])
 }
-
-
 
 ##plots outside of loop for consec, not perfect consec tibble as base
 ##consec plots active/inactive
