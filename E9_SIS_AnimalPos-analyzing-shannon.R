@@ -170,7 +170,7 @@ for(batch in batches){
           
           
           ##INITIALIZATIONS##
-          # initialize mice lists with empty name, start time and start position of every mouse in one system(4mice together)
+          # initialize mouse lists with empty name, start time and start position of every mouse in one system(4mice together)
           mouseOne    <- list(name="", time="", position=0)
           mouseTwo    <- list(name="", time="", position=0)
           mouseThree  <- list(name="", time="", position=0)
