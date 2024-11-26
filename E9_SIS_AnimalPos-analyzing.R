@@ -13,24 +13,14 @@
 ## - working directory: choose your current directory
 ## - batch and cage change: on which file are you working->filename will be created with batch and cc information
 
-
 # libraries
-library(readr)        # load readr package for reading csv files
-library(dplyr)
-library(lubridate)    # for rounding time, time operations in general
-library(tibble)       #important for tibble operations
-library(purrr)
-library(ggplot2)      #for plots
-library(reshape2)     #for heatmap plot
-library(scales)       # for heatmap rescale
-library("stringr")    # for sorting vector of strings   
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(readr, dplyr, lubridate, tibble, purrr, ggplot2, reshape2, scales, stringr)
 
 # customisable variables
 show_plots = FALSE
 save_plots = FALSE
 save_tables= FALSE
-
-
 
 # paths
 working_directory <- "S:/Lab_Member/Anja/Git/MDC_Bachelor/E9_SIS_AnimalPos"
