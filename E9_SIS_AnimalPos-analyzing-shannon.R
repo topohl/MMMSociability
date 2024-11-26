@@ -53,26 +53,26 @@ con_animals <- readLines(paste0(working_directory,"/raw_data/con_animals.csv"))
 
 # Initialize the result tibbles for cage probability, cage entropy, and mouse entropy
 cagePosProb <- tibble(Batch = character(),
-               System = character(),
-               CageChange = character(),
-               Phase = character(),
-               Position = numeric(),
-               Probability = numeric())
+                      System = character(),
+                      CageChange = character(),
+                      Phase = character(),
+                      Position = numeric(),
+                      Probability = numeric())
 
 cagePosEntropy <- tibble(Batch = character(),
-                Sex = character(),
-                System = character(),
-                CageChange = character(),
-                Phase = character(),
-                CageEntropy = numeric())
+                         Sex = character(),
+                         System = character(),
+                         CageChange = character(),
+                         Phase = character(),
+                         CageEntropy = numeric())
 
 mousePosEntropy <- tibble(Batch = character(),
-                Sex = character(),
-                System = character(),
-                CageChange = character(),
-                Phase = character(),
-                AnimalID = character(),
-                MiceEntropy = numeric())
+                          Sex = character(),
+                          System = character(),
+                          CageChange = character(),
+                          Phase = character(),
+                          AnimalID = character(),
+                          MiceEntropy = numeric())
 
 ################################################################################################################################
 
@@ -82,102 +82,98 @@ cageChanges <- c("CC1", "CC2", "CC3", "CC4")
 
 for(batch in batches){
   
-  #define sex
+  # Define sex based on batch
   sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
   
   for(cageChange in cageChanges){
-  #for(cageChange in c("CC1")){
     cat(batch, cageChange)
     
     ################################################################################################################################
-    #current csv filename
+    # Current CSV filename
     filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
-    #path of csv file 
+    # Path of CSV file 
     csvFilePath <-  paste0(working_directory,"/preprocessed_data/", filename, "_preprocessed.csv")
     
-    # read preprocessed data(csv file) in tibble
-    overallData <- as_tibble(read_delim(csvFilePath,delim = ",", show_col_types = FALSE))
+    # Read preprocessed data (CSV file) into tibble
+    overallData <- as_tibble(read_delim(csvFilePath, delim = ",", show_col_types = FALSE))
     
     ################################################################################################################################
     ## DEFINITIONS ##
     
-    #define systems
+    # Define systems
     uniqueSystems <- unique(overallData$System)
     uniqueSystems <- str_sort(uniqueSystems)
-    #define phases
+    # Define phases
     phases <- c("Active", "Inactive")
     
-    #look for number of active and inactive phases in this record data
+    # Determine the number of active and inactive phases in this record data
     active_phases_number <- unique(overallData$ConsecActive)
     inactive_phases_number <- unique(overallData$ConsecInactive)
-    #delete the 0
+    # Remove the 0
     active_phases_number <- active_phases_number[! active_phases_number %in% 0]
-    inactive_phases_number <- inactive_phases_number[! inactive_phases_number %in% c(0,1,max(inactive_phases_number))]#delete first and last phase as well bc they are incomplete
+    inactive_phases_number <- inactive_phases_number[! inactive_phases_number %in% c(0,1,max(inactive_phases_number))] # Remove first and last phase as well because they are incomplete
     
-    #every mouse in the data batch
+    # Every mouse in the data batch
     unique_mice <- unique(overallData$AnimalID)
     
     ################################################################################################################################
     ## ANALYSIS ##
     ##########################################################
-    # for every system (different mouse cages)
-    # one system has 4 mice, one batch has 5 systems
-    # there are 4 experimental systems and one control system
+    # For every system (different mouse cages)
+    # One system has 4 mice, one batch has 5 systems
+    # There are 4 experimental systems and one control system
     
     ## FOR LOOP ## (goes through every of the 5 systems)
     for(systemName in uniqueSystems){
       
       print(systemName)
-      #sort overallData to the actual system
-      systemData <- overallData%>%
-        filter(System==systemName)%>%
+      # Filter overallData to the actual system
+      systemData <- overallData %>%
+        filter(System == systemName) %>%
         as_tibble()
-      #print(system)
       
-      #define mouse names of the system
+      # Define mouse names of the system
       mouse_names <- unique(systemData$AnimalID)
-      #define boolean value for completeness of current system
-      system_complete <- ifelse(length(mouse_names)<4,FALSE,TRUE)
-      #fill vector with NAs if incomplete system(we need 4 values in vector)
-      while(length(mouse_names)<4){mouse_names <- append(mouse_names,NA)}#if there are less than 4 mice in a system(lost chip ...)
+      # Define boolean value for completeness of current system
+      system_complete <- ifelse(length(mouse_names) < 4, FALSE, TRUE)
+      # Fill vector with NAs if incomplete system (we need 4 values in vector)
+      while(length(mouse_names) < 4){mouse_names <- append(mouse_names, NA)} # If there are less than 4 mice in a system (lost chip ...)
       
       ## FOR LOOP ## (difference between 2 phases)
       for(phase in phases){
         
         print(phase) 
         
-        #special treatment for every CC4 after A2(grid in cage)-> not usable for social analysis
-        #use only A1,I2,A2 for the computation of the rank from CC4
-        if(cageChange=="CC4"){
-          active_phases_number <- c(1,2)
+        # Special treatment for every CC4 after A2 (grid in cage) -> not usable for social analysis
+        # Use only A1, I2, A2 for the computation of the rank from CC4
+        if(cageChange == "CC4"){
+          active_phases_number <- c(1, 2)
           inactive_phases_number <- c(2)
         }
         
-        #depending on the phase take the number of phases
+        # Depending on the phase take the number of phases
         ifelse(phase == "Active",  number_of_phases <- active_phases_number,  number_of_phases <- inactive_phases_number)
         print(number_of_phases)
         
         ## FOR LOOP ## (difference between the existing number of phases)
         for(nr in number_of_phases){
-          print(paste0( batch, ", System: ", systemName, ", ", cageChange, ", ", phase, " phase nr: ", nr))
+          print(paste0(batch, ", System: ", systemName, ", ", cageChange, ", ", phase, " phase nr: ", nr))
           
-          #sort system data to the actual phase
-          systemPhaseData <- systemData%>%
-            filter(ConsecActive == ifelse(phase == "Active",nr, 0))%>%   #depending on phase the special number of the phase has to be selected
-            filter(ConsecInactive == ifelse(phase == "Inactive",nr, 0))%>%
+          # Filter system data to the actual phase
+          systemPhaseData <- systemData %>%
+            filter(ConsecActive == ifelse(phase == "Active", nr, 0)) %>%   # Depending on phase the special number of the phase has to be selected
+            filter(ConsecInactive == ifelse(phase == "Inactive", nr, 0)) %>%
             as_tibble()
-          #print(systemPhaseData)
           
+          ## INITIALIZATIONS ##
+          # Initialize mouse lists with empty name, start time and start position of every mouse in one system (4 mice together)
+          mouseOne    <- list(name = "", time = "", position = 0)
+          mouseTwo    <- list(name = "", time = "", position = 0)
+          mouseThree  <- list(name = "", time = "", position = 0)
+          mouseFour   <- list(name = "", time = "", position = 0)
+          tempData    <- list(secTemp = 0, lineTemp = 0)
           
-          ##INITIALIZATIONS##
-          # initialize mouse lists with empty name, start time and start position of every mouse in one system(4mice together)
-          mouseOne    <- list(name="", time="", position=0)
-          mouseTwo    <- list(name="", time="", position=0)
-          mouseThree  <- list(name="", time="", position=0)
-          mouseFour   <- list(name="", time="", position=0)
-          tempData    <- list(secTemp=0, lineTemp=0)
-          
-          # combine them to a list of lists
+          # Combine them to a list of lists
           mice_list <- list(
             "mouseOne" = mouseOne,
             "mouseTwo" = mouseTwo,
@@ -185,176 +181,165 @@ for(batch in batches){
             "mouseFour" = mouseFour,
             "tempData" = tempData)
           
+          # Initialize probability lists
+          # Cage probability
+          # c(cagePosition, number of general observed seconds, number of added probabilities that a mouse was on this position at this second, space for later calculated probability)
+          # Last number of each vector has to be divided through the second number -> sum of probabilities of every second/number of seconds = average
+          cage_prob_list <- list(c(1, 0, 0, 0), 
+                                 c(2, 0, 0, 0), 
+                                 c(3, 0, 0, 0), 
+                                 c(4, 0, 0, 0), 
+                                 c(5, 0, 0, 0), 
+                                 c(6, 0, 0, 0), 
+                                 c(7, 0, 0, 0), 
+                                 c(8, 0, 0, 0))
           
-          #initialize probability lists
-          #cage probability
-          #c(cagePosition, number of general observed seconds,number of added probabilitys that a mouse was on this position at this second, space for later calclated probability)
-          #last number of each vector has to be divided through the second number-> sum of probabilitys of every second/number of seconds= average
-          cage_prob_list <- list( c(1, 0, 0, 0), 
-                                  c(2, 0, 0, 0), 
-                                  c(3, 0, 0, 0), 
-                                  c(4, 0, 0, 0), 
-                                  c(5, 0, 0, 0), 
-                                  c(6, 0, 0, 0), 
-                                  c(7, 0, 0, 0), 
-                                  c(8, 0, 0, 0))
+          # Mice probability
+          mice_prob_tibble <- tibble(AnimalID = rep(mouse_names, each = 8),
+                                     Position = rep(1:8, length.out = 32),
+                                     Seconds = 0,
+                                     SumPercentage = 0,
+                                     Prob = 0)
           
-          #mice probability
-          mice_prob_tibble <- tibble(AnimalID=rep(mouse_names,each=8),
-                                     Position=rep(1:8, length.out = 32),
-                                     Seconds=0,
-                                     SumPercentage=0,
-                                     Prob=0)
-          
-          
-          ##CALCULATIONS##
+          ## CALCULATIONS ##
           message("calculates")
           
-          
-          #update mice_list to first time and first position
+          # Update mice_list to first time and first position
           mice_list <- find_first_pos_and_time(mouse_names, systemPhaseData, mice_list)
           
-          #assign start time(choose one of the mices start time) for while loop
-          #contains object of DateTime
-          #for mice list update
+          # Assign start time (choose one of the mice's start time) for while loop
+          # Contains object of DateTime
+          # For mice list update
           timeTemp <- mice_list[[1]][[2]]
           
-          #assign first line number(after the four initial lines) for while loop
-          #contains an int
-          #needed for while loop ending 
+          # Assign first line number (after the four initial lines) for while loop
+          # Contains an int
+          # Needed for while loop ending 
           lineTemp <- 5
           
-          #assign first seconds difference between two entrys in data for while loop
-          #contains an int
+          # Assign first seconds difference between two entries in data for while loop
+          # Contains an int
           secTemp <- 0
           
-          #define ending for while loop
-          theEnd <- nrow(systemPhaseData)+1
+          # Define ending for while loop
+          theEnd <- nrow(systemPhaseData) + 1
           
           ## WHILE LOOP ## (goes through the data rows of one systemPhaseData)
-          while(lineTemp!=theEnd && lineTemp<theEnd){
+          while(lineTemp != theEnd && lineTemp < theEnd){
             
-            #create a copy of the old version of the mice list for comparison to new list(to calculate differences between the gaps of two rows)
+            # Create a copy of the old version of the mice list for comparison to new list (to calculate differences between the gaps of two rows)
             old_mice_list <- mice_list
             
-            #update mice list with new positions from the next row
+            # Update mice list with new positions from the next row
             mice_list <- update_mice_list(mouse_names, mice_list, systemPhaseData, timeTemp, lineTemp)
             
-            #update secTemp
+            # Update secTemp
             secTemp <-  mice_list[["tempData"]][["secTemp"]]
             
             ##################################################################################################
             
-            ## use ANALYSIS FUNCTIONS to update result lists ##
+            ## Use ANALYSIS FUNCTIONS to update result lists ##
             
             if(system_complete){
-              ## probability of positions in cage 
-              cage_prob_list <- check_cage_prob(old_mice_list,mice_list,cage_prob_list,secTemp)
+              ## Probability of positions in cage 
+              cage_prob_list <- check_cage_prob(old_mice_list, mice_list, cage_prob_list, secTemp)
             }
             
-            ## probability of positions in cage of every mouse
-            mice_prob_tibble <- check_mice_prob(old_mice_list,mice_list,mice_prob_tibble,secTemp)
+            ## Probability of positions in cage of every mouse
+            mice_prob_tibble <- check_mice_prob(old_mice_list, mice_list, mice_prob_tibble, secTemp)
             
             ##################################################################################################
             
-            
-            #update lineTemp
+            # Update lineTemp
             lineTemp <- mice_list[["tempData"]][["lineTemp"]]
-            #update timeTemp
+            # Update timeTemp
             timeTemp <- mice_list[[1]][[2]]
-          }## END WHILE LOOP ##(rows of one systemPhaseData)
+          } ## END WHILE LOOP ## (rows of one systemPhaseData)
           
           ## RESULTS ##
           
-          #calculate the probability out of the given numbers (space 4 in the vectors of the list)
-          ##cage
+          # Calculate the probability out of the given numbers (space 4 in the vectors of the list)
+          ## Cage
           for(i in 1:8){
-            cage_prob_list[[i]][[4]] <- cage_prob_list[[i]][[3]]/cage_prob_list[[i]][[2]]
+            cage_prob_list[[i]][[4]] <- cage_prob_list[[i]][[3]] / cage_prob_list[[i]][[2]]
           }
-          ##mice
-          mice_prob_tibble$Prob <- mice_prob_tibble$SumPercentage/mice_prob_tibble$Seconds
+          ## Mice
+          mice_prob_tibble$Prob <- mice_prob_tibble$SumPercentage / mice_prob_tibble$Seconds
           
-          #print list results
+          # Print list results
           message("results: ")
-          #message("cage_prob_list")
-          #print(cage_prob_list)
           message("mice_prob_tibble")
           print(mice_prob_tibble)
           
           if(system_complete){
             message("enter data from this phase in total result tibble")
-            #enter information in big result tibble for every phase and system(later used for plotting)
-            for(i in 1:8){#for every position in cage
-              p <- paste0(substr(phase, 1, 1),nr) #the current phase
-              cagePosProb <- cagePosProb%>%
-                add_row(Batch=batch,
-                        System=systemName,
+            # Enter information in big result tibble for every phase and system (later used for plotting)
+            for(i in 1:8){ # For every position in cage
+              p <- paste0(substr(phase, 1, 1), nr) # The current phase
+              cagePosProb <- cagePosProb %>%
+                add_row(Batch = batch,
+                        System = systemName,
                         CageChange = cageChange, 
                         Phase = p, 
-                        Position=i, 
-                        Probability=cage_prob_list[[i]][[4]] )
-              
+                        Position = i, 
+                        Probability = cage_prob_list[[i]][[4]])
             }
           }
-            
-            ###### calculate shannon entropy: ######
-            
+          
+          ###### Calculate Shannon entropy: ######
+          
           if(system_complete){
-            ##cage
-            #extract vector with the probs of every position
-            cage_prob_vec <- cagePosProb%>%
-              filter(Batch==batch)%>%
-              filter(System==systemName)%>%
-              filter(CageChange==cageChange)%>%
-              filter(Phase==paste0(substr(phase,1,1),nr))%>%
-              pull(.,Probability)
-            #enter vector with the rest of inform. into calc function and calcuate the shannon entropy
+            ## Cage
+            # Extract vector with the probabilities of every position
+            cage_prob_vec <- cagePosProb %>%
+              filter(Batch == batch) %>%
+              filter(System == systemName) %>%
+              filter(CageChange == cageChange) %>%
+              filter(Phase == paste0(substr(phase, 1, 1), nr)) %>%
+              pull(Probability)
+            # Enter vector with the rest of information into calc function and calculate the Shannon entropy
             cage_shannon_entropy <- calc_shannon_entropy(cage_prob_vec)
-            #enter new row with shannon entropy into result tibble
-            cagePosEntropy <- cagePosEntropy%>%
-              add_row(Batch=batch,
-                      Sex=sex,
-                      System=systemName,
-                      CageChange=cageChange,
-                      Phase=paste0(substr(phase,1,1),nr),
-                      CageEntropy=cage_shannon_entropy)
+            # Enter new row with Shannon entropy into result tibble
+            cagePosEntropy <- cagePosEntropy %>%
+              add_row(Batch = batch,
+                      Sex = sex,
+                      System = systemName,
+                      CageChange = cageChange,
+                      Phase = paste0(substr(phase, 1, 1), nr),
+                      CageEntropy = cage_shannon_entropy)
           }  
           
+          ## Mice
+          # Also probability vector
+          for(mouse in mouse_names){ # Should add 4 new rows, if system incomplete then less
             
-            ##mice
-            #also prob vec
-            for(mouse in mouse_names){#should add 4 new rows, if system incomplete then less
-              
-              #if mouse is not tracked(incomplete system)
-              if(is.na(mouse)){next}
-              
-              mice_prob_vec <- mice_prob_tibble%>%
-                filter(AnimalID==mouse)%>%
-                pull(Prob)
-              #calc entropy
-              mice_shannon_entropy <- calc_shannon_entropy(mice_prob_vec)
-              #add row
-              mousePosEntropy<- mousePosEntropy%>%
-                add_row(Batch=batch,
-                        Sex=sex,
-                        System=systemName,
-                        CageChange=cageChange,
-                        Phase=paste0(substr(phase,1,1),nr),
-                        AnimalID=mouse,
-                        MiceEntropy=mice_shannon_entropy)
+            # If mouse is not tracked (incomplete system)
+            if(is.na(mouse)) {
+              next
             }
-        }## END FOR LOOP ##(nr of phases)
-      }## END FOR LOOP ##(phases)
-    }
-    ## END FOR LOOP ##(systems)
+            
+            mice_prob_vec <- mice_prob_tibble %>%
+              filter(AnimalID == mouse) %>%
+              pull(Prob)
+            # Calculate entropy
+            mice_shannon_entropy <- calc_shannon_entropy(mice_prob_vec)
+            # Add row
+            mousePosEntropy <- mousePosEntropy %>%
+              add_row(Batch = batch,
+                      Sex = sex,
+                      System = systemName,
+                      CageChange = cageChange,
+                      Phase = paste0(substr(phase, 1, 1), nr),
+                      AnimalID = mouse,
+                      MiceEntropy = mice_shannon_entropy)
+          }
+        } ## END FOR LOOP ## (nr of phases)
+      } ## END FOR LOOP ## (phases)
+    } ## END FOR LOOP ## (systems)
   }
 }
 
-
-
 ############### save tables ########################################################################
-
-
 #tables as csv data
 if(save_tables==TRUE){
   message("save analysis tables")
@@ -366,12 +351,8 @@ if(save_tables==TRUE){
 }
 
 ############### read saved tables into a tibble(if you skip the analysis part on top) ########################################################################
-
 cagePosEntropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_cagePosEntropy.csv"),delim = ",", show_col_types = FALSE))
-
 mousePosEntropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_mousePosEntropy.csv"),delim = ",", show_col_types = FALSE))
-
-
 
 ####################################### CONSEC COLUMNS ##########################################################################################
 #PREPROCESS
@@ -447,7 +428,6 @@ for (i in seq_along(tibbleNames)) {
 }
 
 ############### save consec tables ########################################################################
-
 #tables as csv data
 if(save_tables==TRUE){
   message("save consec tables")
@@ -459,7 +439,6 @@ if(save_tables==TRUE){
 }
 
 ############### show plots in R with new table structure ########################################################################
-
 ## outdated code, maybe use for statistics file!
 
 ### MICE ENTROPY ###
@@ -485,7 +464,6 @@ mousePosEntropy <- mousePosEntropy%>%
   mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res"))) #group column(add maybe already before in analysis part( for cage entropy))
 
 #GROUP AND PLOT IN LOOP
-
 columns_to_group <- list(c("Sex","AnimalID","Group"), c("Sex","AnimalID","CageChange","Group"), c("Sex","AnimalID","Phase","Group"), c("Sex","AnimalID","Phase","Group"))#phase group 2* bc of 2 phases
 x_axis <- list("Group","CageChange", "Group", "Group")
 #counter to distinguish the two phases
