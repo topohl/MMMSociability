@@ -4,6 +4,145 @@
 ## ANALYSIS OF ANIMAL POSITIONS - FUNCTIONS ##
 ##
 
+########### Functions for analyzing shannon entropy of animal positions ###########
+
+analyze_batch <- function(batch, cageChange, working_directory, uniqueSystems, phases) {
+  # Define the sex based on the batch
+  sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
+  
+  # Read the overall data for the batch and cage change
+  filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
+  csvFilePath <- file.path(working_directory, "preprocessed_data", paste0(filename, "_preprocessed.csv"))
+  
+  if (!file.exists(csvFilePath)) {
+    warning(paste("File not found:", csvFilePath))
+    return(NULL)
+  }
+  
+  overallData <- read_delim(csvFilePath, delim = ",", show_col_types = FALSE) %>% as_tibble()
+  
+  # Initialize results
+  cagePosProb <- tibble()
+  cagePosEntropy <- tibble()
+  mousePosEntropy <- tibble()
+  
+  # Loop through each system
+  for (systemName in uniqueSystems) {
+    print(systemName)
+    
+    # Filter data for the current system
+    systemData <- overallData %>%
+      filter(System == systemName) %>%
+      as_tibble()
+    
+    # Identify unique animals in the system
+    mouse_names <- unique(systemData$AnimalID)
+    system_complete <- length(mouse_names) >= 4
+    
+    # Pad with NA if the system is incomplete
+    while (length(mouse_names) < 4) {
+      mouse_names <- append(mouse_names, NA)
+    }
+    
+    # Loop through each phase
+    for (phase in phases) {
+      print(phase)
+      
+      # Handle special case for `CC4`
+      if (cageChange == "CC4") {
+        active_phases_number <- c(1, 2)
+        inactive_phases_number <- c(2)
+      } else {
+        active_phases_number <- c(1, 2, 3)
+        inactive_phases_number <- c(1, 2)
+      }
+      
+      number_of_phases <- ifelse(phase == "Active", active_phases_number, inactive_phases_number)
+      print(number_of_phases)
+      
+      # Loop through each phase number
+      for (nr in number_of_phases) {
+        print(paste0(batch, ", System: ", systemName, ", ", cageChange, ", ", phase, " phase nr: ", nr))
+        
+        # Filter data for the current phase
+        systemPhaseData <- systemData %>%
+          filter(ConsecActive == ifelse(phase == "Active", nr, 0)) %>%
+          filter(ConsecInactive == ifelse(phase == "Inactive", nr, 0)) %>%
+          as_tibble()
+        
+        # Initialize data structures
+        mice_list <- initialize_mice_list(mouse_names)
+        cage_prob_list <- initialize_cage_prob_list()
+        mice_prob_tibble <- initialize_mice_prob_tibble(mouse_names)
+        
+        # While loop through the systemPhaseData rows
+        mice_list <- process_rows(systemPhaseData, mice_list, cage_prob_list, mice_prob_tibble, system_complete)
+        
+        # Calculate probabilities and entropy
+        cagePosProb <- update_cage_probs(cage_prob_list, cagePosProb, batch, systemName, cageChange, phase, nr)
+        cagePosEntropy <- calculate_cage_entropy(cagePosProb, cagePosEntropy, batch, systemName, cageChange, phase, nr, sex)
+        mousePosEntropy <- calculate_mouse_entropy(mice_prob_tibble, mousePosEntropy, batch, systemName, cageChange, phase, nr, mouse_names, sex)
+      }
+    }
+  }
+  
+  # Return all results
+  list(
+    cagePosProb = cagePosProb,
+    cagePosEntropy = cagePosEntropy,
+    mousePosEntropy = mousePosEntropy
+  )
+}
+
+########### Support function to initialise mouse list ###########
+initialize_mice_list <- function(mouse_names) {
+  list(
+    mouseOne = list(name = "", time = "", position = 0),
+    mouseTwo = list(name = "", time = "", position = 0),
+    mouseThree = list(name = "", time = "", position = 0),
+    mouseFour = list(name = "", time = "", position = 0),
+    tempData = list(secTemp = 0, lineTemp = 0)
+  )
+}
+
+########### Support function to initialise cage probability list ###########
+initialize_cage_prob_list <- function() {
+  lapply(1:8, function(i) c(i, 0, 0, 0))
+}
+
+########### Support function to initialise mice probability tibble ###########
+initialize_mice_prob_tibble <- function(mouse_names) {
+  tibble(
+    AnimalID = rep(mouse_names, each = 8),
+    Position = rep(1:8, length.out = 32),
+    Seconds = 0,
+    SumPercentage = 0,
+    Prob = 0
+  )
+}
+
+########### Support function to process rows of data ###########
+process_rows <- function(systemPhaseData, mice_list, cage_prob_list, mice_prob_tibble, system_complete) {
+  timeTemp <- mice_list[[1]][["time"]]
+  lineTemp <- 5
+  theEnd <- nrow(systemPhaseData) + 1
+  
+  while (lineTemp < theEnd) {
+    old_mice_list <- mice_list
+    mice_list <- update_mice_list(mouse_names, mice_list, systemPhaseData, timeTemp, lineTemp)
+    secTemp <- mice_list[["tempData"]][["secTemp"]]
+    
+    if (system_complete) {
+      cage_prob_list <- check_cage_prob(old_mice_list, mice_list, cage_prob_list, secTemp)
+    }
+    mice_prob_tibble <- check_mice_prob(old_mice_list, mice_list, mice_prob_tibble, secTemp)
+    lineTemp <- mice_list[["tempData"]][["lineTemp"]]
+    timeTemp <- mice_list[[1]][["time"]]
+  }
+  
+  mice_list
+}
+
 ## Preprocessing
 # Define function to preprocess a single file
 preprocess_file <- function(batch, cageChange, exclAnimals) {
@@ -64,19 +203,52 @@ preprocess_file <- function(batch, cageChange, exclAnimals) {
 # output: Position Id
 # effect: finds corresponding PositionID from two coordinates(x_Pos, y_pos) in lookup_tibble and returns ID 
 
+#' Find Position ID based on x and y coordinates
+#'
+#' This function standardizes animal positions by converting non-standard 
+#' positions into a predefined standard format and then looks up the 
+#' corresponding Position ID from a provided lookup table.
+#'
+#' @param x_Pos Numeric value representing the x-coordinate of the position.
+#' @param y_Pos Numeric value representing the y-coordinate of the position.
+#' @param lookup_tibble A tibble containing the lookup table with columns 
+#'        `xPos`, `yPos`, and `PositionID`.
+#'
+#' @return The Position ID corresponding to the standardized x and y coordinates.
+#'         If no match is found, the function returns NA.
+#'
+#' @details The function first standardizes the x and y coordinates:
+#'          - y_Pos is set to 0 if it is less than 116, otherwise it is set to 116.
+#'          - x_Pos is set to 0 if it is less than 100, 100 if it is between 100 and 199,
+#'            200 if it is between 200 and 299, and 300 if it is 300 or greater.
+#'          The function then searches for the standardized position in the lookup table.
+#'          If a match is found, the corresponding Position ID is returned.
+#'          If no match is found, the function prints the standardized coordinates and 
+#'          returns NA.
+#'
+#' @examples
+#' # Example usage:
+#' lookup_tibble <- tibble::tibble(
+#'   xPos = c(0, 100, 200, 300),
+#'   yPos = c(0, 116),
+#'   PositionID = 1:4
+#' )
+#' find_id(150, 120, lookup_tibble)
+#'
+#' @export
 find_id <- function(x_Pos, y_Pos, lookup_tibble) {
   
-  #give non-standard positions a standard position
+  # This script contains functions to standardize animal positions.
+  # It converts non-standard positions into a predefined standard format.
   # y value
   if(y_Pos<116){y_Pos <- 0}
   else if(y_Pos>=116){y_Pos <- 116}
   
-  # x value
+  # X value
   if(x_Pos<100){x_Pos <- 0}
   else if(x_Pos<200){x_Pos <- 100}
   else if(x_Pos<300){x_Pos <- 200}
   else if(x_Pos>=300){x_Pos <- 300}
-  
   
   # search position in lookup table
   result <- lookup_tibble %>%
