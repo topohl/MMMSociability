@@ -166,32 +166,32 @@ for (batch in batches) {
         filter(System==system_id) %>%
         as_tibble()
       
-      # Define mouse names of the system
+      # Define the animal IDs for the current system
       animal_ids <- unique(systemData$AnimalID)
       
-      # Define boolean value for completeness of current system
+      # Define if the system is complete (contains all 4 animals)
       system_complete <- length(animal_ids) >= 4
       
-      # Fill vector with NAs if incomplete system (we need 4 values in vector)
+      # Fill the animal_ids vector with NA values if the system is incomplete
       while (length(animal_ids) < 4) {
         animal_ids <- append(animal_ids, NA)
       }
       
-      # Add the animal ids for this system to the tibble
+      # Add the animal IDs to the system_animal_ids tibble
       system_animal_ids[[system_id]] <- c(animal_ids)
       
-      ## FOR LOOP ## (difference between 2 phases)
+      # Iterate through each phase (Active and Inactive) for the current system.
       for (phase in phases) {        
         # Determine the number of phases based on the current phase (Active or Inactive)
         ifelse (phase == "Active", number_of_phases <- active_phases_number, number_of_phases <- inactive_phases_number)
         
-        ## FOR LOOP ## (difference between the existing number of phases)
+        # Iterate through each phase number for the current phase (Active or Inactive)
         for (phase_number in number_of_phases) {
           print (paste0("System: ", system_id, ", ", phase, " phase number: ", phase_number))
           
-          # Filter system data to the actual phase
+          # Filter the system data to include only the current phase
           systemPhaseData <- systemData %>%
-            filter(ConsecActive == ifelse(phase == "Active", phase_number, 0)) %>%   #depending on phase the special number of the phase has to be selected
+            filter(ConsecActive == ifelse(phase == "Active", phase_number, 0)) %>%
             filter(ConsecInactive == ifelse(phase == "Inactive", phase_number, 0)) %>%
             as_tibble()
 
@@ -200,15 +200,18 @@ for (batch in batches) {
           # --------------------
           # Initialize lists for storing the results of the analysis
 
-          # Initialize lists for storing the initial state of each mouse in the system.
-          # Each list contains the mouse's name, start time, and start position.
+          # Initialize individual animal state lists for tracking each animal's initial attributes.
+          # Each list contains the animal's name, start time, and start position.
           animal_1 <- list(name = "", time = "", position = 0)
           animal_2 <- list(name = "", time = "", position = 0)
           animal_3 <- list(name = "", time = "", position = 0)
           animal_4 <- list(name = "", time = "", position = 0)
+          
+          # Temporary data holder for time difference and line number in the analysis.
           data_temp <- list(secTemp = 0, lineTemp = 0)
           
-          # combine them to a list of lists
+          # Consolidate individual animal states into a master animal list, 
+          # including temporary data for use during analysis.
           animal_list <- list(
             "animal_1" = animal_1,
             "animal_2" = animal_2,
@@ -216,36 +219,30 @@ for (batch in batches) {
             "animal_4" = animal_4,
             "data_temp" = data_temp)
           
-          # Initialize the result list for proximity analysis.
-          # m1 on the third int means number of seconds together from m1 and m3
+          # Initialize proximity count list to store the number of seconds each pair of animals 
+          # spent in proximity. Example: `m1[3]` represents seconds in proximity for animal 1 and animal 3.
           count_proximity_list <- list(
             m1 = c(0,0,0,0),
             m2 = c(0,0,0,0),
             m3 = c(0,0,0,0),
             m4 = c(0,0,0,0))
 
-          # Initialize the result list for position analysis.
-          # c(positionID, number of seconds in position)
+          # Initialize position count list to track the total time spent in each position.
+          # Each entry consists of a position ID and the cumulative number of seconds spent there.
           count_position_list <- list(
-            c(1, 0), 
-            c(2, 0), 
-            c(3, 0), 
-            c(4, 0), 
-            c(5, 0), 
-            c(6, 0), 
-            c(7, 0), 
-            c(8, 0))
+            c(1, 0), c(2, 0), c(3, 0), c(4, 0), 
+            c(5, 0), c(6, 0), c(7, 0), c(8, 0))
           
-          # Initialize the result list for total proximity analysis.
-          # c(name, total seconds in proximity)
+          # Initialize the total proximity list to track the cumulative time each animal spent in proximity.
+          # Each entry consists of the animal's name and the total seconds spent in proximity.
           total_proximity_list <- list(
             c(animal_ids[1], 0), 
             c(animal_ids[2], 0),
             c(animal_ids[3], 0),
             c(animal_ids[4], 0))
           
-          #initialize movement list
-          #c(name, number of movements in phase)
+          # Initialize movement count list to track the number of movements for each animal 
+          # within the current phase, including a count for the system itself.
           count_movement_list <- list(
             c(animal_ids[1], 0), 
             c(animal_ids[2], 0),
@@ -295,24 +292,52 @@ for (batch in batches) {
             secTemp <- animal_list[["data_temp"]][["secTemp"]]
             
             ##################################################################################################
-            ## use ANALYSIS FUNCTIONS to update result lists ##
-            
-            ## social proximity between each mouse
-            if (system_complete) {
-              count_proximity_list <- compute_proximity(old_animal_list, animal_list, count_proximity_list, secTemp)
-            }
-            
-            ## usage of cage locations
-            count_position_list <- compute_position(old_animal_list, animal_list, count_position_list, secTemp)
-            
-            ## total social proximity of one individual mouse
-            if (system_complete) {
-              total_proximity_list <- compute_total_proximity(old_animal_list, animal_list, total_proximity_list, secTemp)
-            }
-            
-            ## number of coil crossings for each individual mouse
-            count_movement_list <- compute_movement(old_animal_list, animal_list, count_movement_list, secTemp)
+            # Use analysis functions to update the result lists
+            # These functions process the system data to compute social proximity, cage location usage, 
+            # total proximity per mouse, and movement counts. Results are stored in dedicated lists.
             ##################################################################################################
+
+            # Update the social proximity data between each pair of mice.
+            # This function calculates the time mice spend in proximity to each other and updates the list.
+            if (system_complete) {
+              count_proximity_list <- compute_proximity(
+                old_animal_list,  # The state of animals from the previous time step
+                animal_list,      # The current state of animals
+                count_proximity_list,  # List storing proximity counts for each pair of mice
+                secTemp           # Time difference in seconds between the current and previous state
+              )
+            }
+
+            # Update the usage of cage locations.
+            # This function tracks how much time each mouse spends in different cage positions.
+            count_position_list <- compute_position(
+              old_animal_list,  # The state of animals from the previous time step
+              animal_list,      # The current state of animals
+              count_position_list,  # List storing position counts for each cage location
+              secTemp           # Time difference in seconds between the current and previous state
+            )
+
+            # Update the total social proximity for each mouse.
+            # This function aggregates the total time each mouse spends in proximity to others.
+            if (system_complete) {
+              total_proximity_list <- compute_total_proximity(
+                old_animal_list,  # The state of animals from the previous time step
+                animal_list,      # The current state of animals
+                total_proximity_list,  # List storing total proximity counts for each mouse
+                secTemp           # Time difference in seconds between the current and previous state
+              )
+            }
+
+            # Update the movement count for each mouse.
+            # This function calculates the number of coil crossings performed by each mouse.
+            count_movement_list <- compute_movement(
+              old_animal_list,  # The state of animals from the previous time step
+              animal_list,      # The current state of animals
+              count_movement_list,  # List storing movement counts for each mouse
+              secTemp           # Time difference in seconds between the current and previous state
+            )
+            ##################################################################################################
+
 
             #update lineTemp
             lineTemp <- animal_list[["data_temp"]][["lineTemp"]]
@@ -425,45 +450,71 @@ for (batch in batches) {
     # The plots and tables are saved for each batch and cage change.
     # The process is repeated for each batch and cage change.
        
-    # Generate and save plots
+    # Generate and save plots if the `save_plots` flag is set to TRUE.
     if (save_plots == TRUE) {
-      message ("save plots")
+      message("Saving plots...")
       
-      ###total_proximity###
+      # Save total proximity plots.
+      # Each plot corresponds to a system's total proximity data.
       for (i in seq_along(all_plots_total_proximity)) {
-        print (i)
-        ggsave (filename = paste0(saving_directory, plots_directory, "/total_proximity","_", batch, "_", cageChange, "_sys.",  i, ".svg"), 
-                            plot = all_plots_total_proximity[[i]], 
-                            width = 5, height = 2)  
+        print(i)  # Log the plot index being saved.
+        ggsave(
+          filename = paste0(
+            saving_directory, plots_directory, "/total_proximity_", batch, "_", cageChange, "_sys.", i, ".svg"),
+          plot = all_plots_total_proximity[[i]],
+          width = 5,
+          height = 2
+        )
       }
       
-      # Iterate over each element in the 'allHeatmaps_proximity' list.
-      # This loop processes every system's heatmap for proximity analysis.
+      # Save heatmaps for proximity and position analysis.
+      # Iterate through each system's heatmap in the `allHeatmaps_proximity` and `allHeatmaps_positions` lists.
       for (i in seq_along(allHeatmaps_proximity)) {
-        print (i)
+        print(i)  # Log the heatmap index being processed.
         
-        # Extract the system substring from the title
-        title <- allHeatmaps_proximity[[i]][[1]]$labels$title        
-        # Extract the system substring from the title
-        pattern <- "sys.."
-        system_substring <- (ifelse((match <- regexec(pattern, title))[[1]][1] > 0, regmatches(title, match)[[1]], "Pattern not found."))
+        # Extract the system identifier from the title of the proximity heatmap.
+        title <- allHeatmaps_proximity[[i]][[1]]$labels$title
+        pattern <- "sys.."  # Define the pattern to identify the system substring.
+        system_substring <- ifelse(
+          (match <- regexec(pattern, title))[[1]][1] > 0,
+          regmatches(title, match)[[1]],
+          "Pattern not found."
+        )
         
-        # Heatmaps for proximity
-        ggsave (filename = paste0(saving_directory, plots_directory, "/allHeatmaps_proximity_", batch, "_", cageChange, "_", system_substring, ".svg"), 
-                            plot = gridExtra::arrangeGrob(grobs = allHeatmaps_proximity[[i]],
-                            ncol = 2,
-                            layout_matrix = rbind(c(1, 5), c(2, 6), c(3, 7), c(4, 8), c(NA, 9))),
-                            width = 12, height = 8)  
-
-        # Heatmaps for positions
-        title <- allHeatmaps_positions[[i]][[1]]$labels$title 
-        system_substring <- (ifelse((match <- regexec(pattern, title))[[1]][1] > 0, regmatches(title, match)[[1]], "Pattern not found."))
-        ggsave (filename = paste0(saving_directory, plots_directory, "/allHeatmaps_positions_", batch, "_", cageChange, "_", system_substring, ".svg"), 
-                            plot = gridExtra::arrangeGrob(grobs = allHeatmaps_positions[[i]], 
-                            ncol = 2, layout_matrix = rbind(c(1, 5), c(2, 6), c(3, 7), c(4, 8), c(NA, 9))), 
-                            width = 12, height = 8)  
+        # Save heatmap for proximity analysis.
+        ggsave(
+          filename = paste0(
+            saving_directory, plots_directory, "/allHeatmaps_proximity_", batch, "_", cageChange, "_", system_substring, ".svg"),
+          plot = gridExtra::arrangeGrob(
+            grobs = allHeatmaps_proximity[[i]],
+            ncol = 2,
+            layout_matrix = rbind(c(1, 5), c(2, 6), c(3, 7), c(4, 8), c(NA, 9))),
+          width = 12,
+          height = 8
+        )
+        
+        # Extract the system identifier from the title of the position heatmap.
+        title <- allHeatmaps_positions[[i]][[1]]$labels$title
+        system_substring <- ifelse(
+          (match <- regexec(pattern, title))[[1]][1] > 0,
+          regmatches(title, match)[[1]],
+          "Pattern not found."
+        )
+        
+        # Save heatmap for position analysis.
+        ggsave(
+          filename = paste0(
+            saving_directory, plots_directory, "/allHeatmaps_positions_", batch, "_", cageChange, "_", system_substring, ".svg"),
+          plot = gridExtra::arrangeGrob(
+            grobs = allHeatmaps_positions[[i]],
+            ncol = 2,
+            layout_matrix = rbind(c(1, 5), c(2, 6), c(3, 7), c(4, 8), c(NA, 9))),
+          width = 12,
+          height = 8
+        )
       }
     }
+
     
     # Save tables
     if (save_tables==TRUE) {
@@ -480,8 +531,7 @@ for (batch in batches) {
 }
 
 ############### show plots in R ########################################################################
-if (show_plots == TRUE) {
-  message ("show Plots")
+if (show_plots == TRUE) {  
   # Create a grid of the total proximity plots
   gridExtra::grid.arrange(grobs = all_plots_total_proximity, ncol = 2)
   
@@ -489,8 +539,6 @@ if (show_plots == TRUE) {
   for (batch in seq_along(allHeatmaps_positions)) {
     for (cc in seq_along(allHeatmaps_positions[[batch]])) {
       for (sys in seq_along(allHeatmaps_positions[[batch]][[cc]])) {
-        print (paste(sys))
-        
         if (cc != "CC4") {
           gridExtra::grid.arrange(grobs = allHeatmaps_positions[[batch]][[cc]][[sys]], ncol = 2, layout_matrix = rbind(c(1, 8), c(2, 5), c(3, 6), c(4, 7)))
         } else {
