@@ -1,18 +1,94 @@
-## 11/2023
-## Anja Magister
-## ANALYSIS OF ANIMAL POSITIONS - ANALYZING ##
-##
-## NEEDED FILE STRUCTURE IN WORKING DIRECTORY
-## - There must be a folder called "preprocessed_data" in which our preprocessed data is located from the previous code.
-## - There must be a folder called "plots", because the results are saved in this folder (if save_plots == TRUE).
-##
-## CUSTOMIZABLE VARIABLES:
-## - show_plots: Do you want to see the plots in R?
-## - save_plots: Do you want the generated plots to be saved?
-## - save_tables: Do you want the generated tables to be saved?
-## - working_directory: Choose your current directory.
-## - saving_directory: Directory where plots and tables will be saved.
-## - batches and cageChanges: Define the batches and cage changes to process.
+#' @title Analysis of Animal Positions and Proximity
+#' @description This script analyzes the positions and proximity of animals in different systems (cages) over various phases (Active and Inactive). 
+#' It processes preprocessed data files, generates heatmaps and plots for social proximity and positions, and saves the results.
+#' The script iterates through batches and cage changes, performing the following steps:
+#' 1. Load necessary libraries and set customizable variables.
+#' 2. Define paths and source custom functions.
+#' 3. Initialize result lists for heatmaps and plots.
+#' 4. Iterate through each batch and cage change:
+#'    a. Read the preprocessed data file.
+#'    b. Define unique systems, days, phases, and animal IDs.
+#'    c. Initialize result tibbles for proximity and movement.
+#'    d. Iterate through each system:
+#'       i. Filter data for the current system.
+#'       ii. Initialize variables and lists for analysis.
+#'       iii. Iterate through each phase (Active and Inactive):
+#'            - Filter data for the current phase.
+#'            - Initialize variables for analysis.
+#'            - Perform calculations for proximity, positions, and movements.
+#'            - Generate heatmaps for proximity and positions.
+#'            - Update result tibbles with proximity and movement data.
+#'       iv. Generate total proximity plots.
+#'       v. Save heatmaps in general lists.
+#'    e. Save plots and tables if specified.
+#' 5. Optionally, display plots in R.
+#'
+#' @details
+#' The script requires a specific file structure in the working directory:
+#' - A folder called "preprocessed_data" containing the preprocessed data files.
+#' - A folder called "plots" for saving the generated plots (if save_plots == TRUE).
+#'
+#' Customizable variables include:
+#' - show_plots: Boolean to display plots in R.
+#' - save_plots: Boolean to save the generated plots.
+#' - save_tables: Boolean to save the generated tables.
+#' - working_directory: Path to the current working directory.
+#' - saving_directory: Path to the directory where plots and tables will be saved.
+#' - batches: Vector of batch identifiers to process.
+#' - cageChanges: Vector of cage change identifiers to process.
+#'
+#' @param show_plots Boolean to display plots in R.
+#' @param save_plots Boolean to save the generated plots.
+#' @param save_tables Boolean to save the generated tables.
+#' @param working_directory Path to the current working directory.
+#' @param saving_directory Path to the directory where plots and tables will be saved.
+#' @param batches Vector of batch identifiers to process.
+#' @param cageChanges Vector of cage change identifiers to process.
+#' @param processed_data Data frame containing the preprocessed data.
+#' @param uniqueSystems Vector of unique system identifiers.
+#' @param days Vector of unique days.
+#' @param phases Vector of phases ("Active" and "Inactive").
+#' @param animal_ids Vector of unique animal IDs.
+#' @param systemData Data frame filtered for the current system.
+#' @param systemPhaseData Data frame filtered for the current phase.
+#' @param animal_list List containing the current state of animals.
+#' @param count_proximity_list List storing proximity counts for each pair of mice.
+#' @param count_position_list List storing position counts for each cage location.
+#' @param total_proximity_list List storing total proximity counts for each mouse.
+#' @param count_movement_list List storing movement counts for each mouse.
+#' @param result_total_proximity Tibble to store total proximity results.
+#' @param result_total_movement Tibble to store total movement results.
+#' @param systemHeatmaps_proximity List to store heatmaps for the current system's social proximity.
+#' @param systemHeatmaps_positions List to store heatmaps for the current system's positions.
+#' @param allHeatmaps_proximity List to store all social proximity heatmaps.
+#' @param allHeatmaps_positions List to store all position heatmaps.
+#' @param all_plots_total_proximity List to store all total proximity plots.
+#' @param system_animal_ids Tibble storing which mouse is in which system for each cage change.
+#' @param filename String representing the current CSV filename.
+#' @param csvFilePath String representing the path of the current CSV file.
+#' @param active_phases_number Vector of unique active phase numbers.
+#' @param inactive_phases_number Vector of unique inactive phase numbers.
+#' @param phases_column Vector of phases in the correct chronological order.
+#' @param system_complete Boolean indicating if the system data is complete.
+#' @param timeTemp Temporary variable for time.
+#' @param lineTemp Temporary variable for line number.
+#' @param secTemp Temporary variable for time difference in seconds.
+#' @param lastRow Integer representing the last row number in the data.
+#' @param old_animal_list List containing the previous state of animals.
+#' @param heatmap_proximity Heatmap for social proximity.
+#' @param heatmap_positions Heatmap for positions.
+#' @param plot_total_proximity Plot for total proximity.
+#' @param p String representing the current phase identifier.
+#' @param row Integer representing the row number in the result tibble.
+#' @param mouse String representing the current mouse.
+#' @param title String representing the title of the heatmap.
+#' @param pattern String representing the pattern to identify the system substring.
+#' @param system_substring String representing the system substring.
+#' @param batch String representing the current batch identifier.
+#' @param cageChange String representing the current cage change identifier.
+#' @param system_id String representing the current system identifier.
+#' @param phase String representing the current phase.
+#' @param phase_number Integer representing the current phase number.
 
 # Load necessary libraries
 if (!require("pacman")) install.packages("pacman")
@@ -278,7 +354,53 @@ for (batch in batches) {
           # The loop will run until the last row of the dataset is processed.
           lastRow <- nrow(systemPhaseData) + 1
 
-          ## WHILE LOOP ## (goes through the rows of current systemPhaseData)
+          #' @description This script iterates through system data to update the animal list and perform various analyses, including social proximity, cage location usage, total proximity per mouse, and movement counts. The results are stored in dedicated lists and used to generate heatmaps and plots.
+          #'
+          #' @details
+          #' 1. Iterate through the system data to update the animal list and perform the analysis.
+          #' 2. Create a copy of the previous state of the animal list to compare with the updated list.
+          #' 3. Update the animal_list with new positions and times from the next row of systemPhaseData.
+          #' 4. Update the time difference between the current and previous entries.
+          #' 5. Use analysis functions to update the result lists:
+          #'    - Compute social proximity between each pair of mice.
+          #'    - Track the usage of cage locations.
+          #'    - Aggregate the total social proximity for each mouse.
+          #'    - Calculate the movement count for each mouse.
+          #' 6. Update lineTemp and timeTemp for the next iteration.
+          #' 7. Print results if needed.
+          #' 8. Generate heatmaps for social proximity and positions.
+          #' 9. Save heatmaps in specific system lists.
+          #' 10. Integrate total proximity data into the result tibble.
+          #' 11. Integrate movement data into the result tibble.
+          #' 12. Generate total proximity plot for each system.
+          #' 13. Save all heatmaps from one system in the general list.
+          #' 14. Clear the current system's lists for the next iteration.
+          #'
+          #' @param animal_ids List of animal IDs.
+          #' @param animal_list List containing the current state of animals.
+          #' @param systemPhaseData Data frame containing system phase data.
+          #' @param timeTemp Temporary variable for time.
+          #' @param lineTemp Temporary variable for line number.
+          #' @param lastRow The last row number in the data.
+          #' @param system_complete Boolean indicating if the system data is complete.
+          #' @param count_proximity_list List storing proximity counts for each pair of mice.
+          #' @param count_position_list List storing position counts for each cage location.
+          #' @param total_proximity_list List storing total proximity counts for each mouse.
+          #' @param count_movement_list List storing movement counts for each mouse.
+          #' @param batch Batch identifier.
+          #' @param cageChange Cage change identifier.
+          #' @param system_id System identifier.
+          #' @param phase Current phase.
+          #' @param phase_number Current phase number.
+          #' @param result_total_proximity Tibble to store total proximity results.
+          #' @param result_total_movement Tibble to store total movement results.
+          #' @param all_plots_total_proximity List to store all total proximity plots.
+          #' @param allHeatmaps_proximity List to store all social proximity heatmaps.
+          #' @param allHeatmaps_positions List to store all position heatmaps.
+          #' @param systemHeatmaps_proximity List to store heatmaps for the current system's social proximity.
+          #' @param systemHeatmaps_positions List to store heatmaps for the current system's positions.
+          # Iterate through the system data to update the animal list and perform the analysis.
+
           while (lineTemp != lastRow && lineTemp < lastRow) {
             
             # Create a copy of the previous state of the animal list 
