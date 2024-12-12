@@ -133,12 +133,11 @@ for (batch in batches) {
     # Read csv file in tibble
     processed_data <- as_tibble(read_delim(csvFilePath,delim = ",", show_col_types = FALSE))
     
-    #convert dateTime from utc to utc+1 (Berlin)?
+    # Note: The data in "processed_data" has already been preprocessed in another script.
     
-    ################################################################################################################################
-    ## given data "processed_data" has already been processed in other file ##
-    ################################################################################################################################
-    ## DEFINITIONS ##
+    # ---------------------------------------------------
+    # Define unique systems, days, phases, and animal IDs
+    # ---------------------------------------------------
     
     # Define unique systems
     uniqueSystems <- unique(processed_data$System)
@@ -233,7 +232,7 @@ for (batch in batches) {
     # Iterate through each system (representing different mouse cages).
     # There are 4 experimental systems and 1 control system.
     
-    ## FOR LOOP ## (goes through every of the 5 systems)
+    # Iterate through each system
     for (system_id in uniqueSystems) {
       
       print (system_id)
@@ -458,16 +457,17 @@ for (batch in batches) {
               count_movement_list,  # List storing movement counts for each mouse
               secTemp           # Time difference in seconds between the current and previous state
             )
-            ##################################################################################################
 
-
-            #update lineTemp
+            # Update lineTemp and timeTemp for the next iteration
+            # These variables control the loop progression and are updated based on the current data row.
             lineTemp <- animal_list[["data_temp"]][["lineTemp"]]
-            #update timeTemp
             timeTemp <- animal_list[[1]][[2]]
           }
           
-          ## RESULTS ##
+          # --------------------
+          # PRINT RESULTS
+          # --------------------
+
           if (FALSE) {
           message ("results: ")
           message ("count_proximity_list")
@@ -485,15 +485,17 @@ for (batch in batches) {
           if (system_complete) {
             heatmap_proximity <- generateHeatMapproximity(count_proximity_list, batch, cageChange, system_id, animal_ids, phase, phase_number)
           }
+
           # Positions
           heatmap_positions <- generateHeatMapPositions(count_position_list, batch, cageChange, system_id, phase, phase_number)
           #print (heatmap_positions)
           
-          #save heatmaps in specific system list
+          # Add the generated heatmaps to the system lists
           # Social Proximity
           if (system_complete) {
             systemHeatmaps_proximity <- c(systemHeatmaps_proximity, list(heatmap_proximity))
           }
+
           # Positions
           systemHeatmaps_positions <- c(systemHeatmaps_positions, list(heatmap_positions))
           
@@ -652,11 +654,13 @@ for (batch in batches) {
   }
 }
 
-############### show plots in R ########################################################################
+# ----------------------------
+# Display plots in R
+# ----------------------------
+
 if (show_plots == TRUE) {  
   # Create a grid of the total proximity plots
   gridExtra::grid.arrange(grobs = all_plots_total_proximity, ncol = 2)
-  
   # Create a grid of the Heatmaps of each system for each analysis
   for (batch in seq_along(allHeatmaps_positions)) {
     for (cc in seq_along(allHeatmaps_positions[[batch]])) {
