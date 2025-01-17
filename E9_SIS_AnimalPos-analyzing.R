@@ -40,6 +40,7 @@
 #' @param show_plots Boolean to display plots in R.
 #' @param save_plots Boolean to save the generated plots.
 #' @param save_tables Boolean to save the generated tables.
+#' @param excludeHomecage Boolean to exclude the homecage position from the analysis.
 #' @param working_directory Path to the current working directory.
 #' @param saving_directory Path to the directory where plots and tables will be saved.
 #' @param batches Vector of batch identifiers to process.
@@ -98,12 +99,22 @@ pacman::p_load(readr, dplyr, lubridate, tibble, purrr, ggplot2, reshape2, scales
 show_plots = FALSE
 save_plots = FALSE
 save_tables = TRUE
+excludeHomecage = TRUE
 
 # Paths
 working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
 saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-plots_directory <- "/plots"
-tables_directory <- "/tables"
+plots_directory <- "/plots/noHomeCage"
+tables_directory <- "/tables/noHomeCage"
+
+# Create directories if they don't exist
+if (!dir.exists(paste0(saving_directory, plots_directory))) {
+  dir.create(paste0(saving_directory, plots_directory), recursive = TRUE)
+}
+
+if (!dir.exists(paste0(saving_directory, tables_directory))) {
+  dir.create(paste0(saving_directory, tables_directory), recursive = TRUE)
+}
 
 # Source custom functions
 source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-functions.R"))
@@ -112,16 +123,15 @@ source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")  # Add more batches if needed
 cageChanges <- c("CC1", "CC2", "CC3", "CC4")  # Add more cage changes if needed
 
-#initialize result heatmap lists
-#allHeatmaps <- list()
+# Initialize result lists for heatmaps and plots
 allHeatmaps_proximity <- list()
 allHeatmaps_positions <- list()
 
-# for total proximity plots
+# Initialize result tibbles for proximity and movement
 all_plots_total_proximity <- list()
 
+# Iterate through each batch and cage change
 for (batch in batches) {
-  
   for (cageChange in cageChanges) {
     print (paste(batch, cageChange))
     
@@ -157,22 +167,30 @@ for (batch in batches) {
     # This is done to exclude the first and last phases as they are incomplete
     # Remove the phase numbers 0, 1, and the maximum phase number from the inactive phases
     active_phases_number <- active_phases_number[! active_phases_number %in% 0]
-    inactive_phases_number <- inactive_phases_number[! inactive_phases_number %in% c(0,1,max(inactive_phases_number))]
+    inactive_phases_number <- inactive_phases_number[! inactive_phases_number %in% c(0, 1, max(inactive_phases_number))]
     
     # Define Animal IDs
     animal_ids <- unique(processed_data$AnimalID)
     
-    # ----------------------------
-    # INITIALIZE RESULT LISTS
-    # ----------------------------
-    # Description: This script generates a list of heatmaps for each system.
-    # The heatmaps are generated for each phase and each batch.
-    # The heatmaps are then saved in a list for each system.
-    # The list is then saved in a general list for all systems.
-    # The general list is then used to generate a grid of heatmaps for all systems.
-    # The grid of heatmaps is then saved as a single image.
-    # The process is repeated for each batch and cage change.
-
+    #' Initialize and Organize Result Lists
+    #'
+    #' @description
+    #' This section handles the generation and organization of heatmaps across systems, 
+    #' phases, and batches, ensuring structured visualization and storage.
+    #'
+    #' @details
+    #' - Heatmaps are generated for each system, with segmentation based on phase and batch.
+    #' - Each system-specific heatmap is stored in a dedicated list for modular organization.
+    #' - All individual system lists are combined into a master list for holistic management.
+    #' - The master list is used to produce a comprehensive grid of heatmaps spanning all systems.
+    #' - The final heatmap grid is exported as a single image file for visualization purposes.
+    #' - This process is iterated for every batch and cage change to ensure complete coverage.
+    #'
+    #' @note
+    #' Ensure proper input data structure for accurate heatmap generation and alignment.
+    #'
+    #' @output
+    #' A consolidated grid of heatmaps saved as an image and organized result lists for further analysis.
     systemHeatmaps_proximity <- list()
     systemHeatmaps_positions <- list()
 
@@ -270,87 +288,176 @@ for (batch in batches) {
             filter(ConsecInactive == ifelse(phase == "Inactive", phase_number, 0)) %>%
             as_tibble()
 
-          # --------------------
-          # INITIALIZE VARIABLES
-          # --------------------
-          # Initialize lists for storing the results of the analysis
-
-          # Initialize individual animal state lists for tracking each animal's initial attributes.
-          # Each list contains the animal's name, start time, and start position.
+          #' Initialize Variables for Analysis
+          #'
+          #' @description
+          #' Sets up the data structures and variables required for analyzing animal behavior 
+          #' and proximity. This includes initializing lists to track individual animal states, 
+          #' proximity counts, position counts, and movement counts.
+          #'
+          #' @details
+          #' - **Animal State Initialization:**  
+          #'   - Individual animal states are represented as lists containing the animal's name, 
+          #'     start time, and start position.  
+          #'   - These are consolidated into a master list (`animal_list`) along with temporary 
+          #'     data for time difference and line number tracking.  
+          #' - **Proximity Tracking:**  
+          #'   - `count_proximity_list` records the cumulative seconds each pair of animals spent in proximity.  
+          #'   - `total_proximity_list` tracks the total time each animal spent in proximity across all phases.  
+          #' - **Position Tracking:**  
+          #'   - `count_position_list` maintains a cumulative count of seconds spent at each position.  
+          #'   - Positions can be dynamically adjusted by adding or removing entries for specific IDs.  
+          #' - **Movement Tracking:**  
+          #'   - `count_movement_list` logs the number of movements for each animal, including 
+          #'     system-wide movements.
+          #'
+          #' @param animal_ids Vector. Unique identifiers for the animals being analyzed.
+          #' @param system_id String. Identifier for the system under analysis.
+          #'
+          #' @return
+          #' A set of initialized lists:
+          #' - `animal_list`: Tracks the state of each animal and temporary analysis data.
+          #' - `count_proximity_list`: Tracks seconds of proximity for each animal pair.
+          #' - `count_position_list`: Tracks cumulative time at each position.
+          #' - `total_proximity_list`: Tracks total proximity time for each animal.
+          #' - `count_movement_list`: Tracks movement counts for each animal and system.
+          #'
+          #' @note
+          #' Ensure that `animal_ids` contains at least four unique identifiers and that `system_id` 
+          #' is appropriately defined before initializing variables.
+          #'
+          #' @examples
+          #' # Initialize lists:
+          #' animal_1 <- list(name = "", time = "", position = 0)
+          #' animal_1 <- list(name = "", time = "", position = 0)
+          #' animal_1 <- list(name = "", time = "", position = 0)
+          #' animal_1 <- list(name = "", time = "", position = 0)
+          #' 
+          #' # Temporary data holder for time difference and line number in the analysis.
+          #' data_temp <- list(secTemp = 0, lineTemp = 0)
+          #' 
+          #' animal_list <- list(
+          #'   "animal_1" = animal_1,
+          #'   "animal_2" = animal_2,
+          #'   "animal_3" = animal_3,
+          #'   "animal_4" = animal_4,
+          #'   "data_temp" = data_temp
+          #' )
+          #' count_proximity_list <- list(
+          #'   m1 = c(0, 0, 0, 0),
+          #'   m2 = c(0, 0, 0, 0),
+          #'   m3 = c(0, 0, 0, 0),
+          #'   m4 = c(0, 0, 0, 0)
+          #' )
+          #' count_position_list <- list(
+          #'   c(1, 0), c(2, 0), c(3, 0), c(4, 0), 
+          #'   c(5, 0), c(6, 0), c(7, 0), c(8, 0)
+          #' )
+          #' total_proximity_list <- list(
+          #'  c(animal_ids[1], 0), 
+          #'  c(animal_ids[2], 0),
+          #'  c(animal_ids[3], 0),
+          #'  c(animal_ids[4], 0)
+          #' )
+          #' count_movement_list <- list(
+          #'  c(animal_ids[1], 0), 
+          #'  c(animal_ids[2], 0),
+          #'  c(animal_ids[3], 0),
+          #'  c(animal_ids[4], 0),
+          #'  c(system_id, 0)
+          #' )
           animal_1 <- list(name = "", time = "", position = 0)
           animal_2 <- list(name = "", time = "", position = 0)
           animal_3 <- list(name = "", time = "", position = 0)
           animal_4 <- list(name = "", time = "", position = 0)
           
           # Temporary data holder for time difference and line number in the analysis.
-          data_temp <- list(secTemp = 0, lineTemp = 0)
-          
-          # Consolidate individual animal states into a master animal list, 
-          # including temporary data for use during analysis.
+          data_temp <- list(secTemp = 0, lineTemp = 0
+          )
           animal_list <- list(
             "animal_1" = animal_1,
             "animal_2" = animal_2,
             "animal_3" = animal_3,
             "animal_4" = animal_4,
-            "data_temp" = data_temp)
-          
-          # Initialize proximity count list to store the number of seconds each pair of animals 
-          # spent in proximity. Example: `m1[3]` represents seconds in proximity for animal 1 and animal 3.
+            "data_temp" = data_temp
+          )
           count_proximity_list <- list(
-            m1 = c(0,0,0,0),
-            m2 = c(0,0,0,0),
-            m3 = c(0,0,0,0),
-            m4 = c(0,0,0,0))
-
-          # Initialize position count list to track the total time spent in each position.
-          # Each entry consists of a position ID and the cumulative number of seconds spent there.
+            m1 = c(0, 0, 0, 0),
+            m2 = c(0, 0, 0, 0),
+            m3 = c(0, 0, 0, 0),
+            m4 = c(0, 0, 0, 0)
+          )
           count_position_list <- list(
             c(1, 0), c(2, 0), c(3, 0), c(4, 0), 
-            c(5, 0), c(6, 0), c(7, 0), c(8, 0))
-          
-          # Initialize the total proximity list to track the cumulative time each animal spent in proximity.
-          # Each entry consists of the animal's name and the total seconds spent in proximity.
+            c(5, 0), c(6, 0), c(7, 0), c(8, 0)
+          )
           total_proximity_list <- list(
             c(animal_ids[1], 0), 
             c(animal_ids[2], 0),
             c(animal_ids[3], 0),
-            c(animal_ids[4], 0))
-          
-          # Initialize movement count list to track the number of movements for each animal 
-          # within the current phase, including a count for the system itself.
+            c(animal_ids[4], 0)
+          )
           count_movement_list <- list(
             c(animal_ids[1], 0), 
             c(animal_ids[2], 0),
             c(animal_ids[3], 0),
             c(animal_ids[4], 0),
-            c(system_id, 0))
+            c(system_id, 0)
+          )
 
-          # --------------------
-          # CALCULATIONS
-          # --------------------
-
-          message ("Calculating...")
+          #' Perform Calculations for Proximity and Position Analysis
+          #'
+          #' @description
+          #' This section initializes variables and defines the logic required for proximity 
+          #' and position analysis. It prepares the necessary data structures and sets up 
+          #' parameters for iterating through the dataset.
+          #'
+          #' @details
+          #' - **Initialization:**  
+          #'   - The animal list is populated with the first recorded time and position 
+          #'     for each animal using `find_first_pos_and_time()`.  
+          #'   - A reference start time (`timeTemp`) is assigned based on the initial entry 
+          #'     of the first animal in the list.  
+          #' - **While Loop Setup:**  
+          #'   - The starting line (`lineTemp`) is set to the first data row to be processed 
+          #'     after the initial metadata lines.  
+          #'   - The time difference between consecutive entries (`secTemp`) is initialized to 0.  
+          #'   - The loop termination condition is defined as reaching the last row of the dataset.  
+          #'
+          #' @param animal_ids Vector. Unique identifiers for animals in the dataset.
+          #' @param systemPhaseData Data frame. Contains the phase-specific data for the system, 
+          #' including time and positional information for all animals.
+          #' @param animal_list List. Stores information about each animal, including initial 
+          #' time and position.
+          #'
+          #' @return
+          #' - Updated `animal_list` with initial time and position data for each animal.  
+          #' - Initialized variables (`timeTemp`, `lineTemp`, `secTemp`, and `lastRow`) 
+          #'   for proximity and position calculations.
+          #'
+          #' @note
+          #' Ensure that `systemPhaseData` is pre-processed and contains no missing values. 
+          #' The `animal_ids` vector should correspond to unique identifiers present in `systemPhaseData`.
+          #'
+          #' @examples
+          #' # Prepare data for analysis:
+          #' animal_ids <- c("A1", "A2", "A3")
+          #' systemPhaseData <- data.frame(Time = c("2025-01-01 12:00", "2025-01-01 12:01"), Position = c("P1", "P2"))
+          #' animal_list <- list()
+          #'
+          #' # Initialize calculations:
+          #' animal_list <- find_first_pos_and_time(animal_ids, systemPhaseData, animal_list)
+          #' timeTemp <- animal_list[[1]][[2]]
+          #' lineTemp <- 5
+          #' secTemp <- 0
+          #' lastRow <- nrow(systemPhaseData) + 1
           
-          # Definitions for proximity and position analysis
-
-          # Initialize the animal list with the first recorded time and position
+          # Initialize calculations:
+          message ("Calculations")
           animal_list <- find_first_pos_and_time(animal_ids, systemPhaseData, animal_list)
-
-          # Assign the start time for the while loop.
-          # This is derived from the start time of one of the animals and 
-          # will serve as a DateTime reference for updating the animal list.
           timeTemp <- animal_list[[1]][[2]]
-
-          # Set the starting line number for the while loop. 
-          # This represents the first data row after the initial four lines and 
-          # is required to control the loop's progression.
           lineTemp <- 5
-
-          # Initialize the first time difference (in seconds) between consecutive data entries for the while loop.
           secTemp <- 0
-
-          # Define the termination condition for the while loop. 
-          # The loop will run until the last row of the dataset is processed.
           lastRow <- nrow(systemPhaseData) + 1
 
           #' @description This script iterates through system data to update the animal list and perform various analyses, including social proximity, cage location usage, total proximity per mouse, and movement counts. The results are stored in dedicated lists and used to generate heatmaps and plots.
@@ -398,8 +505,8 @@ for (batch in batches) {
           #' @param allHeatmaps_positions List to store all position heatmaps.
           #' @param systemHeatmaps_proximity List to store heatmaps for the current system's social proximity.
           #' @param systemHeatmaps_positions List to store heatmaps for the current system's positions.
+          
           # Iterate through the system data to update the animal list and perform the analysis.
-
           while (lineTemp != lastRow && lineTemp < lastRow) {
             
             # Create a copy of the previous state of the animal list 
@@ -479,7 +586,7 @@ for (batch in batches) {
           }
           
           #print (paste("heatmap", system_id))
-          message ("generate heatmaps")
+          message ("Generate heatmaps...")
           
           # Generate heatmaps
           if (system_complete) {
@@ -566,14 +673,58 @@ for (batch in batches) {
       systemHeatmaps_positions <- list()
     }
     
-    # ----------------------------
-    # SAVE PLOTS AND TABLES
-    # ----------------------------
-    # Save plots and tables to the specified directories.
-    # The plots and tables are saved based on the user-defined settings.
-    # The plots and tables are saved for each batch and cage change.
-    # The process is repeated for each batch and cage change.
-       
+    #' Save Plots and Tables
+    #'
+    #' @description
+    #' This section handles the saving of plots and tables to user-specified directories. 
+    #' The process is performed for each batch and cage change, ensuring all relevant 
+    #' visualizations and data summaries are stored systematically.
+    #'
+    #' @details
+    #' - **Plots:**  
+    #'   - Total proximity plots are generated and saved for each system.  
+    #'   - Heatmaps for proximity and position analysis are saved, with filenames 
+    #'     including system identifiers for clarity.  
+    #'   - Layouts of heatmaps are managed using `gridExtra` for better visualization.  
+    #' - **Tables:**  
+    #'   - Social proximity, movement, and system animal ID data are exported as CSV files.  
+    #'   - Files are named to include batch and cage change details for easy identification.
+    #'
+    #' @param save_plots Logical. If `TRUE`, plots are saved to the specified directory.
+    #' @param save_tables Logical. If `TRUE`, tables are saved to the specified directory.
+    #' @param saving_directory String. The root directory where plots and tables will be saved.
+    #' @param plots_directory String. Subdirectory for saving plot files.
+    #' @param tables_directory String. Subdirectory for saving table files.
+    #' @param batch String. Identifier for the current batch being processed.
+    #' @param cageChange String. Identifier for the current cage change being processed.
+    #' @param all_plots_total_proximity List. Contains total proximity plots for each system.
+    #' @param allHeatmaps_proximity List. Contains proximity heatmaps for each system.
+    #' @param allHeatmaps_positions List. Contains position heatmaps for each system.
+    #' @param result_total_proximity Data frame. Results of total proximity analysis.
+    #' @param result_total_movement Data frame. Results of total movement analysis.
+    #' @param system_animal_ids Data frame. Animal IDs corresponding to each system.
+    #'
+    #' @output
+    #' - Saved `.svg` files for total proximity plots and heatmaps (proximity and position).  
+    #' - Exported `.csv` files for proximity, movement, and animal ID data.
+    #'
+    #' @note
+    #' Ensure `save_plots` and `save_tables` flags are appropriately set before running this section.
+    #' Directories specified in `saving_directory`, `plots_directory`, and `tables_directory` 
+    #' should exist or be created beforehand to avoid errors.
+    #'
+    #' @examples
+    #' # Save plots and tables for a given batch and cage change:
+    #' save_plots <- TRUE
+    #' save_tables <- TRUE
+    #' saving_directory <- "output"
+    #' plots_directory <- "plots"
+    #' tables_directory <- "tables"
+    #' # Assume data and plots are pre-defined:
+    #' save_results(save_plots, save_tables, saving_directory, plots_directory, tables_directory, batch, cageChange, 
+    #'              all_plots_total_proximity, allHeatmaps_proximity, allHeatmaps_positions, 
+    #'              result_total_proximity, result_total_movement, system_animal_ids)
+
     # Generate and save plots if the `save_plots` flag is set to TRUE.
     if (save_plots == TRUE) {
       message("Saving plots...")
@@ -639,9 +790,8 @@ for (batch in batches) {
       }
     }
 
-    
     # Save tables
-    if (save_tables==TRUE) {
+    if (save_tables == TRUE) {
       message ("save tables")
       
       # Saving Social Proximity tables
