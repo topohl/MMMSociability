@@ -4,197 +4,6 @@
 ## ANALYSIS OF ANIMAL POSITIONS - FUNCTIONS ##
 ##
 
-########### Functions for analyzing shannon entropy of animal positions ###########
-
-analyze_batch <- function(batch, change, working_directory, uniqueSystems, phases) {
-  # Define the sex based on the batch
-  sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
-  
-  # Read the overall data for the batch and cage change
-  filename <- paste0("E9_SIS_", batch, "_", change, "_AnimalPos")
-  csvFilePath <- file.path(working_directory, "preprocessed_data", paste0(filename, "_preprocessed.csv"))
-  
-  if (!file.exists(csvFilePath)) {
-    warning(paste("File not found:", csvFilePath))
-    return(NULL)
-  }
-  
-  overallData <- read_delim(csvFilePath, delim = ",", show_col_types = FALSE) %>% as_tibble()
-  
-  # Initialize results
-  cagePosProb <- tibble()
-  cagePosEntropy <- tibble()
-  animalPosEntropy <- tibble()
-  
-  # Loop through each system
-  for (system_id in uniqueSystems) {
-    print(system_id)
-    
-    # Filter data for the current system
-    systemData <- overallData %>%
-      filter(System == system_id) %>%
-      as_tibble()
-    
-    # Identify unique animals in the system
-    animal_ids <- unique(systemData$AnimalID)
-    system_complete <- length(animal_ids) >= 4
-    
-    # Pad with NA if the system is incomplete
-    while (length(animal_ids) < 4) {
-      animal_ids <- append(animal_ids, NA)
-    }
-    
-    # Loop through each phase
-    for (phase in phases) {
-      print(phase)
-      
-      # Handle special case for `CC4`
-      if (change == "CC4") {
-        active_phases_number <- c(1, 2)
-        inactive_phases_number <- c(2)
-      } else {
-        active_phases_number <- c(1, 2, 3)
-        inactive_phases_number <- c(1, 2)
-      }
-      
-      number_of_phases <- ifelse(phase == "Active", active_phases_number, inactive_phases_number)
-      print(number_of_phases)
-      
-      # Loop through each phase number
-      for (nr in number_of_phases) {
-        print(paste0(batch, ", System: ", syste_id, ", ", change, ", ", phase, " phase nr: ", nr))
-        
-        # Filter data for the current phase
-        system_data_phase <- system_data %>%
-          filter(ConsecActive == ifelse(phase == "Active", nr, 0)) %>%
-          filter(ConsecInactive == ifelse(phase == "Inactive", nr, 0)) %>%
-          as_tibble()
-        
-        # Initialize data structures
-        animal_list <- initialize_animal_list(animal_ids)
-        cage_prob_list <- initialize_cage_prob_list()
-        animal_prob_tibble <- initialize_animal_prob_tibble(animal_ids)
-        
-        # While loop through the system_data_phase rows
-        animal_list <- process_rows(system_data_phase, animal_list, cage_prob_list, animal_prob_tibble, system_complete)
-        
-        # Calculate probabilities and entropy
-        cagePosProb <- update_cage_probs(cage_prob_list, cagePosProb, batch, system_id, change, phase, nr)
-        cagePosEntropy <- calculate_cage_entropy(cagePosProb, cagePosEntropy, batch, system_id, change, phase, nr, sex)
-        animalPosEntropy <- calculate_animal_entropy(animal_prob_tibble, animalPosEntropy, batch, system_id, change, phase, nr, animal_ids, sex)
-      }
-    }
-  }
-  
-  # Return all results
-  list(
-    cagePosProb = cagePosProb,
-    cagePosEntropy = cagePosEntropy,
-    animalPosEntropy = animalPosEntropy
-  )
-}
-
-########### Support function to initialise animal list ###########
-initialize_animal_list <- function(animal_ids) {
-  list(
-    animalOne = list(name = "", time = "", position = 0),
-    animalTwo = list(name = "", time = "", position = 0),
-    animalThree = list(name = "", time = "", position = 0),
-    animalFour = list(name = "", time = "", position = 0),
-    tempData = list(secTemp = 0, lineTemp = 0)
-  )
-}
-
-########### Support function to initialise cage probability list ###########
-initialize_cage_prob_list <- function() {
-  lapply(1:8, function(i) c(i, 0, 0, 0))
-}
-
-########### Support function to initialise animal probability tibble ###########
-initialize_animal_prob_tibble <- function(animal_ids) {
-  tibble(
-    AnimalID = rep(animal_ids, each = 8),
-    Position = rep(1:8, length.out = 32),
-    Seconds = 0,
-    SumPercentage = 0,
-    Prob = 0
-  )
-}
-
-########### Support function to process rows of data ###########
-process_rows <- function(system_data_phase, animal_list, cage_prob_list, animal_prob_tibble, system_complete) {
-  timeTemp <- animal_list[[1]][["time"]]
-  lineTemp <- 5
-  theEnd <- nrow(system_data_phase) + 1
-  
-  while (lineTemp < theEnd) {
-    old_animal_list <- animal_list
-    animal_list <- update_animal_list(animal_ids, animal_list, system_data_phase, timeTemp, lineTemp)
-    secTemp <- animal_list[["tempData"]][["secTemp"]]
-    
-    if (system_complete) {
-      cage_prob_list <- check_cage_prob(old_animal_list, animal_list, cage_prob_list, secTemp)
-    }
-    animal_prob_tibble <- check_animal_prob(old_animal_list, animal_list, animal_prob_tibble, secTemp)
-    lineTemp <- animal_list[["tempData"]][["lineTemp"]]
-    timeTemp <- animal_list[[1]][["time"]]
-  }
-  
-  animal_list
-}
-
-## Preprocessing
-# Define function to preprocess a single file
-preprocess_file <- function(batch, change, exclAnimals) {
-  filename <- paste0("E9_SIS_", batch, "_", change, "_AnimalPos")
-  csvFilePath <- file.path(getwd(), "raw_data", batch, paste0(filename, ".csv"))
-  
-  if (!file.exists(csvFilePath)) {
-    warning(paste("File", csvFilePath, "does not exist. Skipping to next file."))
-    return(NULL)
-  }
-  
-  # Read CSV file
-  data <- as_tibble(read_delim(csvFilePath, delim = ";", show_col_types = FALSE))
-  
-  # Preprocessing steps
-  data <- data %>%
-    select(-c(RFID, AM, zPos)) %>%
-    mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC")) %>%
-    separate(Animal, into = c("AnimalID", "System"), sep = "[-_]") 
-  
-  # Define Position Mapping Table
-  tblPosition <- tibble(
-    PositionID = 1:8, 
-    xPos = c(0, 100, 200, 300, 0, 100, 200, 300), 
-    yPos = c(0, 0, 0, 0, 116, 116, 116, 116)
-  )
-  
-  # Add PositionID to the data
-  data <- data %>%
-    rowwise() %>%
-    mutate(PositionID = find_id(xPos, yPos, lookup_tibble = tblPosition)) %>%
-    select(DateTime, AnimalID, System, PositionID) %>%
-    filter(!AnimalID %in% exclAnimals) %>%
-    arrange(DateTime)
-  
-  # Add phase information and markers
-  data <- data %>%
-    addPhaseTransitionMarkers() %>%
-    mutate(Phase = ifelse(format(DateTime, "%H:%M", tz = "UTC") >= "18:30" | 
-                          format(DateTime, "%H:%M", tz = "UTC") < "06:30", 
-                          "Active", "Inactive")) %>%
-    mutate(ConsecActive = 0, ConsecInactive = 0) %>%
-    consecPhases() %>%
-    addDayMarkerRows()
-  
-  # Save the preprocessed data
-  outputFileDir <- file.path(outputDir, paste0(filename, "_preprocessed.csv"))
-  write_csv(data, outputFileDir)
-  
-  message(paste("File saved at", outputFileDir))
-}
-
 ##############################################################################################################
 # input:  x_Pos - x coordinate of cage
 #         y_Pos - y coordinate of cage
@@ -203,53 +12,19 @@ preprocess_file <- function(batch, change, exclAnimals) {
 # output: Position Id
 # effect: finds corresponding PositionID from two coordinates(x_Pos, y_pos) in lookup_tibble and returns ID 
 
-#' Find Position ID based on x and y coordinates
-#'
-#' This function standardizes animal positions by converting non-standard 
-#' positions into a predefined standard format and then looks up the 
-#' corresponding Position ID from a provided lookup table.
-#'
-#' @param x_Pos Numeric value representing the x-coordinate of the position.
-#' @param y_Pos Numeric value representing the y-coordinate of the position.
-#' @param lookup_tibble A tibble containing the lookup table with columns 
-#'        `xPos`, `yPos`, and `PositionID`.
-#'
-#' @return The Position ID corresponding to the standardized x and y coordinates.
-#'         If no match is found, the function returns NA.
-#'
-#' @details The function first standardizes the x and y coordinates:
-#'          - y_Pos is set to 0 if it is less than 116, otherwise it is set to 116.
-#'          - x_Pos is set to 0 if it is less than 100, 100 if it is between 100 and 199,
-#'            200 if it is between 200 and 299, and 300 if it is 300 or greater.
-#'          The function then searches for the standardized position in the lookup table.
-#'          If a match is found, the corresponding Position ID is returned.
-#'          If no match is found, the function prints the standardized coordinates and 
-#'          returns NA.
-#'
-#' @examples
-#' # Example usage:
-#' lookup_tibble <- tibble::tibble(
-#'   xPos = c(0, 100, 200, 300),
-#'   yPos = c(0, 116),
-#'   PositionID = 1:4
-#' )
-#' find_id(150, 120, lookup_tibble)
-#'
-#' @export
-find_id <- function(x_Pos, y_Pos, lookup_tibble) {
+find_id <- function(x_Pos, y_Pos, lookup_tibble){
   
-  # This script contains functions to standardize animal positions.
-  # It converts non-standard positions into a predefined standard format.
+  #give non-standard positions a standard position
   # y value
-  if(y_Pos<116){y_Pos <- 0}
-  else if(y_Pos>=116){y_Pos <- 116}
+  if(y_Pos < 116) {y_Pos <- 0}
+  else if(y_Pos >= 116) {y_Pos <- 116}
   
-  # X value
-  if(x_Pos<100){x_Pos <- 0}
-  else if(x_Pos<200){x_Pos <- 100}
-  else if(x_Pos<300){x_Pos <- 200}
-  else if(x_Pos>=300){x_Pos <- 300}
-  
+  # x value
+  if(x_Pos<100) {x_Pos <- 0}
+  else if(x_Pos<200) {x_Pos <- 100}
+  else if(x_Pos<300) {x_Pos <- 200}
+  else if(x_Pos>=300) {x_Pos <- 300}
+
   # search position in lookup table
   result <- lookup_tibble %>%
     filter(xPos == x_Pos, yPos == y_Pos) %>%
@@ -266,306 +41,257 @@ find_id <- function(x_Pos, y_Pos, lookup_tibble) {
 }
 
 ################################################################################################################
-# Function: addPhaseTransitionMarkers
-# 
-# Description:
-#   Inserts additional rows into the dataset to mark phase transitions at specific times (6:30 AM and 6:30 PM). 
-#   These markers are essential for tracking the start and end of active/inactive phases for each animal in each system.
-#
-# Input:
-#   data - A tibble containing the experiment data, including timestamped observations for various subjects across systems.
-#
-# Output:
-#   A tibble with added rows corresponding to the phase transition times. The dataset is sorted by DateTime, 
-#   and the additional rows provide a start value for every subject at the beginning of each phase.
-#
-# Effects:
-#   - Inserts rows at 6:30 AM and 6:30 PM for each date in the dataset.
-#   - Ensures there is a record for each subject in every system at these critical phase change times.
-#
-################################################################################################################
-
-addPhaseTransitionMarkers <- function(data) {
-  
-  #save dates of experiment(the date of the days)
-  onlyDates <- as.Date(data$DateTime)
-  uniqueDates <- unique(onlyDates)
-  #print(uniqueDates)
-  
-  #uniqueExperimentDates <- unique(as.Date(data$DateTime))
-  
-  #save existing systems
-  uniqueSystems <- unique(data$System)
-  #print(uniqueSystems)
-  
-  
-  for(i in 1:length(uniqueDates)){
-    date <- uniqueDates[i]
-  #  
-  #  #print(date)
-
-  #for (experimentDate in uniqueExperimentDates) {  
-    
-    #define marker points depending on actual date
-    # "GMT" means "UTC"
-    # Define the specific phase transition markers for the current date
-    phaseMarkers <- list(
-      endOfActivePhaseAM = as.POSIXct(paste(date, "06:29:59"), tz = "GMT"),
-      startOfInactivePhaseAM = as.POSIXct(paste(date, "06:30:00"), tz = "GMT"),
-      endOfInactivePhasePM = as.POSIXct(paste(date, "18:29:59"), tz = "GMT"),
-      startOfActivePhasePM = as.POSIXct(paste(date, "18:30:00"), tz = "GMT")
-    )
-    
-    #we have 2 early markers and 2 late markers
-    for(phaseMarker in phaseMarkers){
-     
-      # filter rows which are earlier than the marker
-      filtered_time <- data %>%
-        as_tibble()%>%
-        filter(DateTime < phaseMarker)
-      
-      #we need a marker for every existing system and for every animal in every system
-      for(system in uniqueSystems){
-        
-        #print(system)
-        
-        # filter rows from specific system 
-        filtered_system <- filtered_time%>%
-          as_tibble()%>%
-          filter(System==system)
-        
-        #check which animal exists in this system
-        animal_names <- unique(filtered_system$AnimalID)
-        
-        for(animal in animal_names){
-          # filter specific animal row from system with nearest DateTime to 18:30:00 or 06:30:00 but still earlier
-          filtered_row <- filtered_system%>%
-            as_tibble()%>%
-            filter(AnimalID==animal)%>%
-            slice_max(order_by = DateTime)
-          
-          #print(filtered_row)
-          
-          #if time on this day is recorded
-          if(length(filtered_row) != 0){
-            #use copied row as new one and change the date to marker date
-            filtered_row <- filtered_row%>%
-              mutate(DateTime = as.POSIXct(phaseMarker, tz="UTC"))
-            
-            #add new row to data
-            data <- add_row(data,filtered_row)
-          }
-        
-        
-        }
-        
-      }
-      
-    }
-    
-  }
-  
-  #sort tibble again by dateTime to bring new entries to correct position
-  data <- data%>%
-    as_tibble()%>%
-    arrange(., DateTime)
-  
-  
-  #remove last 20 rows because they are 20 unnecessary marker rows of the last day and the late marker
-  data <- data %>% filter(row_number() <= n()-20)
-  
-  return(data)
-}
-
-
-
-################################################################################################################
-# Function: addDayMarkerRows
-#
-# Description:
-#   Adds extra rows of RFID information at the start of each new day (midnight) for each animal in each system.
-#   This is essential for tracking the start of each day for every animal in every system.
-#
-# Input:
-#   data - A tibble containing the experiment data, including timestamped observations for various subjects across systems.
-#
-# Output:
-#   A tibble with added rows corresponding to the start of each new day. The dataset is sorted by DateTime, 
-#   and the additional rows provide a start value for every subject at the beginning of each day.
-#
-# Effects:
-#   - Inserts rows at midnight for each date in the dataset.
-#   - Ensures there is a record for each subject in every system at the start of each day.
-#
-################################################################################################################
-
-addDayMarkerRows <- function(data) {
-  
-  # Extract unique dates from the data
-  uniqueDates <- unique(as.Date(data$DateTime))
-  
-  # Extract unique systems from the data
-  uniqueSystems <- unique(data$System)
-  
-  for (date in uniqueDates) {
-  
-  # Define the marker point for the start of the new day (midnight)
-  marker <- as.POSIXct(paste(date, "00:00:00"), tz = "GMT")
-  
-  # Filter rows which are earlier than the marker
-  filtered_time <- data %>%
-    filter(DateTime < marker)
-  
-  for (system in uniqueSystems) {
-    
-    # Filter rows for the specific system
-    filtered_system <- filtered_time %>%
-    filter(System == system)
-    
-    # Identify unique animals in the system
-    animal_names <- unique(filtered_system$AnimalID)
-    
-    for (animal in animal_names) {
-    
-    # Filter the specific animal row with the nearest DateTime to midnight but still earlier
-    filtered_row <- filtered_system %>%
-      filter(AnimalID == animal) %>%
-      slice_max(order_by = DateTime)
-    
-    # If time on this day is recorded
-    if (nrow(filtered_row) != 0) {
-      
-      # Use the copied row as a new one and change the date to the marker date
-      filtered_row <- filtered_row %>%
-      mutate(DateTime = as.POSIXct(marker, tz = "UTC"))
-      
-      # Add the new row to the data
-      data <- add_row(data, filtered_row)
-    }
-    }
-  }
-  }
-  
-  # Sort the tibble again by DateTime to bring new entries to the correct position
-  data <- data %>%
-  arrange(DateTime)
-  
-  return(data)
-}
-
-##############################################################################################################
-# input:  data  - a tibble with data that we want to change 
+# input:  processed_data - the tibble with the whole data that we want to change 
 #         
 #        
 #
-# output: data
-# effect: - edits the columns of the phases(ConsecActive, ConsecInactive)
-#         - counts seperately how many active and inactive phases happened in that data, adds the counted int into the column
-#         - when the active phase is happening , the ConsecInactive is 0 and vice versa
+# output: processed_data
+# effect: - adds extra rows of RFID information to the time when a Phase changes(6h30 a.m. &6h30 p.m.)
+#         - we need a row for every mouse in every system bc the data will later filtered by the phases 
+#         and we need a start value of every mouse for every phase
+#         - the new rows will be added to the processed_data tibble
+
+addPhaseMarkerRows <- function(processed_data){
+  
+  #save dates of experiment(the date of the days)
+  onlyDates <- as.Date(processed_data$DateTime)
+  uniqueDates <- unique(onlyDates)
+  #print(uniqueDates)
+  
+  #save existing systems
+  uniqueSystems <- unique(processed_data$System)
+  #print(uniqueSystems)
+  
+  for(i in 1:length(uniqueDates)) {
+    date <- uniqueDates[i]
+
+    #define marker points depending on actual date
+    # "GMT" means "UTC"
+    early_marker_end_active <- as.POSIXct(paste(date,"06:29:59"), tz = "GMT")  #end active phase
+    early_marker_start_inactive <- as.POSIXct(paste(date,"06:30:00"), tz = "GMT")  #start inactive phase
+    early_marker_end_inactive <- as.POSIXct(paste(date,"18:29:59"), tz = "GMT")  #end inactive phase
+    late_marker_start_active <- as.POSIXct(paste(date,"18:30:00"), tz = "GMT")   #start active phase
+
+    #we have 2 early markers and 2 late markers
+    for(marker in c(early_marker_end_active, early_marker_start_inactive, early_marker_end_inactive, late_marker_start_active)){
+     
+      # filter rows which are earlier than the marker
+      filtered_time <- processed_data %>%
+        as_tibble() %>%
+        filter(DateTime < marker)
+      
+      #we need a marker for every existing system and for every mouse in every system
+      for(system in uniqueSystems){
+
+        # filter rows from specific system 
+        filtered_system <- filtered_time %>%
+          as_tibble() %>%
+          filter(System == system)
+
+        #check which mice exists in this system
+        mice_names <- unique(filtered_system$AnimalID)
+
+        for(mouse in mice_names){
+          # filter specific mouse row from system with nearest DateTime to 18:30:00 or 06:30:00 but still earlier
+          filtered_row <- filtered_system %>%
+            as_tibble() %>%
+            filter(AnimalID == mouse) %>%
+            slice_max(order_by = DateTime)
+
+          #if time on this day is recorded
+          if(length(filtered_row) != 0){
+            #use copied row as new one and change the date to marker date
+            filtered_row <- filtered_row %>%
+              mutate(DateTime = as.POSIXct(marker, tz = "UTC"))
+            
+            #add new row to processed_data
+            processed_data <- add_row(processed_data,filtered_row)
+          }
+        }
+      }
+    }
+  }
+  
+  #sort tibble again by dateTime to bring new entries to correct position
+  processed_data <- processed_data %>%
+    as_tibble() %>%
+    arrange(., DateTime)
+
+  #remove last 20 rows because they are 20 unnecessary marker rows of the last day and the late marker
+  processed_data <- processed_data %>% filter(row_number() <= n()-20)
+
+  return(processed_data)
+}
+
+################################################################################################################
+# input:  processed_data - the tibble with the whole data that we want to change 
+#         
+#        
+#
+# output: processed_data 
+# effect: - adds extra rows of RFID information to the time when a day changes(midnight)
+addDayMarkerRows <- function(processed_data) {
+  #save dates of experiment
+  onlyDates <- as.Date(processed_data$DateTime)
+  uniqueDates <- unique(onlyDates)
+  
+  #save existing systems
+  uniqueSystems <- unique(processed_data$System)
+  
+  for(i in 1:length(uniqueDates)) {
+    date <- uniqueDates[i]
+    
+    #define marker point depending on actual date
+    # "GMT" means "UTC"
+    marker <- as.POSIXct(paste(date, "00:00:00"), tz = "GMT")  #start of new day
+    
+    # filter rows which are earlier than the marker
+    filtered_time <- processed_data %>%
+      as_tibble() %>%
+      filter(DateTime < marker)
+    
+    for(system in uniqueSystems){
+      
+      # filter rows from specific system 
+      filtered_system <- filtered_time %>%
+        as_tibble() %>%
+        filter(System == system)
+
+      #check which mice exists in this system
+      mice_names <- unique(filtered_system$AnimalID)
+      
+      for(mouse in mice_names){
+        # filter specific mouse row from system with nearest DateTime to 18:30:00 or 06:30:00 but still earlier
+        filtered_row <- filtered_system %>%
+          as_tibble() %>%
+          filter(AnimalID == mouse) %>%
+          slice_max(order_by = DateTime)
+
+        #if time on this day is recorded
+        if(length(filtered_row) != 0){
+          #use copied row as new one and change the date to marker date
+          filtered_row <- filtered_row %>%
+            mutate(DateTime = as.POSIXct(marker, tz= "UTC"))
+          
+          #add new row to processed_data
+          processed_data <- add_row(processed_data, filtered_row)
+        }
+      }
+    }
+  }
+  #sort tibble again by dateTime to bring new entries to correct position
+  processed_data <- processed_data %>%
+    as_tibble() %>%
+    arrange(., DateTime)
+  
+  return(processed_data)
+}
+
+#' Count Consecutive Phases
+#' 
+#' This function counts the consecutive phases of activity and inactivity in the data.
+#' It adds two new columns to the input tibble: `ConsecActive` and `ConsecInactive`,
+#' which represent the count of consecutive active and inactive phases, respectively.
+#' 
+#' @param data A tibble with a column named `Phase` containing the phases of activity ("Active" or "Inactive").
+#' 
+#' @return A tibble with the original data and two additional columns: `ConsecActive` and `ConsecInactive`.
+#' @export 
+#' 
+#' @examples
+#' data <- tibble::tibble(Phase = c("Active", "Active", "Inactive", "Active", "Inactive", "Inactive"))
+#' count_consecPhases(data)
+#' return (data)
+
 consecPhases <- function(data){
   
-  #initialize Phase counter
+  # initialize counters
   active_phases <- 0
   inactive_phases <- 0
   
   for(i in 1:nrow(data)){
     #select row from data
     current_row <- data[i,]
-    
-    #print(i)
-    
+
     #first row
-    if(i==1){
+    if(i == 1){
       
       if(current_row$Phase == "Active"){
         current_row$ConsecActive <- 1
         current_row$ConsecInactive <- 0
-        active_phases <- active_phases+1
-      }else{    #current_row$Phase == "Inactive"
+        active_phases <- active_phases + 1
+      } else {    #current_row$Phase == "Inactive"
         current_row$ConsecActive <- 0
         current_row$ConsecInactive <- 1
-        inactive_phases <- inactive_phases+1
+        inactive_phases <- inactive_phases + 1
       }
-    }
-    else{#i>1
+    } else {
       
       #previous row from data
-      previous_row <- data[(i-1),]
+      previous_row <- data[(i - 1),]
       
       if(current_row$Phase != previous_row$Phase){
-        if(current_row$Phase == "Active"){
-          active_phases <- active_phases+1  # change means the counter has to set higher
+        if(current_row$Phase == "Active") {
+          active_phases <- active_phases + 1  # change means the counter has to set higher
           current_row$ConsecActive <- active_phases
           current_row$ConsecInactive <-  0
-        }else{    #current_row$Phase == "Inactive"
-          inactive_phases <- inactive_phases+1
+        } else {    #current_row$Phase == "Inactive"
+          inactive_phases <- inactive_phases + 1
           current_row$ConsecActive <- 0
           current_row$ConsecInactive <- inactive_phases
         }
-      }else{  #current_row$Phase == previous_row$Phase
+      } else {  #current_row$Phase == previous_row$Phase
         current_row$ConsecActive <- previous_row$ConsecActive      #values stay the same number as before
         current_row$ConsecInactive <- previous_row$ConsecInactive
       }
-      
       #write new information back into data
-      data[(i-1),] <- previous_row
+      data[(i - 1),] <- previous_row
     }
-    
     #write new information back into data
     data[i,] <- current_row  
   }
-  
   return (data)
 }
 
 ##############################################################################################################
-# input:  system_animal_names -  the ids/names of the animal in the current system
+# input:  system_animal_ids -  the ids/names of the mice in the current system
 #         data -  the tibble with the data of the current system
-#         animal_list - the list that contains the information of the animal ID and the current time and position
+#         animal_list - the list that contains the information of the mouse ID and the current time and position
 #         
 #
 # output: animal_list - updated
-# effect: - the animal-list will be entered here for the first time, information gained from the data
-#         - takes the first entry of every animal in data and copies the time and position that we know the start position of each animal
+# effect: - the mice-list will be entered here for the first time, information gained from the data
+#         - takes the first entry of every mouse in data and copies the time and position that we know the start position of each mouse
 
-# find the FIRST TIME where animal is tracked in the cage
-# aka first value of animal in data_final
+# find the FIRST TIME where mouse is tracked in the cage
+# aka first value of mouse in processed_data_final
 find_first_pos_and_time <- function(system_animal_ids, data, animal_list){
   
   # create empty vector with 4 variables
-  times_vec <- rep(NA, times=4)
+  times_vec <- rep(NA, times = 4)
   
   print(system_animal_ids)
   for (i in 1:length(system_animal_ids)){ #i=1-4
     
-    #define current animal_name, first_position and first_time
+    #define current animal_id, first_position and first_time
     animal_id <- system_animal_ids[[i]]
     if(is.na(animal_id)){
-      animal_id <- paste0("lost_",i)
+      animal_id <- paste0("lost_", i)
       first_time <- 0        #time value should be adapted at the end of this function
-      first_position <- (-1)  #add non existing position for non existing animal
-    }
-    else{
+      first_position <- (-1)  #add non existing position for non existing mouse
+    } else {
       #search first entry in whole data
-      first_entry <- data%>%
-        filter(AnimalID == animal_id)%>%
+      first_entry <- data %>%
+        filter(AnimalID == animal_id) %>%
         slice(1) #first row
-      
-      #cat("first entry: \n")
-      #print(first_entry)
-      
+
       first_time <- first_entry$DateTime
-      
       first_position <- first_entry$PositionID
-      
-      #cat("first position: ", first_position)
-      
     }
-    
     
     #write name, position and time into animal_list
     animal_list[i][[1]] <- animal_id
-    #print(animal_name)
+    #print(animal_id)
     
     animal_list[[i]][[3]] <- first_position
     #print(first_position)
@@ -575,182 +301,196 @@ find_first_pos_and_time <- function(system_animal_ids, data, animal_list){
     
     #enter time in times vec fot later to compare
     times_vec[i] <- first_time
-    
   }
   
   #check, if all times are similar
   #if not, change them all to the first shared time
-  if(length(unique(times_vec)) != 1){
+  if(length(unique(times_vec)) != 1) {
     latest_time <- max(times_vec)
     #print(latest_time)
-    for(i in 1:4){
+    for(i in 1:4) {
       animal_list[[i]][[2]] <- latest_time
     }
   }
   
   #print("animal_list inside the first pos function: \n")
   #print(animal_list)
-  
-  
-  
   return(animal_list)
 }
 
-
-##############################################################################################################
-# input:  old_animal_list - contains old positions of the animal from the last entered time in tibble until the second before the current time
-#         new_animal_list - contains the new updated positions for the current second(time)
-#         count_closeness_list - list for the results, contains the amount of seconds with animal in social contact
-#         secTemp - time difference between new and old animal-list
-#
-# output: count_closeness_list
-# effect: - reads the position information from the old positions and calculates the second difference to the actual time, adds seconds to results-list
-#         - also reads the new positions and adds one second for every position into the results-list
-
-# function to check for closeness
-# compare every sublist(4)to each other
-check_closeness <- function(old_animal_list, new_animal_list, count_closeness_list, secTemp){
+#' Compute Proximity Between Mice
+#'
+#' This function calculates the social proximity between mice based on their positions. It updates the `count_proximity_list` 
+#' to include the duration (in seconds) that each pair of mice remained in the same position.
+#'
+#' @param old_animal_list A list containing the previous positions of the mice from the last recorded time until the second 
+#'   before the current time.
+#' @param new_animal_list A list containing the updated positions of the mice for the current second.
+#' @param count_proximity_list A list to store the results, tracking the number of seconds each pair of mice remained 
+#'   in proximity.
+#' @param secTemp An integer indicating the time difference (in seconds) between the `old_animal_list` and the current time.
+#'
+#' @return The updated `count_proximity_list` with the total seconds of social contact between mice.
+#' @details
+#' The function performs the following steps:
+#' - Compares positions from `old_animal_list` for the time period defined by `secTemp - 1` and updates proximity counts.
+#' - Compares positions from `new_animal_list` for the current second and updates proximity counts.
+#' - Ensures proximity is only counted if two different individuals are in the same position.
+#'
+#' @examples
+#' # Assuming old_animal_list, new_animal_list, and count_proximity_list are defined:
+#' count_proximity_list <- compute_proximity(old_animal_list, new_animal_list, count_proximity_list, secTemp)
+compute_proximity <- function(old_animal_list, new_animal_list, count_proximity_list, secTemp) {
   
-  # compare the third value of every couple(which is the position of the animal)
-  # if the position is the same, save in count_closeness_list list
+  # Loop through all pairs of mice (4 assumed in both old and new lists)
   for (i in 1:4) {
     for (j in i:4) {
-      #comparisation of old_animal_list for last (secTemp-1)-missing seconds
-      if(old_animal_list[[i]][[3]]==old_animal_list[[j]][[3]]){
-        count_closeness_list[[i]][[j]] <- count_closeness_list[[i]][[j]]+(secTemp-1)  #secTemp contains x-1 seconds of old positions and one sec of new pos
-
-        #enter new contact second in closeness list if the animal are at the same position and are two different individuals
-        if(j!=i){
-          count_closeness_list[[j]][[i]] <- count_closeness_list[[j]][[i]]+(secTemp-1)
+      # Compare positions in old_animal_list for (secTemp - 1) seconds
+      if (old_animal_list[[i]][[3]] == old_animal_list[[j]][[3]]) {
+        count_proximity_list[[i]][[j]] <- count_proximity_list[[i]][[j]] + (secTemp - 1)
+        if (j != i) {
+          count_proximity_list[[j]][[i]] <- count_proximity_list[[j]][[i]] + (secTemp - 1)
         }
       }
-
-      #comparisation of new_animal_list for first new second
-      if(new_animal_list[[i]][[3]]==new_animal_list[[j]][[3]]){
-        count_closeness_list[[i]][[j]] <- count_closeness_list[[i]][[j]]+1
-
-        #enter new contact second in closeness list if the animal are at the same position and are two different individuals
-        if(j!=i){
-          count_closeness_list[[j]][[i]] <- count_closeness_list[[j]][[i]]+1
+      # Compare positions in new_animal_list for the current second
+      if (new_animal_list[[i]][[3]] == new_animal_list[[j]][[3]]) {
+        count_proximity_list[[i]][[j]] <- count_proximity_list[[i]][[j]] + 1
+        if (j != i) {
+          count_proximity_list[[j]][[i]] <- count_proximity_list[[j]][[i]] + 1
         }
       }
     }
   }
   
-  # return updated list of animal that are close to each other
-  return(count_closeness_list)
+  # Return the updated proximity list
+  return(count_proximity_list)
 }
 
-##############################################################################################################
-# input:  old_animal_list - contains old positions of the animal from the last entered time in tibble until the second before the current time
-#         new_animal_list - contains the new updated positions for the current second(time)
-#         count_position_list - list for the results, contains the amount of seconds a animal(or multiple animal)were standing on a position
-#         secTemp - time difference between new and old animal-list
-#         
-#
-# output: count_position_list
-# effect:
-
-# function to check for position
-
-
-check_position <- function(old_animal_list, new_animal_list, count_position_list, secTemp){
+#' Update Mouse Position Counts
+#'
+#' This function updates the count of seconds that mice have been standing on specific positions.
+#'
+#' @param old_animal_list A tibble containing the old positions of the mice from the last entered time until the second before the current time.
+#' @param new_animal_list A tibble containing the new updated positions for the current second.
+#' @param count_position_list A list to store the results, containing the amount of seconds a mouse (or multiple mice) were standing on a position.
+#' @param secTemp The time difference between the new and old mice lists.
+#'
+#' @return A list containing the updated count of seconds that mice have been standing on specific positions.
+#' @export
+#'
+#' @examples
+#' old_animal_list <- tibble::tibble(id = 1:3, position = c("A", "B", "C"))
+#' new_animal_list <- tibble::tibble(id = 1:3, position = c("A", "C", "B"))
+#' count_position_list <- list(A = 5, B = 3, C = 2)
+#' secTemp <- 1
+#' update_position_counts(old_animal_list, new_animal_list, count_position_list, secTemp)
+compute_position <- function(old_animal_list, new_animal_list, count_position_list, secTemp) {
   
   #vectors to check which positions were used in this time period
   old_positions <- c()
   new_positions <- c()
   
-  #for every animal in the animal list
+  #for every mouse in the mice list
   for (i in 1:4) {
     old_pos <- as.numeric(old_animal_list[[i]][[3]])
-    #print("old_pos")
-    #print(old_pos)
     new_pos <- as.numeric(new_animal_list[[i]][[3]])
-    #print("new_pos")
-    #print(new_pos)
-    
-    #count used position only one time per second, even if multiple animal are on it
-    #check if position is already added to list from another animal
-    #(is actual position already in the vector of used positions)
-    
-    if(!old_pos %in% old_positions & old_pos!=(-1)){
-      #print("add old pos")
-      
+
+    # Count used position only once per second, even if multiple mice are on it
+    # Check if position is already added to the list from another mouse
+    if(!old_pos %in% old_positions & old_pos != (-1)) {
+
       #add new seconds to count_position_list
-      count_position_list[[old_pos]][[2]] <- count_position_list[[old_pos]][[2]]+(secTemp-1)
-      
+      count_position_list[[old_pos]][[2]] <- count_position_list[[old_pos]][[2]] + (secTemp - 1)
+
       #add old position into vector of used positions
       old_positions <- append(old_positions, old_pos)
     }
-    if(!new_pos %in% new_positions& new_pos!=(-1)){
+    if(!new_pos %in% new_positions& new_pos != (-1)) {
       #print("add new pos")
       
       #add new seconds to count_position_list
-      count_position_list[[new_pos]][[2]] <- count_position_list[[new_pos]][[2]]+1
+      count_position_list[[new_pos]][[2]] <- count_position_list[[new_pos]][[2]] + 1
       
       #add new position into vector of used positions
       new_positions <- append(new_positions, new_pos)
     }
-    
   }
   
-  # return updated list of animal that are close to each other
+  # return updated list of mice that are close to each other
   return(count_position_list)
 }
 
+#' Compute Total Social Proximity Time for Each Mouse
+#'
+#' This function calculates the total time (in seconds) each mouse spends in close social contact with other mice.
+#' The results are stored in the `total_proximity_list`, which is updated with the proximity duration for each mouse.
+#'
+#' @param old_animal_list A list containing the previous positions of the mice from the last recorded time 
+#'   until the second before the current time. Each sublist contains details about a mouse, including its ID and position.
+#' @param new_animal_list A list containing the updated positions of the mice for the current second. 
+#'   The format is consistent with `old_animal_list`.
+#' @param total_proximity_list A list to store the total proximity time for each mouse. Each sublist contains the mouse ID 
+#'   and the cumulative proximity duration in seconds.
+#' @param secTemp An integer representing the time difference (in seconds) between the previous entry 
+#'   and the current entry.
+#' @param excludeHomecage Logical. If `TRUE`, positions with ID 5 (homecage) will be excluded from proximity calculations.
+#'
+#' @return The updated `total_proximity_list`, with the total proximity time in seconds for each mouse.
+#' @details
+#' The function performs the following operations:
+#' - For each mouse, checks if it was in proximity with other mice during the time between the previous entry 
+#'   (`old_animal_list`) and the current time.
+#' - Updates the proximity count for each mouse if it shares a position with other mice.
+#' - Ensures the IDs in `total_proximity_list` match those in `old_animal_list` for consistency.
+#'
+#' @examples
+#' # Assuming old_animal_list, new_animal_list, and total_proximity_list are defined:
+#' total_proximity_list <- compute_total_proximity(old_animal_list, new_animal_list, total_proximity_list, secTemp, TRUE)
+compute_total_proximity <- function(old_animal_list, new_animal_list, total_proximity_list, secTemp) {
 
-
-##############################################################################################################
-# input:  old_animal_list, new_animal_list, animal_ids
-#         
-#        
-#
-# output: total_closeness_list
-# effect: calculate total amount of social(time in closer contact) seconds per animal 
-
-
-check_total_closeness <- function(old_animal_list, new_animal_list, total_closeness_list, secTemp){
-
-  for(animal in 1:4){
+  # Iterate through each mouse in the list
+  for (mouse in 1:4) {
     
-    other_animal <- c(1,2,3,4)
-    #remove current animal index from other_animal
-    other_animal <- other_animal[-animal]
+    # Create a list of other mice indices, excluding the current mouse
+    other_mice <- setdiff(1:4, mouse)
     
-    #get actual animal id from animal_list
-    animal_id <- old_animal_list[[animal]][[1]]
+    # Retrieve the current mouse's ID from old_animal_list
+    mouse_id <- old_animal_list[[mouse]][[1]]
     
-    ##OLD; REMAINING SECONDS
-    #animal_list[[x]][[3]]is looking for position
-    #check if current animal was on the same position as one or multiple animal in the time between last entry and current entry(secTemp, old_animal_list)
-    if(old_animal_list[[animal]][[3]]==old_animal_list[[other_animal[1]]][[3]] ||
-       old_animal_list[[animal]][[3]]==old_animal_list[[other_animal[2]]][[3]] ||
-       old_animal_list[[animal]][[3]]==old_animal_list[[other_animal[3]]][[3]] )
-    {
-      #add remaining closeness seconds(since the last entry, see secTemp) into total_closeness_list for current animal
-      if(total_closeness_list[[animal]][[1]]==animal_id){#double check if id is the right one
-        total_closeness_list[[animal]][[2]] <- as.numeric(total_closeness_list[[animal]][[2]])+(secTemp-1)
-      }else{throw("animal ids are not the same in check_total_closeness")}
+    # Conditional for excluding homecage (PositionID 5)
+    exclude_condition_old <- if (excludeHomecage) old_animal_list[[mouse]][[3]] != 5 else TRUE
+    exclude_condition_new <- if (excludeHomecage) new_animal_list[[mouse]][[3]] != 5 else TRUE
+
+    # Check proximity in old positions (for secTemp - 1 seconds)
+    if (exclude_condition_old && 
+        (old_animal_list[[mouse]][[3]] %in% sapply(other_mice, function(idx) old_animal_list[[idx]][[3]]))) {
+      
+      # Add proximity time to total_proximity_list for the current mouse
+      if (total_proximity_list[[mouse]][[1]] == mouse_id) { # Verify matching IDs
+        total_proximity_list[[mouse]][[2]] <- as.numeric(total_proximity_list[[mouse]][[2]]) + (secTemp - 1)
+      } else {
+        stop("Mouse IDs do not match in compute_total_proximity")
+      }
     }
     
-    ##FIRST NEW SECOND
-    #check if current animal was on the same position as one or multiple animal in the current second
-    if(new_animal_list[[animal]][[3]]==new_animal_list[[other_animal[1]]][[3]] ||
-       new_animal_list[[animal]][[3]]==new_animal_list[[other_animal[2]]][[3]] ||
-       new_animal_list[[animal]][[3]]==new_animal_list[[other_animal[3]]][[3]] )
-    {
-      #add closeness second into total_closeness_list for current animal
-      if(total_closeness_list[[animal]][[1]]==animal_id){#double check if id is the right one
-        total_closeness_list[[animal]][[2]] <- as.numeric(total_closeness_list[[animal]][[2]])+1
-      }else{throw("animal ids are not the same in check_total_closeness")}
+    # Check proximity in new positions (for the current second)
+    if (exclude_condition_new && 
+        (new_animal_list[[mouse]][[3]] %in% sapply(other_mice, function(idx) new_animal_list[[idx]][[3]]))) {
+      
+      # Add one second of proximity time to total_proximity_list for the current mouse
+      if (total_proximity_list[[mouse]][[1]] == mouse_id) { # Verify matching IDs
+        total_proximity_list[[mouse]][[2]] <- as.numeric(total_proximity_list[[mouse]][[2]]) + 1
+      } else {
+        stop("Mouse IDs do not match in compute_total_proximity")
+      }
     }
-    
   }
   
-  
-  #browser()
-  return(total_closeness_list)
+  # Return the updated total proximity list
+  return(total_proximity_list)
 }
+
+
 ##############################################################################################################
 # input: old_animal_list,new_animal_list,count_movement_list, secTemp
 #         
@@ -760,11 +500,11 @@ check_total_closeness <- function(old_animal_list, new_animal_list, total_closen
 # effect: 
 
 # 
-check_movement <- function(old_animal_list,new_animal_list,count_movement_list, secTemp){
+compute_movement <- function(old_animal_list,new_animal_list,count_movement_list, secTemp) {
   #variable check if anyone moved at all
   moves <- 0
   
-  #for every animal in the animal list
+  #for every mouse in the mice list
   for (i in 1:4) {
     old_pos <- as.numeric(old_animal_list[[i]][[3]])
     #print("old_pos")
@@ -773,25 +513,26 @@ check_movement <- function(old_animal_list,new_animal_list,count_movement_list, 
     #print("new_pos")
     #print(new_pos)
     
-    
-    #check if animal changed place in this second, how long is not important
-    #also checking for lost_animal with position -1(not valuable)
-    if(old_pos!=(-1) & new_pos!=(-1) & old_pos!=new_pos){
-      #enter one movement to current animal
-      count_movement_list[[i]][[2]] <- as.numeric(count_movement_list[[i]][[2]])+1
+    #check if mouse changed place in this second, how long is not important
+    #also checking for lost_mouse with position -1(not valuable)
+    if(old_pos!=(-1) & new_pos != (-1) & old_pos!=new_pos) {
+      #enter one movement to current mouse
+      count_movement_list[[i]][[2]] <- as.numeric(count_movement_list[[i]][[2]]) + 1
       #enter one movement to whole system
-      count_movement_list[[5]][[2]] <- as.numeric(count_movement_list[[5]][[2]])+1
+      count_movement_list[[5]][[2]] <- as.numeric(count_movement_list[[5]][[2]]) + 1
       
       #add move to moves
-      moves <- moves+1
+      moves <- moves + 1
     }
     
     
   }
   
-  if(moves==0){print("check_movement: no one moved in this row :)")}
+  if(moves == 0) {
+    message("compute_movement: No movement detected in this interval.")
+  }
   
-  # return updated list of animal that are close to each other
+  # return updated list of mice that are close to each other
   return(count_movement_list)
 }
 ##############################################################################################################
@@ -803,11 +544,11 @@ check_movement <- function(old_animal_list,new_animal_list,count_movement_list, 
 # effect: function to do a shift in time(one second forward)
 
 # 
-sec_shift <- function( old_time){
+sec_shift <- function(old_time) {
   #put one second on top of old_time
-  new_time <- old_time%>%
-    as.numeric()%>%
-    +1%>%
+  new_time <- old_time %>%
+    as.numeric() %>%
+    + 1 %>%
     as.character()
   #cat("old time: ", old_time, "\n")
   #cat("new time: ", new_time, "\n")
@@ -815,44 +556,44 @@ sec_shift <- function( old_time){
 }
 
 ##############################################################################################################
-# input:  system_animal_names -  the ids/names of the animal in the current system
-#         animal_list - the list containing the information of the animal ID and the current time and position
+# input:  system_animal_ids -  the ids/names of the mice in the current system
+#         animal_list - the list containing the information of the mouse ID and the current time and position
 #         data -  the tibble with the data of the current system
-#         time - the time that we are looking at, can be written in several lines bc we have several animal
+#         time - the time that we are looking at, can be written in several lines bc we have several mice
 #         line - a counter for the actual line in our data that we are looking at
 #
 # output: 
 # effect: - update animal_list(if its possible) and return it
-#         - takes next entry in data and updates the new information in the animal list
+#         - takes next entry in data and updates the new information in the mice list
 #         - similarity to find_first_pos_and_time
-update_animal_list <- function(system_animal_ids, animal_list, data, time, line){
+update_animal_list <- function(system_animal_ids, animal_list, data, time, line) {
   
   #next_second <- sec_shift(time)
   new_time <- as.numeric(data[line,"DateTime"])
 
   # write sec difference between new and old time into secTemp
-  animal_list[["tempData"]][["secTemp"]] <- new_time-as.numeric(time)
+  animal_list[["data_temp"]][["secTemp"]] <- new_time-as.numeric(time)
   
-  # write new time into every animal information
-  for(i in 1:4){animal_list[[i]][[2]] <- new_time}
-
+  # write new time into every mouse information
+  for(i in 1:4) {animal_list[[i]][[2]] <- new_time}
+ 
   # while line(and especially the next lines) is still same time
-  while(as.numeric(data[line,"DateTime"])==new_time){
-    # write new position into special animal
-    for(i in 1:4){
-      if(animal_list[[i]][[1]]==as.character(data[line,"AnimalID"])){animal_list[[i]][[3]] <- as.numeric(data[line,"PositionID"])}
+  while(as.numeric(data[line,"DateTime"]) == new_time) {
+    # write new position into special mouse
+    for(i in 1:4) {
+      if(animal_list[[i]][[1]] == as.character(data[line,"AnimalID"])) {animal_list[[i]][[3]] <- as.numeric(data[line,"PositionID"])}
     }
     #if line is not the last line, check next line, else break while loop
-    if(line==nrow(data)){
-      line <- line+1
+    if(line == nrow(data)) {
+      line <- line + 1
       break
     }
     #continue with the while condition
-    line <- line+1
+    line <- line + 1
   }
   
   # write new line into animal_list
-  animal_list[["tempData"]][["lineTemp"]] <- line
+  animal_list[["data_temp"]][["lineTemp"]] <- line
   
   return(animal_list)
 }
@@ -862,32 +603,24 @@ update_animal_list <- function(system_animal_ids, animal_list, data, time, line)
 ## functions for comparing-file
 
 # input:  
-#   rank_tibble - the tibble containing the ranks
-#   vector - the vector to be ranked
-#   system - the system identifier
-#   change - the cage change identifier
-#   batch - the batch identifier
-#   hours_column_name - the name of the column containing the hours
-#   rank_column_name - the name of the column containing the ranks
+#         
+#        
 #
 # output: 
-#   rank_tibble - the updated tibble with ranks
-#
 # effect:
-#   Computes the ranks for the given vector and updates the rank_tibble with the ranks for the corresponding system, change, and batch.
 
-compute_rank <- function(rank_tibble, vector, system, change, batch, hours_column_name, rank_column_name) {
+
+compute_rank <- function(rank_tibble, vector, system, cageChange, batch, hours_column_name, rank_column_name) {
   
-  # Sort the total hour system vector by size, with the largest value getting rank 1
+  #sort the total hour system vec by size, largest value gets rank 1
   vector <- sort(vector)
-  
-  # Enter ranks in rank tibble
-  for (i in 1:length(vector)) {
-  # Enter rank in corresponding line in rank tibble
-  rank_tibble <- rank_tibble %>%
-    mutate({{rank_column_name}} := ifelse((Batch == batch) & (change == change) & (System == system) & (.data[[hours_column_name]] == vector[i]), i, .data[[rank_column_name]])) # New R version & instead of &&
+  #print(vector)
+  #enter ranks in rank tibble
+  for(i in 1:length(vector)) {
+    #enter rank in corresponding line in rank tibble
+    rank_tibble <- rank_tibble %>%
+      mutate({{rank_column_name}} := ifelse((Batch == batch) & (CageChange == cageChange) & (System == system) & (.data[[hours_column_name]] == vector[i]), i,.data[[rank_column_name]]))
   }
-  
   return(rank_tibble)
 }
 
@@ -901,7 +634,7 @@ compute_rank <- function(rank_tibble, vector, system, change, batch, hours_colum
 # output: 
 # effect:
 
-translate_rank_in_score_vec <- function(rank_vec){
+translate_rank_in_score_vec <- function(rank_vec) {
   #change rank into score
   #rank = score
   # 1   =   4
@@ -909,9 +642,9 @@ translate_rank_in_score_vec <- function(rank_vec){
   # 3   =   2
   # 4   =   1
   
-  for (i in 1:length(rank_vec)){
+  for (i in 1:length(rank_vec)) {
     #change rank into score 
-    score <- ifelse(rank_vec[i]==1, 4, ifelse(rank_vec[i]==2, 3, ifelse(rank_vec[i]==3, 2, ifelse(rank_vec[i]==4, 1, NA))))
+    score <- ifelse(rank_vec[i] == 1, 4, ifelse(rank_vec[i] == 2, 3, ifelse(rank_vec[i] == 3, 2, ifelse(rank_vec[i] == 4, 1, NA))))
     #overwrite rank with score
     rank_vec[i] <- score
   }
@@ -922,162 +655,102 @@ translate_rank_in_score_vec <- function(rank_vec){
 
 
 ############################################################################################
-## FUNCTIONS FOR ANALYZING SHANNON ENTROPY METRICS ##
+## FUNCTIONS FROM ANALYZING SHANNON ##
 ############################################################################################
 
-# Function: check_cage_prob
-# -------------------------
-# Description:
-# Updates a probability list (`cage_prob_list`) by calculating the positional 
-# probabilities of animals in a cage across time intervals.
-#
-# Input:
-# - old_animal_list: List containing the previous positions of animals.
-# - new_animal_list: List containing the updated positions of animals.
-# - cage_prob_list: List storing positional probabilities and counts for each cage position.
-# - secTemp: Number of seconds for which new positions should be considered.
-#
-# Output:
-# - Updated `cage_prob_list` with recalculated probabilities and counts for each position.
-#
-# Effect:
-# The function modifies the `cage_prob_list` by incorporating data from both old and new
-# animal position lists, weighted by the time intervals specified.
 
-check_cage_prob <- function(old_animal_list, new_animal_list, cage_prob_list, secTemp) {
-  # Initialize position counters for old and new positions (8 possible positions in the cage)
-  old_cage_positions <- integer(8) # Vector of zeros, length 8
-  new_cage_positions <- integer(8) # Vector of zeros, length 8
-
-  # Iterate over the first 4 animals in the lists to update position counters
-  for (i in 1:4) {
-    # Retrieve position indices for old and new animal positions
+# input:  
+#         
+#        
+#
+# output: 
+# effect:
+check_cage_prob <- function(old_animal_list,new_animal_list,cage_prob_list,secTemp) {
+  #create a vector of 8 ints , all 0
+  old_cage_positions <- c(integer(8))
+  new_cage_positions <- c(integer(8))
+  for(i in 1:4) {
     old_pos <- as.numeric(old_animal_list[[i]][[3]])
     new_pos <- as.numeric(new_animal_list[[i]][[3]])
-
-    # Increment the position counters at the respective indices
+    
+    # add +1 to the position number the mouse sits on (pos nr is the index of the position vector)
     old_cage_positions[old_pos] <- old_cage_positions[old_pos] + 1
     new_cage_positions[new_pos] <- new_cage_positions[new_pos] + 1
+    
   }
-
-  # Normalize position counters by dividing by 4 (total number of animals)
+  #print(old_cage_positions)
+  #print(new_cage_positions)
+  #divide the whole position vectors throug 4(4 mice)
   old_cage_positions <- old_cage_positions / 4
   new_cage_positions <- new_cage_positions / 4
-
-  # Update the cage_prob_list with the computed positional probabilities
-  for (i in 1:8) {
-    # Increment the total count for the current position in the old list
-    cage_prob_list[[i]][[2]] <- cage_prob_list[[i]][[2]] + 1
-    # Add the probability of this position from the old positions
+  
+  #enter probability of positions into cage_prob_list:
+  for(i in 1:8) {
+    #one time for the last second of the old list
+    cage_prob_list[[i]][[2]] <- cage_prob_list[[i]][[2]] + 1 #enter the amount of seconds from this position
     cage_prob_list[[i]][[3]] <- cage_prob_list[[i]][[3]] + old_cage_positions[i]
-
-    # Update probabilities for (secTemp - 1) additional seconds using the old positions
-    for (second in 1:(secTemp - 1)) {
-      cage_prob_list[[i]][[2]] <- cage_prob_list[[i]][[2]] + 1
-      cage_prob_list[[i]][[3]] <- cage_prob_list[[i]][[3]] + old_cage_positions[i]
+    #and (secTemp-1)-times for the new list 
+    for(second in 1:(secTemp - 1)) {
+      cage_prob_list[[i]][[2]] <- cage_prob_list[[i]][[2]] + 1 
+      cage_prob_list[[i]][[3]] <- cage_prob_list[[i]][[3]] + old_cage_positions[i]  #add the probability (secTemp-1)-times to the prob-number, bc we look at (secTemp-1)different seconds
     }
   }
-
-  # Return the updated probability list
   return(cage_prob_list)
 }
 
-# Function: check_animal_prob
-# ---------------------------
-# Description:
-# Updates the `animal_prob_tibble` to track the time spent by animals at specific positions 
-# and their cumulative probabilities based on positional changes over a given time interval.
-#
-# Input:
-# - old_animal_list: List containing the previous positions of animals.
-# - new_animal_list: List containing the updated positions of animals.
-# - animal_prob_tibble: Tibble containing information about animal positions, including:
-#   - AnimalID: Unique identifier for each animal.
-#   - Position: The cage position for the animal.
-#   - SumPercentage: Cumulative probability for each animal at each position.
-#   - Seconds: Total time spent by each animal.
-# - secTemp: Number of seconds to update for new positions.
-#
-# Output:
-# - Updated `animal_prob_tibble` with recalculated probabilities and time data.
-#
-# Effect:
-# Modifies `animal_prob_tibble` to reflect updated positional probabilities and 
-# time spent for each animal, based on their old and new positions.
 
-check_animal_prob <- function(old_animal_list, new_animal_list, animal_prob_tibble, secTemp) {
-  for (i in 1:4) { # Loop through each of the 4 tracked animals
+# input:  
+#         
+#        
+#
+# output: 
+# effect:
+check_mice_prob <- function(old_animal_list, new_animal_list, mice_prob_tibble, secTemp) {
+  
+  for(i in 1:4) {
     
-    # Skip updating if the current animal is not tracked (AnimalID is NA)
-    if (is.na(animal_ids[i])) {
-      next
-    }
+    #if mouse is not tracked(incomplete system)
+    if(is.na(animal_ids[i])) {next}
 
-    # Retrieve old and new position indices for the current animal
+    #define old and new(current) position
     old_pos <- as.numeric(old_animal_list[[i]][[3]])
     new_pos <- as.numeric(new_animal_list[[i]][[3]])
-
-    # Locate the row in `animal_prob_tibble` matching the animal's ID and position
-    row_old <- which(animal_prob_tibble$AnimalID == animal_ids[i] & animal_prob_tibble$Position == old_pos)
-    row_new <- which(animal_prob_tibble$AnimalID == animal_ids[i] & animal_prob_tibble$Position == new_pos)
-
-    # Increment the cumulative probability for the old position by 1
-    animal_prob_tibble[["SumPercentage"]][[row_old]] <- animal_prob_tibble[["SumPercentage"]][[row_old]] + 1
-
-    # Increment the cumulative probability for the new position by (secTemp - 1)
-    animal_prob_tibble[["SumPercentage"]][[row_new]] <- animal_prob_tibble[["SumPercentage"]][[row_new]] + (secTemp - 1)
-
-    # Update the total seconds for the current animal across all positions
-    animal_prob_tibble <- animal_prob_tibble %>%
-      mutate(Seconds = ifelse(AnimalID == animal_ids[i], Seconds + secTemp, Seconds))
+    
+    #row in which mice and position fits
+    #animal_ids[i], old_pos
+    row_old <- which(mice_prob_tibble$AnimalID == animal_ids[i] & mice_prob_tibble$Position == old_pos)
+    row_new <- which(mice_prob_tibble$AnimalID == animal_ids[i] & mice_prob_tibble$Position == new_pos)
+    
+    #enter probability of positions into mice_prob_tibble: 
+    mice_prob_tibble[["SumPercentage"]][[row_old]] <- mice_prob_tibble[["SumPercentage"]][[row_old]] + 1
+    mice_prob_tibble[["SumPercentage"]][[row_new]] <- mice_prob_tibble[["SumPercentage"]][[row_new]] + (secTemp - 1)
+    #enter amount of observed seconds into mice_prob_tibble: 
+    mice_prob_tibble <- mice_prob_tibble %>%
+      mutate(Seconds=ifelse(AnimalID == animal_ids[i], Seconds + secTemp, Seconds))
   }
-
-  # Return the updated tibble with revised positional probabilities and time data
-  return(animal_prob_tibble)
+  return(mice_prob_tibble)
 }
 
-# Function: calc_shannon_entropy
-# ------------------------------
-# Description:
-# Calculates the Shannon entropy of a given probability vector (`prob_vec`), 
-# which quantifies the uncertainty or diversity in a system.
+# input:  
+#         
+#        
 #
-# Input:
-# - prob_vec: A numeric vector of length 8, representing probabilities for 8 positions.
-#
-# Output:
-# - A numeric value representing the calculated Shannon entropy.
-#
-# Effect:
-# Throws an error if the input vector does not have exactly 8 elements, ensuring data integrity.
-# Handles cases where probabilities are 0 to avoid undefined log2(0) operations.
-
+# output: 
+# effect:
 calc_shannon_entropy <- function(prob_vec) {
-  
-  # Validate the input vector: ensure it has exactly 8 elements
-  if (length(prob_vec) != 8) {
+  if(length(prob_vec) != 8) {
     print(prob_vec)
-    stop("Error in Shannon entropy calculation: prob_vec is not the correct size.")
+    stop("error in shannon calculation, prob_vec not the rigth size")
   }
-
-  # Initialize the Shannon entropy value
+  #calculate shannon entropy with the known formula
   shannon_entropy <- numeric()
-
-  # Compute Shannon entropy using the formula: -Σ(p * log2(p))
-  for (i in 1:8) {
-    if (prob_vec[i] == 0) {
-      # If probability is 0, add 0 to the sum (log2(0) is undefined)
-      shannon_entropy <- sum(shannon_entropy, 0)
+  for(i in 1:8) {
+    if(prob_vec[i] == 0) {
+      shannon_entropy <- sum(shannon_entropy, 0) #when no one was in position i, i will be 0 and log2(0) is not defined. thats why I declare this sum as 0
     } else {
-      # Add the term p * log2(p) to the sum
-      shannon_entropy <- sum(shannon_entropy, prob_vec[i] * log2(prob_vec[i]))
-    }
+      shannon_entropy <- sum(shannon_entropy, prob_vec[i] * log2(prob_vec[i]))}
   }
-
-  # Negate the result to obtain the Shannon entropy
   shannon_entropy <- -shannon_entropy
-
-  # Return the calculated Shannon entropy
   return(shannon_entropy)
 }
 
@@ -1094,37 +767,31 @@ calc_shannon_entropy <- function(prob_vec) {
 #
 # output: 
 # effect:
-generateHeatMapCloseness <- function(count_closeness_list, batch, change, systemNum, animal_ids, phase, nr){
+
+generateHeatMapproximity <- function(count_proximity_list, batch, cageChange, systemNum, animal_ids, phase, phase_number) {
   # calculate second entrys to hour entrys
-  count_closeness_list_hours <- lapply(count_closeness_list, function(x) ifelse(x!=0,x/3600,x))
-  
-  
-  
+  count_proximity_list_hours <- lapply(count_proximity_list, function(x) ifelse(x != 0, x / 3600, x))
+
   # convert list of lists into a matrix
-  matrix_data <- do.call(rbind, count_closeness_list_hours)
+  matrix_data <- do.call(rbind, count_proximity_list_hours)
   
-  # names of the animal Ids
+  # names of the mice Ids
   dimnames(matrix_data) <- list(animal_ids, animal_ids)
   
   # melt the data, means create values combinations out of the matrix
-  data_melt <- melt(matrix_data, as.is = TRUE, value.name = "hours")                                          # Reorder data
-  #head(data_melt) 
-  
-  #print("System:")
-  #print(systemNum)
+  data_melt <- melt(matrix_data, as.is = TRUE, value.name = "hours")
   
   #create the plot
-  ggp <- ggplot(data_melt, aes(Var1, Var2)) +                                 # Create heatmap with ggplot2
-    geom_tile(aes(fill = hours))+
+  ggp <- ggplot(data_melt, aes(Var1, Var2)) +
+    geom_tile(aes(fill = hours)) +
     scale_fill_gradientn(colors = c("lightblue","blue","darkblue"), 
                          limits = c(0, 15), 
                          breaks = c(2, 4, 6, 8, 10, 12, 14, ifelse(max(data_melt$hours)<15,15,warning("Higher scale required in heatmap for ", systemNum))),
                          labels = c("2", "4", "6", "8", "10", "12", "14", "15"))+
-    labs(title = paste(batch, change, systemNum,":close contact, Phase: ", phase, nr), x = "ID", y = "ID")   # add labels and caption
+    labs(title = paste(batch, cageChange, systemNum,":close contact, Phase: ", phase, phase_number), x = "ID", y = "ID")
   
   return(ggp)            
 }
-
 
 # input:  
 #         
@@ -1132,27 +799,22 @@ generateHeatMapCloseness <- function(count_closeness_list, batch, change, system
 #
 # output: 
 # effect:
-generateHeatMapPositions <- function(count_position_list, batch, change, systemNum, phase, nr){
+generateHeatMapPositions <- function(count_position_list, batch, cageChange, systemNum, phase, phase_number) {
   #list into dataframe
   df_positions <- as.data.frame(do.call(rbind, count_position_list))
   #create old posizions tibble(translates position ids into coordinates)
-  Positions_tibble <- tibble(PositionID = c(1:8), xPos = c(0,100,200,300,0,100,200,300), yPos = c(0,0,0,0,116,116,116,116))
+  Positions_tibble <- tibble(PositionID = c(1:8), xPos = c(0, 100, 200, 300, 0, 100, 200, 300), yPos = c(0, 0, 0, 0, 116, 116, 116, 116))
   #merge both dataframes
   merged_df <- merge(df_positions, Positions_tibble, by.x = "V1", by.y = "PositionID", all = TRUE)
   # calculate second entrys to hour entrys
-  hour_df <-  merged_df%>%
-    mutate(V2= ifelse(V2!=0,V2/3600,V2))
+  hour_df <-  merged_df %>%
+    mutate(V2 = ifelse(V2 != 0, V2 / 3600, V2))
   
   #rename the columns
-  hour_df <- hour_df%>%
-    rename(ID=V1)%>%
-    rename(hours=V2)
-  
-  #print(hour_df)
-  #print("max value: ")
-  #print(max(hour_df$hours))
-  
-  
+  hour_df <- hour_df %>%
+    rename(ID = V1) %>%
+    rename(hours = V2)
+
   # create heatmap with ggplot2
   heatmap <- ggplot(hour_df, aes(x = xPos, y = yPos, fill = hours)) +
     geom_tile() +
@@ -1160,66 +822,70 @@ generateHeatMapPositions <- function(count_position_list, batch, change, systemN
     scale_y_continuous(breaks = c(0, 116), labels = c("0", "116")) +
     scale_fill_gradientn(colors = c("yellow","orange", "red", "darkred", "#290000"), # colour palette
                          limits = c(0, 12), 
-                         breaks = c(0, 2, 4, 6, 8, 10, ifelse(max(hour_df$hours)<12,12,warning("Higher scale required in heatmap for ", systemNum))),
+                         breaks = c(0, 2, 4, 6, 8, 10, ifelse(max(hour_df$hours) < 12, 12, warning("Higher scale required in heatmap for ", systemNum))),
                          labels = c("0", "2", "4", "6", "8", "10", "12")) + 
                          #limits are the borders of the scale,breaks are actual value breaks, labels are names for breakpoints
-    labs(title = paste(batch, change, systemNum, ": used positions, Phase: ", phase, nr),
+    labs(title = paste(batch, cageChange, systemNum, ": used positions, Phase: ", phase, phase_number),
          x = "x-axis",
          y = "y-axis")
 
   return(heatmap)            
 }
 
-
-
 #graph
 
-# input:  
-#         
-#        
-#
-# output: 
-# effect:
-generateGraph <- function(data, batch, change,animal_ids,system){
-  
-  #print(data)
-  #print(colnames(data))
-  
-  #filter data to needed columns
+#' Generate Graph of Animal Positions Over Phases
+#'
+#' This function generates a line graph showing the total close contact time 
+#' of animals over different phases. The time is converted from seconds to hours.
+#'
+#' @param data A data frame containing the data to be plotted.
+#' @param batch A character string indicating the batch of the experiment.
+#' @param cageChange A character string indicating the cage change information.
+#' @param animal_ids A character vector of length 4 containing the IDs of the animals.
+#' @param system A character string indicating the system used in the experiment.
+#'
+#' @return A ggplot object representing the graph.
+#'
+#' @import dplyr
+#' @import ggplot2
+#' @import reshape2
+#'
+#' @examples
+#' \dontrun{
+#' data <- read.csv("path_to_data.csv")
+#' batch <- "Batch1"
+#' cageChange <- "CageChange1"
+#' animal_ids <- c("Animal1", "Animal2", "Animal3", "Animal4")
+#' system <- "System1"
+#' plot <- generateGraph(data, batch, cageChange, animal_ids, system)
+#' print(plot)
+#' }
+
+generateGraph <- function(data, batch, cageChange, animal_ids, system) {
+
+  # Filter data to include only the necessary columns
   subset_data <- select(data, Phase, animal_ids[1], animal_ids[2], animal_ids[3], animal_ids[4])
+
+  # Melt the data to long format
+  long_data <- melt(subset_data, id = 'Phase')
   
+  # Rename columns for clarity
+  names(long_data) <- c('Phase', 'mouse', 'time')
+
+  # Convert time from seconds to hours
+  hour_data <- long_data %>%
+    mutate(time = as.integer(time)) %>%
+    mutate(time = ifelse(time != 0, time / 3600, time))
+
+  # Generate the plot
+  plot <- ggplot(data = hour_data, aes(x = Phase, y = time, color = mouse)) +
+    geom_line(aes(group = mouse)) +
+    geom_point() +
+    scale_y_continuous("total close contact in h") +
+    scale_x_discrete(limits = c("I1", "A1", "I2", "A2", "I3", "A3", "I4", "A4", "I5")) + 
+    scale_color_discrete(name = paste("mice from", batch, cageChange, system))
   
-  #print(subset_data)
-  
-  
-  #data melt
-  long_data <- melt(subset_data, id='Phase')
-  
-  #rename columns
-  names(long_data) <- c('Phase', 'animal', 'time')
-  
-  #print(long_data)
-  
-  #print(typeof(long_data$time))
-  #change seconds to hours
-  hour_data <- long_data%>%
-    mutate(time = as.integer(time))%>%
-    mutate(time= ifelse(time!=0,time/3600,time))
-  
-  #print(typeof(hour_data$time))
-  #print(hour_data)
-  
-  
-  plot <- ggplot(data=hour_data, aes(x=Phase, y=time, color=animal))+
-    geom_line(aes(group=animal))+
-    geom_point()+
-    scale_y_continuous("total close contact in h")+
-    scale_x_discrete(limits = c("I1", "A1", "I2", "A2", "I3", "A3", "I4", "A4", "I5"))+ 
-    scale_color_discrete(name = paste("animal from", batch, change, system))
-    
- 
-    
-    
   return(plot)
 }
 
@@ -1231,83 +897,72 @@ generateGraph <- function(data, batch, change,animal_ids,system){
 #
 # output: 
 # effect:
-create_joined_table <- function(CC1, CC2, CC3, CC4, animal_id, batch, stress_condition){
+create_joined_table <- function(CC1, CC2, CC3, CC4, mouse_id, batch, stress_condition) {
   
-  # filter every tibble to the current animal id
-  filtered_CC1 <-  CC1%>%
-    select(Phase, animal_id)%>%
-    rename(CC1=animal_id)
+  # filter every tibble to the current mouse id
+  filtered_CC1 <-  CC1 %>%
+    select(Phase, mouse_id) %>%
+    rename(CC1 = mouse_id)
   print(filtered_CC1)
   
-  filtered_CC2 <- CC2%>%
-    select(Phase, animal_id)%>%
-    rename(CC2=animal_id)
+  filtered_CC2 <- CC2 %>%
+    select(Phase, mouse_id) %>%
+    rename(CC2 = mouse_id)
   
-  filtered_CC3 <- CC3%>%
-    select(Phase, animal_id)%>%
-    rename(CC3=animal_id)
+  filtered_CC3 <- CC3 %>%
+    select(Phase, mouse_id) %>%
+    rename(CC3 = mouse_id)
   
-  filtered_CC4 <- CC4%>%
-    select(Phase, animal_id)%>%
-    rename(CC4=animal_id)
+  filtered_CC4 <- CC4 %>%
+    select(Phase, mouse_id) %>%
+    rename(CC4 = mouse_id)
   
   # join the four filtered tibble to one 
-  closeness_table_join <- Reduce(function (...) { merge(..., by = "Phase", all = TRUE) },   # Full join of reduced tibbles 1,2,3 and 4
+  proximity_table_join <- Reduce(function (...) { merge(..., by = "Phase", all = TRUE) },   # Full join of reduced tibbles 1,2,3 and 4
                                  list(filtered_CC1, filtered_CC2, filtered_CC3, filtered_CC4))
   #sort the phase column by int
-  closeness_table_join <- closeness_table_join%>%
+  proximity_table_join <- proximity_table_join%>%
     arrange(as.integer(sub("[^0-9]", "", Phase)))
   
-  print(closeness_table_join)
-  
-  
+  print(proximity_table_join)
   message("plotting")
   #data melt
-  long_data <- melt(closeness_table_join, id='Phase')
+  long_data <- melt(proximity_table_join, id = 'Phase')
   
   #rename columns
-  names(long_data) <- c('Phase', 'change', 'time')
+  names(long_data) <- c('Phase', 'cageChange', 'time')
   
   #change seconds to hours
-  hour_data <- long_data%>%
-    mutate(time = as.integer(time))%>%
-    mutate(time= ifelse(time!=0,time/3600,time))
+  hour_data <- long_data %>%
+    mutate(time = as.integer(time)) %>%
+    mutate(time = ifelse(time != 0, time / 3600, time))
   
-  plot <- ggplot(data=hour_data, aes(x=Phase, y=time, color=change))+
-    geom_line(aes(group=change),na.rm=TRUE)+
-    geom_point(na.rm=TRUE)+
-    #geom_path(linewidth = 10)+
-    scale_color_manual(values = c("CC1" = "aquamarine2", "CC2" = "deepskyblue2", "CC3" = "deepskyblue4", "CC4" = "darkblue"),name = paste(animal, batch, stress_condition))+
+  plot <- ggplot(data = hour_data, aes(x = Phase, y = time, color = cageChange))+
+    geom_line(aes(group = cageChange),na.rm=TRUE) +
+    geom_point(na.rm = TRUE) +
+    scale_color_manual(values = c("CC1" = "aquamarine2", "CC2" = "deepskyblue2", "CC3" = "deepskyblue4", "CC4" = "darkblue"), name = paste(mouse, batch, stress_condition))+
     scale_y_continuous("total close contact in h")+
     scale_x_discrete(limits = c("I1", "A1", "I2", "A2", "I3", "A3", "I4", "A4", "I5"))+
-    facet_grid(~change)
+    facet_grid(~cageChange)
   return(plot)
 }
-
 
 ############################################################################################
 ### statistic functions from tobi: ###
 ########################################################################################
 
-
-
-
-
-
 # Function to perform normality test and appropriate statistical test for each variable and phase
 testAndPlotVariable <- function(data, value, variableName, phase, sex) {
   #filtering specific phase or sex if needed 
   filteredData <- data %>%
-    filter(if('Phase'%in% colnames(data))Phase == phase else TRUE) %>%   
+    filter(if('Phase' %in% colnames(data))Phase == phase else TRUE) %>%   
     filter(Sex == sex)
   
-  #factorize column group
+  # Convert Group to factor
   filteredData$Group <- as.factor(filteredData$Group)
-  
-  
-  # save unique group names
-  uniqueGroups <- unique(filteredData$Group)  #SUS,RES,CON...
-  # number of different groups in data
+
+  # Get unique groups and number of groups
+  uniqueGroups <- unique(filteredData$Group)
   numGroups <- length(uniqueGroups)
   
   # Check if the variable is numeric (if not, return Null)
@@ -1346,7 +1001,7 @@ testAndPlotVariable <- function(data, value, variableName, phase, sex) {
           return(list(testResults = testResults, plot = p, posthocResults = NULL))
         }
       }
-    } else {  # numGroups /= 2
+    } else {  # numGroups != 2
       ## NORMALIZATION
       # normalize group CON and RES with Shapiro-Wilk Normality Test
       conNorm <- shapiro.test(filteredData[[variableName]][filteredData$Group == "con"])
@@ -1396,7 +1051,6 @@ testAndPlotVariable <- function(data, value, variableName, phase, sex) {
           testResults$Test <- "Kruskal-Wallis"
           testResults$P_Value <- kruskalTest$p.value
           testResults$Significance_Level <- sprintf("%.3f", p.adjust(testResults$P_Value, method = "BH"))
-          
           posthocResultsDf <- performPosthocKruskal(filteredData, variableName)
         }
         
@@ -1422,12 +1076,11 @@ testAndPlotVariable <- function(data, value, variableName, phase, sex) {
 }
 
 # Function to generate plots for each variable and phase
-generatePlot <- function(data, value, variableName, phase, sex) {
-  filteredData <- data #%>%
+generatePlot <- function(processed_data, value, variableName, phase, sex) {
+  filteredData <- processed_data #%>%
   #  filter(if (include_phase) Phase == phase else TRUE) %>%  # Include/exclude "Phase" based on the variable
   #  filter(if (include_sex) Sex == sex else TRUE)  # Include/exclude "Sex" based on the variable
-  
-  
+
   p <- ggplot(filteredData, aes(Group, .data[[variableName]], color = Group)) +
     # Customize plot aesthetics and labels
     scale_x_discrete(name = NULL, expand = c(0.3, 0.1)) + 
@@ -1464,19 +1117,14 @@ generatePlot <- function(data, value, variableName, phase, sex) {
 ## parametric
 # Function to perform post hoc pairwise tests for ANOVA
 performPosthocAnova <- function(data, variableName) {
-  
   anovaTest <- aov(as.formula(paste(variableName, "~ Group")), data = data)
-  
   pairwiseResults <- rstatix::pairwise_t_test(as_data_frame(data), formula = as.formula(paste(variableName, "~ Group")),
                                      p.adjust.method = "bonferroni")
-  
   # Remove duplicate comparisons
   pairwiseResults <- pairwiseResults[!duplicated(pairwiseResults[, c("group1", "group2")]), ]
   pairwiseResults$GroupComparison <- paste(pairwiseResults$group1, "vs.", pairwiseResults$group2)
   return(pairwiseResults)
 }
-
-
 
 # Function to perform post hoc pairwise tests for Kruskal-Wallis
 performPosthocKruskal <- function(data, variableName) {
