@@ -698,61 +698,105 @@ check_cage_prob <- function(old_animal_list,new_animal_list,cage_prob_list,secTe
   return(cage_prob_list)
 }
 
-
-# input:  
-#         
-#        
-#
-# output: 
-# effect:
+#' Update Mouse Tracking Probabilities
+#'
+#' This function updates a tibble containing probabilities and observation counts for mouse positions 
+#' based on the changes in their positions over a given time interval.
+#'
+#' @param old_animal_list A list containing information about the previous positions of animals. 
+#' @param new_animal_list A list containing information about the current positions of animals.
+#' @param mice_prob_tibble A tibble with columns `AnimalID`, `Position`, `SumPercentage`, and `Seconds`, 
+#'                         tracking the probabilities and observation counts for each mouse.
+#' @param secTemp A numeric value indicating the time interval (in seconds) over which the changes are observed.
+#' @return A tibble (`mice_prob_tibble`) with updated probabilities and observed seconds for each mouse.
+#' @details For each mouse that is being tracked, the function updates the `SumPercentage` 
+#'          and `Seconds` columns in the tibble based on the mouse's old and new positions. 
+#'          If a mouse is not tracked (`NA` in `animal_ids`), it is skipped.
+#' @examples
+#' # Example usage (example data is illustrative):
+#' old_animal_list <- list(list(NA, NA, 1), list(NA, NA, 2), list(NA, NA, 3), list(NA, NA, 4))
+#' new_animal_list <- list(list(NA, NA, 2), list(NA, NA, 3), list(NA, NA, 4), list(NA, NA, 1))
+#' mice_prob_tibble <- tibble::tibble(
+#'   AnimalID = c(1, 2, 3, 4),
+#'   Position = c(1, 2, 3, 4),
+#'   SumPercentage = c(0, 0, 0, 0),
+#'   Seconds = c(0, 0, 0, 0)
+#' )
+#' secTemp <- 5
+#' updated_tibble <- check_mice_prob(old_animal_list, new_animal_list, mice_prob_tibble, secTemp)
+#' 
+#' @export
 check_mice_prob <- function(old_animal_list, new_animal_list, mice_prob_tibble, secTemp) {
   
-  for(i in 1:4) {
+  for (i in 1:4) {
     
-    #if mouse is not tracked(incomplete system)
-    if(is.na(animal_ids[i])) {next}
-
-    #define old and new(current) position
+    # Skip if the mouse is not tracked (incomplete system)
+    if (is.na(animal_ids[i])) { next }
+    
+    # Define old and new (current) positions
     old_pos <- as.numeric(old_animal_list[[i]][[3]])
     new_pos <- as.numeric(new_animal_list[[i]][[3]])
     
-    #row in which mice and position fits
-    #animal_ids[i], old_pos
+    # Identify rows in which the animal ID and position match
     row_old <- which(mice_prob_tibble$AnimalID == animal_ids[i] & mice_prob_tibble$Position == old_pos)
     row_new <- which(mice_prob_tibble$AnimalID == animal_ids[i] & mice_prob_tibble$Position == new_pos)
     
-    #enter probability of positions into mice_prob_tibble: 
+    # Update probability of positions in `mice_prob_tibble`
     mice_prob_tibble[["SumPercentage"]][[row_old]] <- mice_prob_tibble[["SumPercentage"]][[row_old]] + 1
     mice_prob_tibble[["SumPercentage"]][[row_new]] <- mice_prob_tibble[["SumPercentage"]][[row_new]] + (secTemp - 1)
-    #enter amount of observed seconds into mice_prob_tibble: 
+    
+    # Update the amount of observed seconds in `mice_prob_tibble`
     mice_prob_tibble <- mice_prob_tibble %>%
-      mutate(Seconds=ifelse(AnimalID == animal_ids[i], Seconds + secTemp, Seconds))
+      mutate(Seconds = ifelse(AnimalID == animal_ids[i], Seconds + secTemp, Seconds))
   }
+  
   return(mice_prob_tibble)
 }
 
-# input:  
-#         
-#        
-#
-# output: 
-# effect:
+#' Calculate Shannon Entropy
+#'
+#' This function computes the Shannon entropy for a given probability vector 
+#' using the formula for entropy in information theory. 
+#'
+#' @param prob_vec A numeric vector of length 8 containing probabilities. 
+#'                 The sum of the probabilities should ideally equal 1.
+#' @return A numeric value representing the Shannon entropy.
+#' @details If an element of `prob_vec` is 0, its contribution to the entropy 
+#'          is treated as 0, as log2(0) is undefined.
+#' @examples
+#' # Example 1: A uniform probability distribution
+#' prob_vec <- rep(1/8, 8)
+#' calc_shannon_entropy(prob_vec)
+#'
+#' # Example 2: A skewed probability distribution
+#' prob_vec <- c(0.4, 0.3, 0.2, 0.05, 0.05, 0, 0, 0)
+#' calc_shannon_entropy(prob_vec)
+#' 
+#' @export
 calc_shannon_entropy <- function(prob_vec) {
-  if(length(prob_vec) != 8) {
+  if (length(prob_vec) != 8) {
     print(prob_vec)
-    stop("error in shannon calculation, prob_vec not the rigth size")
+    stop("Error in Shannon calculation: prob_vec is not the correct size")
   }
-  #calculate shannon entropy with the known formula
+  
+  # Initialize Shannon entropy
   shannon_entropy <- numeric()
-  for(i in 1:8) {
-    if(prob_vec[i] == 0) {
-      shannon_entropy <- sum(shannon_entropy, 0) #when no one was in position i, i will be 0 and log2(0) is not defined. thats why I declare this sum as 0
+  
+  # Calculate Shannon entropy using the formula
+  for (i in 1:8) {
+    if (prob_vec[i] == 0) {
+      # Contribution is 0 when probability is 0 (log2(0) is undefined)
+      shannon_entropy <- sum(shannon_entropy, 0)
     } else {
-      shannon_entropy <- sum(shannon_entropy, prob_vec[i] * log2(prob_vec[i]))}
+      shannon_entropy <- sum(shannon_entropy, prob_vec[i] * log2(prob_vec[i]))
+    }
   }
+  
+  # Negate the result to get the final entropy value
   shannon_entropy <- -shannon_entropy
   return(shannon_entropy)
 }
+
 
 ############################################################################################
 ## PLOTS ##
