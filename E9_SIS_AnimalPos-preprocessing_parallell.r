@@ -18,16 +18,13 @@
 # - Adjust the working directory path as needed.
 # - Adjust the path to the excluded animals file as needed.
 
-# Load required packages
-requiredPackages <- c("readr", "stringr", "dplyr", "lubridate", "tibble", "writexl", "foreach", "doParallel", "parallel", "tidyverse", "tcltk")
+requiredPackages <- c("readr", "stringr", "dplyr", "lubridate", "tibble", "writexl", "foreach", "doParallel", "parallel", "tidyverse")
 
-# Install and load required packages
-lapply(requiredPackages, function(package) {
-  if (!requireNamespace(package, quietly = TRUE)) {
-    install.packages(package, dependencies = TRUE)
-  }
-  library(package, character.only = TRUE)
-})
+# Load required packages using pacman
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman", dependencies = TRUE)
+}
+pacman::p_load(readr, stringr, dplyr, lubridate, tibble, writexl, foreach, doParallel, parallel, tidyverse, tcltk)
 
 # Set working directory and source functions
 setwd("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability")
