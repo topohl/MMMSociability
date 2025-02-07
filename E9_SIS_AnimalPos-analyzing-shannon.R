@@ -1,23 +1,48 @@
-#' @title Analysis of Shannon Entropy
-#' @description This script performs an analysis of Shannon entropy for animal positions.
-#' @details 
-#' This script is part of the MMMSociability project and is used to analyze the Shannon entropy 
-#' of animal positions. The analysis is based on data collected and processed in previous steps 
-#' of the project.
+#' @title Analysis of Shannon Entropy in Animal Positioning
 #' 
-#' @file /C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-analyzing-shannon_AnjasVersion.r
-#' @date 01/2025
-#' @author Tobias Pohl, Anja Magister
+#' @description 
+#' This script conducts a comprehensive analysis of Shannon entropy to evaluate the distribution 
+#' and diversity of animal positions within a specified environment. Shannon entropy is a measure 
+#' of uncertainty or randomness, which in this context, helps in understanding the spatial 
+#' behavior and movement patterns of animals.
+#' 
+#' @details 
+#' This script is an integral component of the MMMSociability project, aimed at studying 
+#' sociability patterns among animals. The analysis leverages data collected from various 
+#' tracking devices and sensors, processed through preliminary steps in the project pipeline. 
+#' The Shannon entropy metric provides insights into the complexity and variability of animal 
+#' movements, which can be crucial for ecological and behavioral studies.
+#' 
+#' The script performs the following key steps:
+#' 1. Data Loading: Importing pre-processed animal position data.
+#' 2. Data Cleaning: Ensuring data integrity and handling missing values.
+#' 3. Entropy Calculation: Applying Shannon entropy formula to the positional data.
+#' 4. Result Visualization: Generating plots and graphs to visualize entropy distribution.
+#' 5. Output Generation: Saving the results and visualizations to the specified directory.
+#' 
+#' @file /C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-analyzing.r
+#' @date January 2025
+#' @authors 
+#' Tobias Pohl, Anja Magister
 #' 
 #' @section Notes:
-#' - Ensure that all required libraries and data files are available before running the script.
-#' - The script is designed to be run in an R environment.
-#' - The results of the analysis will be saved in the specified output directory.
+#' - Ensure that all required libraries (e.g., `entropy`, `ggplot2`) and data files are available 
+#'   and correctly referenced before executing the script.
+#' - The script is intended to be executed within an R environment, preferably with R version 4.0 
+#'   or higher.
+#' - The results, including entropy values and visualizations, will be saved in the specified 
+#'   output directory for further analysis and reporting.
 #' 
 #' @section References:
-#' - Please refer to the project documentation for more details on the methodology and data collection.
+#' - For detailed methodology and data collection procedures, refer to the MMMSociability project 
+#'   documentation.
+#' - Shannon, C. E. (1948). A Mathematical Theory of Communication. Bell System Technical Journal, 
+#'   27(3), 379-423.
+#' - Pielou, E. C. (1966). The Measurement of Diversity in Different Types of Biological 
+#'   Collections. Journal of Theoretical Biology, 13, 131-144.
 #' 
-#' @keywords Shannon entropy, animal positions, MMMSociability
+#' @keywords 
+#' Shannon entropy, animal positions, spatial behavior, ecological analysis, MMMSociability
 
 # Load required packages using pacman
 if (!requireNamespace("pacman", quietly = TRUE)) {
@@ -39,7 +64,7 @@ tables_directory <- "/tables"
 # Load custom functions
 source(paste0(working_directory, "/E9_SIS_AnimalPos-functions_AnjasVersion.R"))
 
-# Load lists of susceptible and control animals
+# Load lists of susceptible and control animals for analysis
 sus_animals <- readLines(paste0(working_directory, "/raw_data/sus_animals.csv"))
 con_animals <- readLines(paste0(working_directory, "/raw_data/con_animals.csv"))
 
@@ -130,7 +155,11 @@ for(batch in batches) {
     cat(batch, cageChange)
     
     #' @title Read Preprocessed Data
-    #' @description This function constructs the filename for the current CSV file based on the batch and cageChange variables, defines the full path to the CSV file, and reads the preprocessed data from the CSV file into a tibble.
+    #' 
+    #' @description This function constructs the filename for the current CSV file based on 
+    #' the batch and cageChange variables, defines the full path to the CSV file, and reads 
+    #' the preprocessed data from the CSV file into a tibble.
+    #' 
     #' @param batch A variable representing the batch identifier.
     #' @param cageChange A variable representing the cage change identifier.
     #' @param working_directory A string representing the working directory where the preprocessed data is stored.
@@ -168,14 +197,29 @@ for(batch in batches) {
     # Define unique animals in the data batch
     unique_animals <- unique(data_preprocessed$AnimalID)
    
-    #================================================
+    # ================================================
     # ANALYSIS
-    #================================================
-    # for every system (different animal cages)
-    # one system has 4 animals, one batch has 5 systems
-    # there are 4 experimental systems and one control system
+    # ================================================
+    #' @title Iterate Through Systems and Phases
+    #' 
+    #' @description This section iterates through each system and phase to analyze the animal 
+    #' positions and calculate Shannon entropy. It processes the data for each system and phase,
+    #' updating the animal positions and calculating the probability of positions in the cage 
+    #' and for each animal. The results are stored in the respective tibbles for further analysis.
+    #' 
+    #' @param unique_systems A vector containing the unique system identifiers.
+    #' @param data_preprocessed A tibble containing the preprocessed data for the current batch and cage change.
+    #' @param phases A vector containing the phases of the experiment (Active and Inactive).
+    #' @param active_phase_count A vector containing the number of active phases.
+    #' @param inactive_phase_count A vector containing the number of inactive phases.
+    #' @param cageChange A variable representing the cage change identifier.
+    #' @param batch A variable representing the batch identifier
+    #' 
+    # Iterate through each system (representing different animal cages)
+    # Each system contains 4 animals, and each batch comprises 5 systems
+    # There are 4 experimental systems and 1 control system
     
-    ## FOR LOOP ## (goes through every of the 5 systems)
+    # Iterate through each system (representing different animal cages)
     for(system_id in unique_systems) {
             
       print(system_id)
@@ -223,9 +267,21 @@ for(batch in batches) {
           filter(ConsecInactive == ifelse(phase == "Inactive", phase_number, 0)) %>% 
             as_tibble()
           
-          #================================================
+          # ================================================
           # INITIALIZATIONS
-          #================================================
+          # ================================================
+          #' @title Initialize Animal Positions
+          #' 
+          #' @description This function initializes the positions of the animals for the current phase.
+          #' It assigns the first time and position for each animal based on the data.
+          #' 
+          #' @param animal_ids A vector containing the unique animal IDs.
+          #' @param data_system_phase A tibble containing the data for the current system, phase, and phase number.
+          #' @param animal_list A list containing the animal positions.
+          #' @param cage_position_probability A list of vectors representing the probability of each cage position.
+          #' @param animal_position_probability A tibble containing the probability of positions for each animal.
+          #' 
+          #' @return A list containing the updated animal positions.
 
           # Initialize animal lists with empty name, start time, and start position for each animal in one system (4 animals together)
           animal_1 <- list(name = "", time = "", position = 0)
@@ -285,9 +341,26 @@ for(batch in batches) {
             Prob = 0
           )
           
-          #================================================
+          # ================================================
           # ANALYSIS
-          #================================================
+          # ================================================
+          #' @title Analyze Data for Shannon Entropy
+          #' 
+          #' @description This function analyzes the data for Shannon entropy calculation.
+          #' It iterates through the data rows of one data_system_phase, updates the animal positions,
+          #' and calculates the probability of positions in the cage and for each animal.
+          #' 
+          #' @param animal_ids A vector containing the unique animal IDs.
+          #' @param data_system_phase A tibble containing the data for the current system, phase, and phase number.
+          #' @param system_complete A logical value indicating whether the system is complete (TRUE) or incomplete (FALSE).
+          #' @param cage_position_probability A list of vectors representing the probability of each cage position.
+          #' @param animal_position_probability A tibble containing the probability of positions for each animal.
+          #' @param save_tables A logical value indicating whether to save the analysis results as CSV files.
+          #' @param batch The batch identifier.
+          #' @param system_id The system identifier.
+          #' @param cageChange The cage change indicator.
+          #' @param phase The phase of the experiment.
+          #' @param phase_number The phase number within the active or inactive phase.
 
           message("Analysing data...")
           
@@ -331,9 +404,20 @@ for(batch in batches) {
             initial_time <- animal_list[[1]][[2]]
           }
           
-          #================================================
+          # ================================================
           # RESULTS
-          #================================================
+          # ================================================
+          #' @title Calculate Probability for Cage and Animal Positions
+          #' 
+          #' @description This function calculates the probability for each cage and animal position based on the observed data.
+          #' 
+          #' @param previous_animal_positions A list containing the previous positions of the animals.
+          #' @param animal_list A list containing the current positions of the animals.
+          #' @param cage_position_probability A list of vectors representing the probability of each cage position.
+          #' @param elapsed_seconds The total elapsed seconds in the current phase.
+          #' 
+          #' @return The updated cage position probability list.
+          #' @return The updated animal position probability tibble.
           
           # Calculate the probability for each cage position
           for(i in 1:8) {
@@ -366,6 +450,10 @@ for(batch in batches) {
           #================================================
           # SHANNON ENTROPY
           #================================================
+          #' @title Calculate Shannon Entropy
+          #' @description This function calculates the Shannon entropy for a given probability vector.
+          #' @param prob_vec A numeric vector containing probabilities for each position.
+          #' @return The Shannon entropy value for the given probability vector.
             
           if(system_complete) {
             # Cage
@@ -421,16 +509,19 @@ for(batch in batches) {
   }
 }
 
-############### save tables ########################################################################
+# ================================================
+# Save Results
+# ================================================
 
-#tables as csv data
-if(save_tables == TRUE) {
-  message("save analysis tables")
+# Save the analysis results as CSV files
+if (save_tables == TRUE) {
+  message("Saving analysis results to CSV files")
   
-  #result cage entropy
-  write.csv(cagePosEntropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_cagePosEntropy.csv"), row.names = FALSE)
-  #result animals entropy
-  write.csv(animalPosEntropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_animalPosEntropy.csv"), row.names = FALSE)
+  # Save the cage entropy results
+  write.csv(cagePosEntropy, file = paste0(saving_directory, tables_directory, "/all_batches", "_all_cageChanges", "_cagePosEntropy.csv"), row.names = FALSE)
+  
+  # Save the animal entropy results
+  write.csv(animalPosEntropy, file = paste0(saving_directory, tables_directory, "/all_batches", "_all_cageChanges", "_animalPosEntropy.csv"), row.names = FALSE)
 }
 
 ############### read saved tables into a tibble(if you skip the analysis part on top) ########################################################################
@@ -439,76 +530,104 @@ cagePosEntropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory
 
 animalPosEntropy <- as_tibble(read_delim(paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_animalPosEntropy.csv"),delim = ",", show_col_types = FALSE))
 
-####################################### CONSEC COLUMNS ##########################################################################################
-#PREPROCESS
-#rename tibbles to make a copy
+# ================================================
+# Data Preprocessing for Consecutive Entropy
+# ================================================
+# This section preprocesses the data to calculate the consecutive Shannon entropy for cage and animal positions.
+# The data is transformed to include columns for consecutive active and inactive phases, and the entropy values are updated accordingly.
+
+# Data Preprocessing for Consecutive Entropy Calculation
+# This section renames the tibbles to create copies for further processing.
+# It then dynamically processes the entropy tibbles to create columns for consecutive active and inactive phases.
+# The phase column is split, and the content is updated to reflect the active and inactive phases.
+# The processed tibbles are then used for further analysis.
+
+# Rename tibbles to create copies
 consec_cage_entropy <- cagePosEntropy
 consec_animal_entropy <- animalPosEntropy
 
-#definitions for dynamic processing
+# Definitions for dynamic processing
 entropy_tibble_names <- c("consec_cage_entropy", "consec_animal_entropy")
 values <- c('CageEntropy', 'animalEntropy')
 
 for (i in seq_along(entropy_tibble_names)) {
   name <- entropy_tibble_names[i]
-  ifelse(name=="consec_cage_entropy", entropy_list <- consec_cage_entropy, entropy_list <- consec_animal_entropy)
+  ifelse(name == "consec_cage_entropy", entropy_list <- consec_cage_entropy, entropy_list <- consec_animal_entropy)
   
-  #create consec colums:
-  #split Phase column
+  # Create consecutive columns by splitting the Phase column
   entropy_list[c('Phase', 'Consec')] <- str_split_fixed(entropy_list$Phase, '', 2)
   
-  #change consec column to ConsecAct and Inact
-  #and change content of Phase column to active and inactive
-  entropy_list <- entropy_list%>%
-    filter(Batch!= "B6") %>%
-    mutate(ConsecActive = ifelse(Phase=="A", as.numeric(Consec), 0)) %>%
-    mutate(ConsecInactive = ifelse(Phase=="I", as.numeric(Consec)-1, 0)) %>%
-    mutate(Phase = ifelse(Phase=="A", "active", "inactive"))
+  # Update the consecutive columns to reflect active and inactive phases
+  # Change the content of the Phase column to "active" and "inactive"
+  entropy_list <- entropy_list %>%
+    filter(Batch != "B6") %>%
+    mutate(ConsecActive = ifelse(Phase == "A", as.numeric(Consec), 0)) %>%
+    mutate(ConsecInactive = ifelse(Phase == "I", as.numeric(Consec) - 1, 0)) %>%
+    mutate(Phase = ifelse(Phase == "A", "active", "inactive"))
   
-  if(name=="consec_animal_entropy")entropy_list <- entropy_list%>%mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res")))
+  if(name == "consec_animal_entropy") {
+    entropy_list <- entropy_list %>%
+      mutate(Group = ifelse(AnimalID %in% sus_animals, "sus", ifelse(AnimalID %in% con_animals, "con", "res")))
+  }
   
-  for(change in c("CC1","CC2", "CC3", "CC4")) {
+  for(change in c("CC1", "CC2", "CC3", "CC4")) {
     
-    if(change!="CC1") {
+    if(change != "CC1") {
       entropy_list <- entropy_list %>%
         mutate(ConsecActive = ifelse(CageChange == change & Phase == "active", ConsecActive + max_consecAct, ConsecActive)) %>%
         mutate(ConsecInactive = ifelse(CageChange == change & Phase == "inactive", ConsecInactive + max_consecInact, ConsecInactive))
-      
     }
     
     max_consecAct <- entropy_list %>%
-      filter(CageChange==change) %>%
+      filter(CageChange == change) %>%
       pull(ConsecActive) %>%
       unique() %>%
       max()
-    #print(max_consecAct)
     
     max_consecInact <- entropy_list %>%
-      filter(CageChange==change) %>%
+      filter(CageChange == change) %>%
       pull(ConsecInactive) %>%
       unique() %>%
       max()
-    #print(max_consecInact)
   }
   
-  #bring columns into right order
-  if(name == "consec_animal_entropy")entropy_list <- entropy_list[c('CageChange', 'Batch', 'System', 'AnimalID', 'Sex', 'Group', 'Phase', 'ConsecActive', 'ConsecInactive', 'animalEntropy')]
-  if(name == "consec_cage_entropy")entropy_list <- entropy_list[c('CageChange', 'Batch', 'System', 'Sex', 'Phase', 'ConsecActive', 'ConsecInactive', 'CageEntropy')]
+  # Reorder columns for consistency
+  if(name == "consec_animal_entropy") {
+    entropy_list <- entropy_list[c('CageChange', 'Batch', 'System', 'AnimalID', 'Sex', 'Group', 'Phase', 'ConsecActive', 'ConsecInactive', 'animalEntropy')]
+  }
+  if(name == "consec_cage_entropy") {
+    entropy_list <- entropy_list[c('CageChange', 'Batch', 'System', 'Sex', 'Phase', 'ConsecActive', 'ConsecInactive', 'CageEntropy')]
+  }
   
-  #overwrite old tibbles with new processed tibbles
+  # Update the original tibbles with the processed data
   ifelse(name == "consec_cage_entropy", consec_cage_entropy <- entropy_list, consec_animal_entropy <- entropy_list)
 }
 
-############### save consec tables ########################################################################
+# ================================================
+# Save Consecutive Entropy Tables
+# ================================================
+#' @title Save Consecutive Entropy Tables
+#' 
+#' @description This section saves the consecutive entropy tables as CSV files for further analysis and visualization.
+#' The tables are saved in the specified directory for future reference and reporting.
+#' 
+#' @param save_tables A logical value indicating whether to save the tables as CSV files.
+#' @param saving_directory A string representing the directory where the tables will be saved.
+#' @param tables_directory A string representing the subdirectory where the tables will be saved.
+#' @param consec_cage_entropy A tibble containing the consecutive cage entropy results.
+#' @param consec_animal_entropy A tibble containing the consecutive animal entropy results.
+#' 
+#' @return The consecutive entropy tables saved as CSV files in the specified directory.
 
-#tables as csv data
-if(save_tables==TRUE) {
-  message("save consec tables")
+# Save Consecutive Entropy Tables as CSV Files
+if (save_tables == TRUE) {
+  message("Saving consecutive entropy tables to CSV files")
   
-  #result cage entropy
-  write.csv(consec_cage_entropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_consec_cage_entropy.csv"), row.names = FALSE)
-  #result animals entropy
-  write.csv(consec_animal_entropy, file = paste0(saving_directory, tables_directory,"/all_batches", "_all_cageChanges", "_consec_animal_entropy.csv"), row.names = FALSE)
+  # Save the consecutive cage entropy results
+  write.csv(consec_cage_entropy, file = paste0(saving_directory, tables_directory, "/all_batches", "_all_cageChanges", "_consec_cage_entropy.csv"), row.names = FALSE)
+  
+  # Save the consecutive animal entropy results
+  write.csv(consec_animal_entropy, file = paste0(saving_directory, tables_directory, "/all_batches", "_all_cageChanges", "_consec_animal_entropy.csv"), row.names = FALSE)
 }
 
 ############### show plots in R with new table structure ########################################################################
