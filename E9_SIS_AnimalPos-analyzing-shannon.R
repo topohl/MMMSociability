@@ -104,11 +104,6 @@ con_animals <- readLines(paste0(working_directory, "/raw_data/con_animals.csv"))
 #'   - `animalEntropy`: Shannon entropy of the animal's position data (numeric).
 #'
 #' @return Three empty tibbles: `cagePosProb`, `cagePosEntropy`, and `animalPosEntropy`.
-#' @examples
-#' # Example usage
-#' print(cagePosProb)  # Check the initialized tibble
-#' print(cagePosEntropy)  # Check the initialized tibble
-#' print(animalPosEntropy)  # Check the initialized tibble
 
 # Initialize the result tibble for cage position probabilities
 cagePosProb <- tibble(
@@ -364,7 +359,7 @@ for(batch in batches) {
 
           message("Analysing data...")
           
-          # Update animal_list to first time and first position
+          # Initialize animal_list with the first time and position
           animal_list <- initialize_animal_positions(animal_ids, data_system_phase, animal_list)
           
           initial_time <- animal_list[[1]][[2]]
@@ -372,7 +367,7 @@ for(batch in batches) {
           elapsed_seconds <- 0
           total_rows <- nrow(data_system_phase) + 1
           
-          # WHILE LOOP: Iterate through the data rows of one data_system_phase
+          # WHILE LOOP: Process each row of the data_system_phase tibble
           while (current_row != total_rows && current_row < total_rows) {
           
             # Create a copy of the old version of the animals list for comparison to new list (to calculate differences between the gaps of two rows)
@@ -384,7 +379,7 @@ for(batch in batches) {
             # Update elapsed_seconds
             elapsed_seconds <- animal_list[["data_temp"]][["elapsed_seconds"]]
           
-            ##################################################################################################
+            # ================================================
           
             # Use ANALYSIS FUNCTIONS to update result lists
           
@@ -396,7 +391,7 @@ for(batch in batches) {
             # Update the probability of positions in the cage for each animal
             animal_position_probability <- update_animal_position_probability(previous_animal_positions, animal_list, animal_position_probability, elapsed_seconds)
           
-            ##################################################################################################
+            # ================================================
           
             # Update current_row
             current_row <- animal_list[["data_temp"]][["current_row"]]
@@ -447,9 +442,9 @@ for(batch in batches) {
             }
           }
             
-          #================================================
+          # ================================================
           # SHANNON ENTROPY
-          #================================================
+          # ================================================
           #' @title Calculate Shannon Entropy
           #' @description This function calculates the Shannon entropy for a given probability vector.
           #' @param prob_vec A numeric vector containing probabilities for each position.
