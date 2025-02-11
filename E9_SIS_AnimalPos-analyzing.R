@@ -138,7 +138,13 @@ for(batch in batches) {
     }
           
     # Create a tibble to store information about animal IDs in each system for the current cage change
-    system_animal_ids <- tibble("sys.1" = rep(NA, times = 4), "sys.2" = rep(NA, times = 4), "sys.3" = rep(NA, times = 4), "sys.4" = rep(NA, times = 4), "sys.5" = rep(NA, times = 4))
+    system_animal_ids <- tibble(
+      "sys.1" = rep(NA, times = 4), 
+      "sys.2" = rep(NA, times = 4), 
+      "sys.3" = rep(NA, times = 4), 
+      "sys.4" = rep(NA, times = 4), 
+      "sys.5" = rep(NA, times = 4)
+    )
     
     #' Loop Through Each System and Process Phase Data
     #' 
@@ -220,7 +226,7 @@ for(batch in batches) {
           count_movement_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0), c(animal_ids[3], 0), c(animal_ids[4], 0), c(system_id, 0))
           
           # Perform calculations for the current phase
-          message("Performing calculations for the current phase")
+          message("Calculating proximity, movement, and positional data for the current phase")
           
           # Initialize animal positions based on the current phase data
           animal_list <- initialize_animal_positions(animal_ids, data_system_phase, animal_list)
@@ -262,7 +268,7 @@ for(batch in batches) {
           }
           
           # Generate heatmaps
-          message("Generating heatmaps")
+          message("Generating heatmaps for proximity and positional data")
           if(system_complete) {
             heatmap_closeness <- generateHeatMapProximity(count_proximity_list, batch, cageChange, system_id, animal_ids, phase, phase_number) 
           }
@@ -288,7 +294,8 @@ for(batch in batches) {
           }
           
           # Enter movement data in the result tibble
-          message("Entering count movement data in tibble")
+          # Record movement data in the result tibble
+          message("Recording movement data in tibble")
           p <- paste0(substr(phase, 1, 1), phase_number)
           row <- which(result_total_movement$Phase == p)
           for(i in 1:4) {
