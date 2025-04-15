@@ -59,7 +59,7 @@ lapply(dirs, function(dir) {
 })
 
 # Load external functions from a separate script
-source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-functions.R"))
+source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R"))
 
 # General definitions and data loading ###########################################################
 
