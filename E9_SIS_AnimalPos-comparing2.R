@@ -2,68 +2,68 @@
 ## Anja Magister
 ## ANALYSIS OF ANIMAL POSITIONS - COMPARING2 ##
 ##
-##
 ## NEEDED FILE STRUCTURE IN WORKING DIRECTORY
+## - raw_data/
+##   - sus_animals.csv
+##   - con_animals.csv
+## - tables/
+##   - B1_CC1_mouse_which_system_tibble.csv
+##   - B1_CC1_total_closeness_table.csv
+##   - ...
+## - E9_SIS_AnimalPos-functions.R
 ##
 ##
 ## CUSTOMISABLE VARIABLES:
+## - working_directory: Path to the working directory containing the necessary files.
+## - batches: Vector of batch identifiers.
+## - cageChanges: Vector of cage change identifiers.
 ##
-##
 
-# libraries
-library(readr)        # load readr package for reading csv files
-library(ggplot2)      #for plots
-library(tibble)       #important for tibble operations
-library(dplyr)        #changes in tibbles
-library(reshape2)     #for heatmap plot
+# Load necessary libraries
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(readr, ggplot2, tibble, dplyr, reshape2, lubridate, stringr, tidyr, lme4, lmerTest, emmeans, pheatmap)
 
+# Define paths
+working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
 
+# Load custom functions
+source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-functions.R"))
 
-
-# paths
-working_directory <- "S:/Lab_Member/Anja/Git/MDC_Bachelor/E9_SIS_AnimalPos"
-#working_directory <- "/home/anja/Dokumente/FU BERLIN/BA/Git/MDC_Bachelor/E9_SIS_AnimalPos"
-
-#functions
-source(paste0(working_directory,"/E9_SIS_AnimalPos-functions.R"))
-
-batches <- c("B1", "B2", "B3", "B4", "B5")#B6
+# Define batches and cage changes
+batches <- c("B1", "B2", "B3", "B4", "B5", "B6")  # B6 can be added if needed
 cageChanges <- c("CC1", "CC2", "CC3", "CC4")
 
-#sus and con animals
-sus_animals <- readLines(paste0(working_directory,"/raw_data/sus_animals.csv"))
-##csv path for con animals
-con_animals <- readLines(paste0(working_directory,"/raw_data/con_animals.csv"))
-
+# Load susceptible and control animals
+sus_animals <- readLines(paste0(working_directory, "/raw_data/sus_animals.csv"))
+con_animals <- readLines(paste0(working_directory, "/raw_data/con_animals.csv"))
 
 ##########################################################################################################
-#create rank tibble
+# Create rank tibble
 
+# Initialize rank tibble
+rank_tibble <- tibble(
+  CageChange = NA,
+  System = NA,
+  Animal_ID = NA,
+  Group = NA,
+  Batch = NA,
+  Sex = NA,
+  Social_h_act = NA,
+  Social_h_inact = NA,
+  Social_h_total = NA,
+  Avg_social_h_act = NA,
+  Avg_social_h_inact = NA,
+  SystemRank_act = NA,
+  SystemRank_inact = NA,
+  SystemRank_total = NA
+)
 
-
-#initialize rank tibble
-rank_tibble <- tibble(CageChange=NA,
-                      System=NA,
-                      Animal_ID=NA,
-                      Group=NA,
-                      Batch=NA,
-                      Sex=NA,
-                      Social_h_act=NA,
-                      Social_h_inact=NA,
-                      Social_h_total=NA,
-                      Avg_social_h_act=NA,
-                      Avg_social_h_inact=NA,
-                      SystemRank_act=NA,
-                      SystemRank_inact=NA,
-                      SystemRank_total=NA)
-
-for(batch in batches){
-  for(cageChange in cageChanges){
-    #read csv
-    mouse_which_system_tibble <-  tibble(read_delim(paste0(working_directory,"/tables/", batch, "_", cageChange, "_mouse_which_system_tibble.csv"),delim = ",", show_col_types = FALSE))
-    total_closeness_table <- tibble(read_delim(paste0(working_directory,"/tables/", batch, "_", cageChange, "_total_closeness_table.csv"),delim = ",", show_col_types = FALSE))
-    
-    
+# Iterate over batches and cage changes to populate rank tibble
+for (batch in batches) {
+  for (cageChange in cageChanges) {
+    # Read CSV files
+    mouse_which_system_tibble <- tibble(read_delim(paste0(working_directory, "/tables/", batch, "_", cageChange, "_mouse_which_system_tibble.csv"), delim = ",", show_col_types = FALSE))
+    total_closeness_table <- tibble(read_delim(paste0(working_directory, "/tables/", batch, "_", cageChange, "_total_closeness_table.csv"), delim = ",", show_col_types = FALSE))
     #special treatment for b3 1545...
     #if(batch=="B3"&&cageChange=="CC3"){
     #  mouse_which_system_tibble[4,2] <- "1545"
@@ -72,108 +72,96 @@ for(batch in batches){
    #     rename('1545' = OR1545)
    # }
     
-    #special treatment for every CC4 after A2(grid in cage)-> not usable for social analysis
-    #use only A1,I2,A2 for the computation of the rank from CC4
-    if(cageChange=="CC4"){
-      
-      total_closeness_table <- total_closeness_table%>%
-        filter(Phase %in% c("A1","I2","A2"))
+    # Special treatment for every CC4 after A2 (grid in cage) -> not usable for social analysis
+    # Use only A1, I2, A2 for the computation of the rank from CC4
+    if (cageChange == "CC4") {
+      total_closeness_table <- total_closeness_table %>%
+      filter(Phase %in% c("A1", "I2", "A2"))
     }
     
-    for(system in colnames(mouse_which_system_tibble)){
-      
+    # Iterate over each system in the mouse_which_system_tibble
+    for (system in colnames(mouse_which_system_tibble)) {
       print(system)
-      mice_of_system <- mouse_which_system_tibble%>%  # this will create a character vector
-        select(all_of(system))%>%
-        pull()
       
-      #if system is incomplete->skip system
-      if(NA %in% mice_of_system){
-        cat("skip ", system, " in ", cageChange, "in", batch, "\n")
-        #skip for loop
-        next
+      # Create a character vector of mice in the current system
+      mice_of_system <- mouse_which_system_tibble %>%
+      select(all_of(system)) %>%
+      pull()
+      
+      # Skip the system if it is incomplete
+      if (NA %in% mice_of_system) {
+      cat("Skipping ", system, " in ", cageChange, " in ", batch, "\n")
+      next
       }
       
-      #empty vector for determining rank:
-      #(max social hours,active phase, of a mouse of a system)
-      social_hours_act_system_vec <- c()
-      #(max social hours,inactive phase, of a mouse of a system)
-      social_hours_inact_system_vec <- c()
-      #(max social hours of a mouse of a system)
-      social_hours_total_system_vec <- c()
+      # Initialize vectors for determining rank
+      social_hours_act_system_vec <- c()   # Max social hours (active phase) of a mouse in a system
+      social_hours_inact_system_vec <- c() # Max social hours (inactive phase) of a mouse in a system
+      social_hours_total_system_vec <- c() # Max social hours of a mouse in a system
       
-      for(mouse in mice_of_system){
-        
-        #print(mouse)
-        ## create variables for new row of tibble ##
-        group <- ifelse(mouse %in% sus_animals, "sus", ifelse(mouse %in% con_animals, "con", "res"))
-        #print(group)
-        sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
-        
-        #sum of multiple phases of one CageChange
-        social_h_act <- total_closeness_table%>%
-          filter(Phase %in% c("A1", "A2", "A3", "A4"))%>%
-          select(all_of(mouse))%>%#select column with mouse id
-          sum()
-        cat("sum of active: ", social_h_act, "\n")
-        
-        social_h_inact <- total_closeness_table%>%
-          filter(Phase %in% c("I2", "I3", "I4"))%>%
-          select(all_of(mouse))%>%
-          sum()
-        #cat("sum of inactive: ", social_h_inact, "\n")
-        
-        social_h_total <- sum(social_h_act, social_h_inact)
-        #average of a phase of one CageChange
-        avg_social_h_act <- total_closeness_table%>%
-          filter(Phase %in% c("A1", "A2", "A3", "A4"))%>%
-          select(all_of(mouse))%>%
-          unlist()%>%#change tibble into vector
-          mean()
-        #cat("mean of active: ", avg_social_h_act, "\n")
-        
-        avg_social_h_inact <- total_closeness_table%>%
-          filter(Phase %in% c("I2", "I3", "I4"))%>%
-          select(all_of(mouse))%>%
-          unlist()%>%
-          mean()
-        #cat("mean of inactive: ", avg_social_h_inact, "\n")
-        
-        
-        #add row to tibble
-        rank_tibble <- rank_tibble%>% 
-          add_row(CageChange=cageChange,
-                  System=system,
-                  Animal_ID=mouse,
-                  Group=group,
-                  Batch=batch,
-                  Sex=sex,
-                  Social_h_act=social_h_act,
-                  Social_h_inact=social_h_inact,
-                  Social_h_total=social_h_total,
-                  Avg_social_h_act=avg_social_h_act,
-                  Avg_social_h_inact=avg_social_h_inact,
-                  SystemRank_act=NA,
-                  SystemRank_inact=NA,
-                  SystemRank_total=NA)
-        
-        #FOR RANK COMPUTING:
-        #add total hours to vector
-        social_hours_act_system_vec <- append(social_hours_act_system_vec, social_h_act)
-        social_hours_inact_system_vec <- append(social_hours_inact_system_vec, social_h_inact)
-        social_hours_total_system_vec <- append(social_hours_total_system_vec, social_h_total)
+      # Iterate over each mouse in the current system
+      for (mouse in mice_of_system) {
+      # Determine group and sex of the mouse
+      group <- ifelse(mouse %in% sus_animals, "sus", ifelse(mouse %in% con_animals, "con", "res"))
+      sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
+      
+      # Calculate social hours for active and inactive phases
+      social_h_act <- total_closeness_table %>%
+        filter(Phase %in% c("A1", "A2", "A3", "A4")) %>%
+        select(all_of(mouse)) %>%
+        sum()
+      cat("Sum of active: ", social_h_act, "\n")
+      
+      social_h_inact <- total_closeness_table %>%
+        filter(Phase %in% c("I2", "I3", "I4")) %>%
+        select(all_of(mouse)) %>%
+        sum()
+      
+      social_h_total <- sum(social_h_act, social_h_inact)
+      
+      # Calculate average social hours for active and inactive phases
+      avg_social_h_act <- total_closeness_table %>%
+        filter(Phase %in% c("A1", "A2", "A3", "A4")) %>%
+        select(all_of(mouse)) %>%
+        unlist() %>%
+        mean()
+      
+      avg_social_h_inact <- total_closeness_table %>%
+        filter(Phase %in% c("I2", "I3", "I4")) %>%
+        select(all_of(mouse)) %>%
+        unlist() %>%
+        mean()
+      
+      # Add a new row to the rank_tibble
+      rank_tibble <- rank_tibble %>%
+        add_row(CageChange = cageChange,
+            System = system,
+            Animal_ID = mouse,
+            Group = group,
+            Batch = batch,
+            Sex = sex,
+            Social_h_act = social_h_act,
+            Social_h_inact = social_h_inact,
+            Social_h_total = social_h_total,
+            Avg_social_h_act = avg_social_h_act,
+            Avg_social_h_inact = avg_social_h_inact,
+            SystemRank_act = NA,
+            SystemRank_inact = NA,
+            SystemRank_total = NA)
+      
+      # Append social hours to vectors for rank computation
+      social_hours_act_system_vec <- append(social_hours_act_system_vec, social_h_act)
+      social_hours_inact_system_vec <- append(social_hours_inact_system_vec, social_h_inact)
+      social_hours_total_system_vec <- append(social_hours_total_system_vec, social_h_total)
       }
       
-      #RANK COMPUTING:
+      # Compute ranks for the current system
       rank_tibble <- compute_rank(rank_tibble, social_hours_act_system_vec, system, 'Social_h_act', 'SystemRank_act')
       rank_tibble <- compute_rank(rank_tibble, social_hours_inact_system_vec, system, 'Social_h_inact', 'SystemRank_inact')
       rank_tibble <- compute_rank(rank_tibble, social_hours_total_system_vec, system, 'Social_h_total', 'SystemRank_total')
-      
-      
+    }
     }
   }
-  
-}
 
 # delete first row in tibble (NA values)
 rank_tibble <- na.omit(rank_tibble)
@@ -190,8 +178,6 @@ rank_tibble <- rank_tibble%>%
   mutate(Avg_social_h_act = ifelse(Avg_social_h_act!=0,Avg_social_h_act/3600,Avg_social_h_act))%>%
   mutate(Avg_social_h_inact = as.integer(Avg_social_h_inact))%>%
   mutate(Avg_social_h_inact = ifelse(Avg_social_h_inact!=0,Avg_social_h_inact/3600,Avg_social_h_inact))
-
-
 
 ################## PLOTS ########################################
 
@@ -321,7 +307,6 @@ rank_phase_scatterplot <-  ggplot(data=plot_rank_tibble, aes(x=Group, y=Phase_ra
   theme_bw()+
   facet_grid(Phase~.)
 
-
 #number of sex entrys:
 female <- rank_tibble%>%
   filter(Sex=="female")
@@ -346,7 +331,6 @@ social_score_tibble <- tibble(Animal_ID=unique_mice,
                               Std_dev_act=NA,
                               Std_dev_inact=NA,
                               Std_dev_total=NA) 
-
 
 for(mouse in unique_mice){
   
@@ -402,11 +386,9 @@ for(mouse in unique_mice){
     #3: change calc function that you alway get the average as a score-> then we need a variable for num of CCs
   }
   #compute score_vecs (now rank 1 means score 4 and vice versa)
-  score_act_vec <- translate_rank_in_score_vec(rank_act_vec)
-  score_inact_vec <- translate_rank_in_score_vec(rank_inact_vec) 
-  score_total_vec <- translate_rank_in_score_vec(rank_total_vec) 
-  
-  
+  score_act_vec <- convert_rank_to_score(rank_act_vec)
+  score_inact_vec <- convert_rank_to_score(rank_inact_vec) 
+  score_total_vec <- convert_rank_to_score(rank_total_vec) 
   
   social_score_tibble <- social_score_tibble%>%
     mutate(Group = ifelse(Animal_ID == mouse, group, Group))%>%
@@ -418,13 +400,10 @@ for(mouse in unique_mice){
     mutate(Std_dev_act = ifelse(Animal_ID == mouse, sd(score_act_vec), Std_dev_act))%>% #standard deviation with sample
     mutate(Std_dev_inact = ifelse(Animal_ID == mouse, sd(score_inact_vec), Std_dev_inact))%>% 
     mutate(Std_dev_total = ifelse(Animal_ID == mouse, sd(score_total_vec), Std_dev_total))
-  
-  
 }
 
 # delete rows with NA in tibble (incomplete systems)
 social_score_tibble <- na.omit(social_score_tibble)
-
 
 ################## ANALYSIS OF THE DERIVATION ##################
 
@@ -439,7 +418,6 @@ low_deriv_tibble <- social_score_tibble%>%
 high_deriv_tibble <- social_score_tibble%>%
   filter(Std_dev_total>=1.4)%>%
   select(-c(Social_score_act, Social_score_inact, Std_dev_act, Std_dev_inact))
-
 
 #active and inactive
 low_deriv_tibble <- social_score_tibble%>%
@@ -463,8 +441,6 @@ cor(c(1,2,3,4), c(4,4,1,3),method="kendall")
 
 ###################################
 #lme
-library(lmerTest)
-library(emmeans)
 
 model <- lmerTest::lmer(Std_dev_total ~ Group * Sex + (1 | Group), data = social_score_tibble)
 emmeans_obj <- emmeans(model, ~ Group, data = social_score_tibble, 
@@ -485,13 +461,11 @@ print(pairwise_results)
 
 ## SOCIAL PROX IN SOCIAL SCORE ##
 
-
 #barplot single animals and their score, colored in groups -> shitty
 total_social_score_barplot <- ggplot(data=social_score_tibble, aes(x = factor(Animal_ID, levels = unique(Animal_ID[order(Group)])), y = Social_score_total, fill=Group))+
   geom_bar(stat = "identity", position = "dodge")+
   scale_x_discrete("Animal ID")+
   facet_grid(Sex~.)
-
 
 #delete the rows with con group for this plot. not necessary
 filtered_social_score_tibble <- social_score_tibble%>%
@@ -520,7 +494,6 @@ total_social_score_scatterplot <- ggplot(data = filtered_social_score_tibble, ae
         axis.title = element_text(size = 22), # Achsentitelgröße einstellen
         strip.text = element_text(size = 20)) 
 
-
 #heatmap for sum-score in comparison to standard deviation of the single scores from the sum
 
 #select needed columns and bring them in fitting order
@@ -537,7 +510,6 @@ total_social_score_heatmap <- ggplot(melt_score_tibble, aes(x = variable, y = An
   labs(title = paste("Social Score in Comparison to Standard Deviation"))
 #size of scale!!!
 
-
 total_social_score_heatmap <- ggplot(melt_score_tibble, aes(x = variable, y = Animal_ID, fill=value)) +
   geom_tile() +
   facet_grid(~ variable, scales = "free", space = "free") +
@@ -545,6 +517,8 @@ total_social_score_heatmap <- ggplot(melt_score_tibble, aes(x = variable, y = An
   labs(title = paste("Social Score in Comparison to Standard Deviation"))
 
 #################################################################################################only cont values
+
+
 filter_melt <- select(social_score_tibble, c(Animal_ID, Social_score_total, Std_dev_total))
 melt_score_tibble <- melt(filter_melt, id='Animal_ID')
 
@@ -553,9 +527,9 @@ total_social_score_heatmap <- ggplot(melt_score_tibble, aes(x = variable, y = An
   facet_grid(~ variable, scales = "free", space = "free") +
   scale_fill_gradientn(colors = c("yellow","orange", "red", "darkred", "#290000")) +
   labs(title = paste("Social Score in Comparison to Standard Deviation"))
-####################################################################################################pheatmap
-library(pheatmap)
 
+####################################################################################################
+# Heatpmap plot for the social score and std_dev
 
 # arrange columns
 conditions_sorted <- selected_score_tibble%>% arrange( Sex, Group, Social_score_total)
@@ -574,7 +548,6 @@ df_legend <- as.data.frame(conditions_sorted)[, c("Animal_ID",
   column_to_rownames(var="Animal_ID") %>% 
   `colnames<-`(c( "Social_score_total", "Group", "Sex"))
 
-
 row_lables <-  base::paste(selected_score_tibble$Animal_ID)
 #row_lables <-  base::paste(row.names(df_legend))
 
@@ -591,7 +564,6 @@ pheatmap::pheatmap(data_subset,
                    )
 
 #annotation_colors	-list for specifying annotation_row and annotation_col track colors manually. It is possible to define the colors for only some of the features. Check examples for details.
-
 
 ####################################################################################################
 #std dev plot
@@ -692,8 +664,6 @@ for(mouse in unique_mice){
     mutate(Std_dev_inact = ifelse(Animal_ID == mouse, sd(rank_inact_vec), Std_dev_inact))%>% 
     mutate(Std_dev_total = ifelse(Animal_ID == mouse, sd(rank_total_vec), Std_dev_total))%>%
     mutate(CV_total = ifelse(Animal_ID == mouse, sd(rank_total_vec)/mean(rank_total_vec), CV_total))
-  
-  
 }
 
 # delete rows with NA in tibble (mice with only one rank, bc of incomplete systems)
@@ -827,4 +797,3 @@ total_CV_scatterplot <- ggplot(data = avg_social_rank_tibble, aes(x = Group, y =
         axis.text = element_text(size = 20), 
         axis.title = element_text(size = 22), 
         strip.text = element_text(size = 20))
-
