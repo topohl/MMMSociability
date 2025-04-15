@@ -18,7 +18,7 @@
 # - Adjust the working directory path as needed.
 # - Adjust the path to the excluded animals file as needed.
 
-requiredPackages <- c("readr", "stringr", "dplyr", "lubridate", "tibble", "writexl", "foreach", "doParallel", "parallel", "tidyverse")
+required_packages <- c("readr", "stringr", "dplyr", "lubridate", "tibble", "writexl", "foreach", "doParallel", "parallel", "tidyverse")
 
 # Load required packages using pacman
 if (!requireNamespace("pacman", quietly = TRUE)) {
@@ -36,31 +36,31 @@ if (!dir.exists("preprocessed_data")) {
 }
 
 # Define constants for output directory, batches, and cage changes
-outputDir <- file.path(getwd(), "preprocessed_data")
+output_dir <- file.path(getwd(), "preprocessed_data")
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
-cageChanges <- c("CC1", "CC2", "CC3", "CC4")
+cage_changes <- c("CC1", "CC2", "CC3", "CC4")
 
 # Read excluded animals from CSV file
-excludedAnimalsDir <- file.path(getwd(), "raw_data", "excluded_animals.csv")
-if (!file.exists(excludedAnimalsDir)) {
+excluded_animals_dir <- file.path(getwd(), "raw_data", "excluded_animals.csv")
+if (!file.exists(excluded_animals_dir)) {
   stop("The excluded animals file does not exist at the expected path.")
 }
-exclAnimals <- readLines(excludedAnimalsDir)
+excluded_animals <- readLines(excluded_animals_dir)
 
 # Ensure the output directory exists, create if it doesn't
-if (!dir.exists(outputDir)) {
-  dir.create(outputDir, recursive = TRUE)
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
 }
 
 # Setup parallel processing using available cores minus one
-numCores <- detectCores() - 1
-cl <- makeCluster(numCores)
+num_cores <- detectCores() - 1
+cl <- makeCluster(num_cores)
 registerDoParallel(cl)
 
 # Process all files in parallel for each batch and cage change
-foreach(batch = batches, .packages = requiredPackages) %:%
-  foreach(cageChange = cageChanges) %dopar% {
-    preprocess_file(batch, cageChange, exclAnimals)
+foreach(batch = batches, .packages = required_packages) %:%
+  foreach(cage_change = cage_changes) %dopar% {
+    preprocess_file(batch, cage_change, excluded_animals)
   }
 
 # Stop the parallel processing cluster
