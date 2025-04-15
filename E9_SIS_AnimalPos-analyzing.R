@@ -220,7 +220,11 @@ for(batch in batches) {
           )
           
           # Initialize lists for storing proximity, position, and movement results
-          count_proximity_list <- list(m1 = c(0, 0, 0, 0), m2 = c(0, 0, 0, 0), m3 = c(0, 0, 0, 0), m4 = c(0, 0, 0, 0))
+          count_proximity_list <- list(
+            m1 = c(0, 0, 0, 0), 
+            m2 = c(0, 0, 0, 0), 
+            m3 = c(0, 0, 0, 0), 
+            m4 = c(0, 0, 0, 0))
           count_position_list <- list(c(1, 0), c(2, 0), c(3, 0), c(4, 0), c(5, 0), c(6, 0), c(7, 0), c(8, 0))
           total_proximity_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0), c(animal_ids[3], 0), c(animal_ids[4], 0))
           count_movement_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0), c(animal_ids[3], 0), c(animal_ids[4], 0), c(system_id, 0))
@@ -307,7 +311,6 @@ for(batch in batches) {
             }
           }
           result_total_movement[[system_id]][[row]] <- count_movement_list[[5]][[2]]
-          
         }
       }
       
