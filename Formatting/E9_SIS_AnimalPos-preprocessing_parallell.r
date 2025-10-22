@@ -18,17 +18,21 @@
 # - Adjust the working directory path as needed.
 # - Adjust the path to the excluded animals file as needed.
 
-required_packages <- c("readr", "stringr", "dplyr", "lubridate", "tibble", "writexl", "foreach", "doParallel", "parallel", "tidyverse")
+required_packages <- c("readr", "stringr", "dplyr", "lubridate", "tibble",
+                       "writexl", "foreach", "doParallel", "parallel",
+                       "tidyverse")
 
 # Load required packages using pacman
 if (!requireNamespace("pacman", quietly = TRUE)) {
   install.packages("pacman", dependencies = TRUE)
 }
-pacman::p_load(readr, stringr, dplyr, lubridate, tibble, writexl, foreach, doParallel, parallel, tidyverse, tcltk)
+pacman::p_load(readr, stringr, dplyr, lubridate, tibble,
+               writexl, foreach, doParallel, parallel,
+               tidyverse, tcltk)
 
 # Set working directory and source functions
 setwd("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability")
-source('C:/Users/topohl/Documents/GitHub/MMMSociability/E9_SIS_AnimalPos-functions.R')
+source('C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R')
 
 # Check if preprocessed_data folder exists, if not create it
 if (!dir.exists("preprocessed_data")) {
@@ -60,8 +64,8 @@ registerDoParallel(cl)
 # Process all files in parallel for each batch and cage change
 foreach(batch = batches, .packages = required_packages) %:%
   foreach(cage_change = cage_changes) %dopar% {
-    preprocess_file(batch, cage_change, excluded_animals)
-  }
+  preprocess_file(batch, cage_change, excluded_animals)
+}
 
 # Stop the parallel processing cluster
 stopCluster(cl)
