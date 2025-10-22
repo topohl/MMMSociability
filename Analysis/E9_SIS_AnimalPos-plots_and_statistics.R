@@ -1,11 +1,11 @@
 #' @title E9 Social Stress Experiment Data Analysis and Visualization
-#' 
-#' @description This script is designed to perform data analysis and visualization 
-#' for the E9 Social Stress experiment. It includes functionality for loading 
-#' necessary libraries, setting up directories for saving plots and statistics, 
+#'
+#' @description This script is designed to perform data analysis and visualization
+#' for the E9 Social Stress experiment. It includes functionality for loading
+#' necessary libraries, setting up directories for saving plots and statistics,
 #' and defining paths for working and saving directories.
-#' 
-#' @details 
+#'
+#' @details
 #' - The script uses the `pacman` package to load required libraries. If `pacman` 
 #'   is not installed, it will need to be installed first.
 #' - Libraries used in this script include:
@@ -19,19 +19,19 @@
 #'   - `plotrix`
 #'   - `lmerTest`
 #' - Flags are set to determine whether to save plots and statistics.
-#' - Paths for the working directory and saving directory are defined, with 
-#'   options to uncomment and modify paths for different environments 
+#' - Paths for the working directory and saving directory are defined, with
+#'   options to uncomment and modify paths for different environments
 #'   (e.g., local machine, server).
 #' - Subdirectories for saving plots and tables are also defined.
 #' 
-#' @note Ensure that the required libraries are installed and that the paths 
+#' @note Ensure that the required libraries are installed and that the paths
 #' are correctly set up for your environment before running the script.
 # improve comments professionally like data scientist
 
 # Load required packages using pacman. Install pacman if not already installed.
 if (!require("pacman")) install.packages("pacman")
 pacman::p_load(
-  readr, tibble, dplyr, reshape2, stringr, ggplot2, forcats, plotrix, lmerTest, 
+  readr, tibble, dplyr, reshape2, stringr, ggplot2, forcats, plotrix, lmerTest,
   tidyr, gridExtra, ggpubr, cowplot, writexl, rstatix, lme4, purrr, stringi, scales
 )
 
@@ -65,7 +65,7 @@ source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_
 
 # Define experimental batches and cage changes
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
-cageChanges <- c("CC1", "CC2", "CC3", "CC4") 
+cageChanges <- c("CC1", "CC2", "CC3", "CC4")
 
 # Read lists of control (con) and susceptible (sus) animals from CSV files
 con_animals <- readLines(paste0(working_directory, "/raw_data/con_animals.csv"))
@@ -187,8 +187,10 @@ for (i in seq_along(data_categories)) {
         max_consecInact <- batch_table %>% pull(ConsecInactive) %>% unique() %>% max()
 
         cage_change_data <- cage_change_data %>%
-          mutate(ConsecActive = ifelse(Phase == "active", max_consecAct + ConsecActive, 0)) %>%
-          mutate(ConsecInactive = ifelse(Phase == "inactive", max_consecInact - 1 + ConsecInactive, 0))
+          mutate(ConsecActive = ifelse(Phase == "active",
+                                       max_consecAct + ConsecActive, 0)) %>%
+          mutate(ConsecInactive = ifelse(Phase == "inactive",
+                                         max_consecInact - 1 + ConsecInactive, 0))
       }
 
       # Add new columns to the tibble
@@ -208,7 +210,10 @@ for (i in seq_along(data_categories)) {
         mutate(CageChange = cageChange)
 
       # Reorder columns
-      cage_change_data <- cage_change_data[c("CageChange", "Batch", "System", "AnimalID", "Sex", "Group", "Phase", "ConsecActive", "ConsecInactive", values[i])]
+      cage_change_data <- cage_change_data[c("CageChange", "Batch", "System",
+                                             "AnimalID", "Sex", "Group",
+                                             "Phase", "ConsecActive",
+                                             "ConsecInactive", values[i])]
 
       # Combine with the general tibble for all cage changes and batches
       if (data_category == "total_proximity") {
@@ -294,9 +299,9 @@ for (i in seq_along(consec_tibbles)) {
                        "steelblue",
                        "firebrick",
                        "darkorchid"),
-    color_palette <- c("con" = "#1e3791",
-                       "res" = "#8aacdb",
-                       "sus" = "#f49620")
+    color_palette <- c("sus" = "#E63946",
+                       "res" = "grey60",
+                       "con" = "#457B9D")
   )
 
   message(value)  # Log the current data category being processed
