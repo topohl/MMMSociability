@@ -1,25 +1,25 @@
 #' @file E9_SIS_AnimalPos-functions.R
-#' 
+#'
 #' @path /c:/Users/topohl/Documents/GitHub/MMMSociability/
-#' 
+#'
 #' @date 01/2025
-#' 
+#'
 #' @author Tobias Pohl, Anja Magister
-#' 
+#'
 #' @title Analysis of Animal Positions - Functions
-#' 
+#'
 #' @description
 #' This script contains functions used for the analysis of animal positions
 #' within the MMMSociability project. The functions are designed to process,
 #' analyze, and visualize positional data of animals in various experimental
 #' settings.
-#' 
+#'
 #' @details
 #' The functions included in this script are essential for the preprocessing
 #' and analysis of positional data. They facilitate tasks such as data
 #' cleaning, transformation, and statistical analysis. The script is part of
 #' the E9_SIS module within the MMMSociability project repository.
-#' 
+#'
 #' @usage
 #' Source this script to access the functions for analyzing animal positions.
 #' Ensure that all dependencies and required packages are installed and loaded
@@ -27,17 +27,20 @@
 
 #' @title Preprocess a single data file
 #'
-#' @description 
-#' This function preprocesses a single CSV file for animal position data. It reads the file, performs data cleaning, 
-#' extracts relevant columns, adds phase and position information, and saves the preprocessed file.
-#' 
+#' @description
+#' This function preprocesses a single CSV file for animal position data. It
+#' reads the file, performs data cleaning, extracts relevant columns, adds phase
+#' and position information, and saves the preprocessed file.
+#'
 #' @details
-#' The function reads the raw data from the specified file path, cleans the data by removing unnecessary columns,
-#' converts the DateTime column to POSIXct format, splits the Animal column into AnimalID and System, adds PositionID
-#' based on the xPos and yPos coordinates, and computes phase transitions. It also defines active and inactive phases
-#' based on the time of day and calculates consecutive active and inactive phases. The preprocessed data is then saved
-#' as a CSV file in the output directory.
-#' 
+#' The function reads the raw data from the specified file path, cleans the data
+#' by removing unnecessary columns, converts the DateTime column to POSIXct format,
+#' splits the Animal column into AnimalID and System, adds PositionID based on the
+#' xPos and yPos coordinates, and computes phase transitions. It also defines active
+#' and inactive phases based on the time of day and calculates consecutive active 
+#' and inactive phases. The preprocessed data is then saved as a CSV file in the 
+#' output directory.
+#'
 #' @param batch Character. Name of the batch directory containing the file.
 #' @param change Character. Change condition associated with the file.
 #' @param exclAnimals Character vector. IDs of animals to exclude from the analysis.
@@ -47,20 +50,20 @@
 #' @return None. The function saves the preprocessed data as a CSV file in the output directory.
 #' @export
 preprocess_file <- function(batch, change, exclAnimals) {
-  
+
   # Construct the file path for the raw data
   filename <- paste0("E9_SIS_", batch, "_", change, "_AnimalPos")
   csvFilePath <- file.path(getwd(), "raw_data", batch, paste0(filename, ".csv"))
-  
+
   # Check if the file exists; skip if not found
   if (!file.exists(csvFilePath)) {
     warning(paste("File", csvFilePath, "does not exist. Skipping to next file."))
     return(NULL)
   }
-  
+
   # Read the CSV file into a tibble
   data <- as_tibble(read_delim(csvFilePath, delim = ";", show_col_types = FALSE))
-  
+
   # Preprocessing steps
   data <- data %>%
     # Remove unnecessary columns
@@ -69,14 +72,14 @@ preprocess_file <- function(batch, change, exclAnimals) {
     mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC")) %>%
     # Split the Animal column into AnimalID and System
     separate(Animal, into = c("AnimalID", "System"), sep = "[-_]")
-  
+
   # Define Position Mapping Table
   position_ids <- tibble(
     PositionID = 1:8, 
     xPos = c(0, 100, 200, 300, 0, 100, 200, 300), 
     yPos = c(0, 0, 0, 0, 116, 116, 116, 116)
   )
-  
+
   # Add PositionID based on xPos and yPos
   data <- data %>%
     rowwise() %>%
@@ -85,7 +88,7 @@ preprocess_file <- function(batch, change, exclAnimals) {
     select(DateTime, AnimalID, System, PositionID) %>%
     filter(!AnimalID %in% exclAnimals) %>%
     arrange(DateTime)
-  
+
   # Add phase information and phase_transitions
   data <- data %>%
     # Add phase transition phase_transitions
@@ -101,13 +104,13 @@ preprocess_file <- function(batch, change, exclAnimals) {
     # Update consecutive phases and add day phase_transitions
     count_phases() %>%
     compute_day_transitions()
-  
+
   # Define the output file path
-  outputFileDir <- file.path(outputDir, paste0(filename, "_preprocessed.csv"))
-  
+  outputFileDir <- file.path(output_dir, paste0(filename, "_preprocessed.csv"))
+
   # Save the preprocessed data
   write_csv(data, outputFileDir)
-  
+
   # Log message upon successful save
   message(paste("File saved at", outputFileDir))
 }
@@ -199,55 +202,55 @@ find_id <- function(x_Pos, y_Pos, position_id) {
 #' @param animal_id A character representing the animal ID for the current iteration.
 #' 
 compute_phase_transitions <- function(preprocessed_data) {
-  
+
   # Save dates of the experiment
   experiment_dates <- as.Date(preprocessed_data$DateTime)
   unique_dates <- unique(experiment_dates)
-  
+
   # Save existing systems
   unique_systems <- unique(preprocessed_data$System)
-  
+
   for(i in 1:length(unique_dates)) {
     date <- unique_dates[i]
-  
+
     # Define phase transition points depending on the actual date
     # "GMT" means "UTC"
     active_phase_end <- as.POSIXct(paste(date, "06:29:59"), tz = "GMT")
     inactive_phase_start <- as.POSIXct(paste(date, "06:30:00"), tz = "GMT")
     inactive_phase_end <- as.POSIXct(paste(date, "18:29:59"), tz = "GMT")
     active_phase_start <- as.POSIXct(paste(date, "18:30:00"), tz = "GMT")
-    
+
     for(phase_transition in c(active_phase_end, inactive_phase_start, inactive_phase_end, active_phase_start)) {
-   
+
       # Filter rows which are earlier than the phase transition
       filtered_time <- preprocessed_data %>%
-      as_tibble() %>%
-      filter(DateTime < phase_transition)
-    
+        as_tibble() %>%
+        filter(DateTime < phase_transition)
+
       # We need a phase transition for every existing system and for every animal in each system
       for(system in unique_systems) {
-    
-        # Filter rows from the specific system 
+
+        # Filter rows from the specific system
         filtered_system <- filtered_time %>%
           as_tibble() %>%
           filter(System == system)
-    
+
         # Check which animals exist in this system
         animal_ids <- unique(filtered_system$AnimalID)
-    
+
         for(animal_id in animal_ids) {
           # Filter specific animal row from the system with the nearest DateTime to the phase transition but still earlier
           filtered_row <- filtered_system %>%
-          as_tibble() %>%
-          filter(AnimalID == animal_id) %>%
-          slice_max(order_by = DateTime)
-      
+            as_tibble() %>%
+            filter(AnimalID == animal_id) %>%
+            slice_max(order_by = DateTime)
+
           # If time on this day is recorded
           if(length(filtered_row) != 0) {
             # Use copied row as a new one and change the date to the phase transition date
             filtered_row <- filtered_row %>%
-            mutate(DateTime = as.POSIXct(phase_transition, tz = "UTC"))
-      
+              mutate(DateTime = as.POSIXct(phase_transition, tz = "UTC"))
+
             # Add new row to preprocessed_data
             preprocessed_data <- add_row(preprocessed_data, filtered_row)
           }
@@ -258,20 +261,20 @@ compute_phase_transitions <- function(preprocessed_data) {
   
   # Sort tibble again by DateTime to bring new entries to the correct position
   preprocessed_data <- preprocessed_data %>%
-  as_tibble() %>%
-  arrange(., DateTime)
-  
+    as_tibble() %>%
+    arrange(., DateTime)
+
   # Remove the last 20 rows to eliminate redundant phase transition entries from the final day and late phase transitions
   preprocessed_data <- preprocessed_data %>% filter(row_number() <= n() - 20)
-  
+
   return(preprocessed_data)
 }
 
 #' @title Compute Day Transitions in Experimental Data
-#' 
+#'
 #' @description
 #' This function adds additional rows to the dataset to represent RFID information at the day transition points (midnight) for each animal in each system.
-#' 
+#'
 #' @param preprocessed_data A tibble containing the experimental data, which includes columns for `DateTime`, `System`, and `AnimalID`.
 #' @param filtered_time A tibble containing the filtered data based on the phase transition time.
 #' @param filtered_system A tibble containing the filtered data based on the system.
@@ -283,50 +286,50 @@ compute_phase_transitions <- function(preprocessed_data) {
 #' @param unique_systems Character vector. Unique system names in the experiment.
 #' @param system Character. The system name for the current iteration.
 #' @param animal_id Character. The animal ID for the current iteration.
-#' 
+#'
 compute_day_transitions <- function(preprocessed_data) {
   # Save dates of the experiment
   experiment_dates <- as.Date(preprocessed_data$DateTime)
   unique_dates <- unique(experiment_dates)
-  
+
   # Save existing systems
   unique_systems <- unique(preprocessed_data$System)
-  
+
   for(i in 1:length(unique_dates)) {
     date <- unique_dates[i]
-    
+
     # Define phase transition point based on the actual date
     # "GMT" refers to "UTC"
     phase_transition <- as.POSIXct(paste(date, "00:00:00"), tz = "GMT")  #start of new day
-    
+
     # Filter rows that are earlier than the phase transition
     filtered_time <- preprocessed_data %>%
       as_tibble() %>%
       filter(DateTime < phase_transition)
-    
+
     for(system in unique_systems) {
-      
-      # Filter rows from the specific system 
+
+      # Filter rows from the specific system
       filtered_system <- filtered_time %>%
         as_tibble() %>%
         filter(System == system)
-      
+
       # Identify which animals are present in the current system
       animal_ids <- unique(filtered_system$AnimalID)
-      
+
       for(animal_id in animal_ids) {
         # Filter the specific animal row from the system with the nearest DateTime to the phase transition but still earlier
         filtered_row <- filtered_system %>%
           as_tibble() %>%
           filter(AnimalID == animal_id) %>%
           slice_max(order_by = DateTime)
-        
+
         # If the time on this day is recorded
         if(length(filtered_row) != 0) {
           # Duplicate the row and update the DateTime to the phase transition time
           filtered_row <- filtered_row %>%
             mutate(DateTime = as.POSIXct(phase_transition, tz = "UTC"))
-          
+
           # Append the new row to the preprocessed_data tibble
           preprocessed_data <- add_row(preprocessed_data, filtered_row)
         }
@@ -338,41 +341,38 @@ compute_day_transitions <- function(preprocessed_data) {
   preprocessed_data <- preprocessed_data %>%
     as_tibble() %>%
     arrange(., DateTime)
-  
+
   return(preprocessed_data)
 }
 
 #' @title Count Phases in Experimental Data
-#' 
+#'
 #' @description
 #' This function counts the number of consecutive active and inactive phases in the experimental data.
 #' It updates the `ConsecActive` and `ConsecInactive` columns based on the phase transitions in the data.
-#' 
+#'
 #' @details
 #' The function iterates over the data and counts the number of consecutive active and inactive phases.
 #' It updates the `ConsecActive` and `ConsecInactive` columns based on the phase transitions in the data.
 #' The function ensures that the `ConsecActive` and `ConsecInactive` columns are correctly updated for each row.
-#' 
+#'
 #' @param data A tibble containing the experimental data, which includes columns for `DateTime`, `Phase`, `ConsecActive`, and `ConsecInactive`.
 #' @param current_row A tibble containing the current row of the data.
 #' @param previous_row A tibble containing the previous row of the data.
 #' @param active_phases Numeric. The count of active phases in the data.
 #' @param inactive_phases Numeric. The count of inactive phases in the data.
 #' @param i Integer. The current iteration index.
-#' 
+#'
 count_phases <- function(data) {
-  
+
   #initialize Phase counter
   active_phases <- 0
   inactive_phases <- 0
-  
+
   for (i in 1:nrow(data)) {
-    
     current_row <- data[i,]
-    
     if (i == 1) {
-      
-      if(current_row$Phase == "Active") {
+      if (current_row$Phase == "Active") {
         current_row$ConsecActive <- 1
         current_row$ConsecInactive <- 0
         active_phases <- active_phases + 1
@@ -382,10 +382,9 @@ count_phases <- function(data) {
         inactive_phases <- inactive_phases + 1
       }
     } else {#i>1
-      
       #previous row from data
       previous_row <- data[(i - 1),]
-      
+
       if (current_row$Phase != previous_row$Phase) {
         if (current_row$Phase == "Active") {
           active_phases <- active_phases + 1  # change means the counter has to set higher
@@ -400,32 +399,29 @@ count_phases <- function(data) {
         current_row$ConsecActive <- previous_row$ConsecActive      #values stay the same number as before
         current_row$ConsecInactive <- previous_row$ConsecInactive
       }
-      
       #write new information back into data
       data[(i - 1),] <- previous_row
     }
-    
     #write new information back into data
-    data[i,] <- current_row  
+    data[i,] <- current_row
   }
-  
   return(data)
 }
 
 #' @title Initialize Animal Positions
-#' 
+#'
 #' @description
 #' This function initializes the positions of animals in the system based on the first recorded positions in the data.
 #' It extracts the initial time and position of each animal from the data and stores this information in a list.
 #' If the initial times of the animals differ, the function sets all initial times to the latest shared time to ensure
 #' that all animals start at the same time point for proximity tracking.
-#' 
+#'
 #' @details
 #' The function iterates over the list of animal IDs in the system and searches for the first recorded entry for each animal.
 #' It extracts the initial time and position of each animal and stores this information in a list. If the initial times of
 #' the animals differ, the function sets all initial times to the latest shared time. This ensures that all animals start at
 #' the same time point for proximity tracking.
-#' 
+#'
 #' @param system_animal_ids A list containing the IDs of animals in the current system.
 #' @param data A tibble containing the positional data for the current system.
 #' @param animal_list A list storing the animal IDs, initial time, and initial position for each animal.
@@ -436,19 +432,19 @@ count_phases <- function(data) {
 #' @param start_time POSIXct. The initial time of the current animal.
 #' @param start_position Numeric. The initial position of the current animal.
 #' @param end_time POSIXct. The shared end time for all animals in the system.
-#' 
+#'
 initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
-  
+
   # Initialize an empty vector with four variables.
   times_vec <- rep(NA, times = 4)
-  
+
   print(system_animal_ids)
   for (i in 1:length(system_animal_ids)) { #i=1-4
-    
+
     # This section defines the current animal identification name (animal_id_name), 
     # the initial position (start_position), and the initial timestamp (start_time).
     system_animal_id <- system_animal_ids[[i]]
-    if(is.na(system_animal_id)) {
+    if (is.na(system_animal_id)) {
       system_animal_id <- paste0("lost_", i)
       start_time <- 0        #time value should be adapted at the end of this function
       start_position <- (-1)  #add non existing position for non existing animal_id
@@ -461,35 +457,34 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
       start_time <- first_entry$DateTime
       start_position <- first_entry$PositionID
     }
-    
+
     # Record the name, position, and timestamp of each animal into the animal_list.
     animal_list[i][[1]] <- system_animal_id
     animal_list[[i]][[3]] <- start_position
     animal_list[[i]][[2]] <- start_time
-    
+
     # Record the current time into a vector for subsequent comparisons.
     times_vec[i] <- start_time
   }
-  
+
   # Check if all initial times are identical
   # If not, update all initial times to the latest shared time
-  if(length(unique(times_vec)) != 1) {
+  if (length(unique(times_vec)) != 1) {
     end_time <- max(times_vec)
     #print(end_time)
-    for(i in 1:4) {
+    for (i in 1:4) {
       animal_list[[i]][[2]] <- end_time
     }
   }
-  
   return(animal_list)
 }
 
 #' @title Update Social Proximity Tracking in Animal Behavior Analysis
-#' 
+#'
 #' @description
 #' This function tracks the proximity of animals over time by comparing their spatial positions. 
 #' It updates a result list that records the number of seconds each pair of animals spent in social contact.
-#' 
+#'
 #' @param previous_animal_positions A list containing the recorded positions of animals from the previous time step 
 #'        until the second before the current update. Each entry is assumed to be a sublist where the third element 
 #'        represents the numerical position identifier.
@@ -500,10 +495,10 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
 #'        Each entry represents a matrix-like structure where the row and column indices correspond to animal IDs, 
 #'        and the values store the accumulated social contact time in seconds.
 #' @param elapsed_seconds A numeric value representing the time interval (in seconds) that has passed since the last update.
-#' 
+#'
 #' @return
 #' A nested list (`count_proximity_list`) updated with new proximity durations for each pair of animals.
-#' 
+#'
 #' @details
 #' The function performs pairwise comparisons of animal positions to track proximity:
 #' - It first compares `previous_animal_positions` to determine proximity duration over the past `(elapsed_seconds - 1)` seconds.
@@ -513,7 +508,6 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
 #'   and `count_proximity_list[[j]][[i]]` are updated simultaneously when different individuals are in contact.
 #'
 update_proximity <- function(previous_animal_positions, current_animal_positions, count_proximity_list, elapsed_seconds) {
-  
   # Compare the positions of each pair of animals (third element in the list represents the position)
   # If the positions are the same, update the proximity count in count_proximity_list
   for (i in 1:4) {
@@ -531,7 +525,8 @@ update_proximity <- function(previous_animal_positions, current_animal_positions
       # Comparison of current_animal_positions for the first new second
       if (current_animal_positions[[i]][[3]] == current_animal_positions[[j]][[3]]) {
         count_proximity_list[[i]][[j]] <- count_proximity_list[[i]][[j]] + 1
-        # Enter new contact second in proximity list if the animals are at the same position and are two different individuals
+        # Enter new contact second in proximity list if the animals
+        # are at the same position and are two different individuals
         if (j != i) {
           count_proximity_list[[j]][[i]] <- count_proximity_list[[j]][[i]] + 1
         }
