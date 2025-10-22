@@ -44,91 +44,153 @@
 #' @param batch Character. Name of the batch directory containing the file.
 #' @param change Character. Change condition associated with the file.
 #' @param exclAnimals Character vector. IDs of animals to exclude from the analysis.
-#' @param outputDir Character. Path to the output directory for saving the preprocessed data.
+#' @param output_dir Character. Path to the output directory for saving the preprocessed data.
 #' @param find_id Function. A function to find the PositionID based on coordinates.
 #'
 #' @return None. The function saves the preprocessed data as a CSV file in the output directory.
 #' @export
 preprocess_file <- function(batch, change, exclAnimals) {
-
-  # Construct the file path for the raw data
   filename <- paste0("E9_SIS_", batch, "_", change, "_AnimalPos")
   csvFilePath <- file.path(getwd(), "raw_data", batch, paste0(filename, ".csv"))
-
-  # Check if the file exists; skip if not found
   if (!file.exists(csvFilePath)) {
     warning(paste("File", csvFilePath, "does not exist. Skipping to next file."))
     return(NULL)
   }
 
-  # Read the CSV file into a tibble
-  data <- as_tibble(read_delim(csvFilePath, delim = ";", show_col_types = FALSE))
+  # Import, handle DateTime with or without seconds
+  data <- as_tibble(readr::read_delim(csvFilePath, delim = ";", show_col_types = FALSE)) %>%
+    dplyr::mutate(DateTime = ifelse(
+      grepl("^\\d{2}\\.\\d{2}\\.\\d{4} \\d{2}:\\d{2}$", DateTime),
+      paste0(DateTime, ":00"),
+      DateTime
+    )) %>%
+    dplyr::mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC"))
 
-  # Preprocessing steps
+  # Remove unnecessary columns and split Animal info
   data <- data %>%
-    # Remove unnecessary columns
-    select(-c(RFID, AM, zPos)) %>%
-    # Convert DateTime to POSIXct format
-    mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC")) %>%
-    # Split the Animal column into AnimalID and System
-    separate(Animal, into = c("AnimalID", "System"), sep = "[-_]")
+    dplyr::select(-dplyr::any_of(c("RFID", "AM", "zPos"))) %>%
+    tidyr::separate(Animal, into = c("AnimalID", "System"), sep = "[-_]", extra = "merge", fill = "right")
 
-  # Define Position Mapping Table
-  position_ids <- tibble(
-    PositionID = 1:8, 
-    xPos = c(0, 100, 200, 300, 0, 100, 200, 300), 
+  # Define Position mapping table
+  position_ids <- tibble::tibble(
+    PositionID = 1:8,
+    xPos = c(0, 100, 200, 300, 0, 100, 200, 300),
     yPos = c(0, 0, 0, 0, 116, 116, 116, 116)
   )
 
-  # Add PositionID based on xPos and yPos
   data <- data %>%
-    rowwise() %>%
-    mutate(PositionID = find_id(xPos, yPos, position_id = position_ids)) %>%
-    # Retain relevant columns and exclude specified animals
-    select(DateTime, AnimalID, System, PositionID) %>%
-    filter(!AnimalID %in% exclAnimals) %>%
-    arrange(DateTime)
+    dplyr::rowwise() %>%
+    dplyr::mutate(PositionID = find_id(xPos, yPos, position_id = position_ids)) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(DateTime, AnimalID, System, PositionID) %>%
+    dplyr::filter(!AnimalID %in% exclAnimals) %>%
+    dplyr::arrange(DateTime)
 
-  # Add phase information and phase_transitions
+  # Phase and transition information (leave as in your workflow)
   data <- data %>%
-    # Add phase transition phase_transitions
     compute_phase_transitions() %>%
-    # Define active and inactive phases
-    mutate(Phase = ifelse(
-      format(DateTime, "%H:%M", tz = "UTC") >= "18:30" | 
-      format(DateTime, "%H:%M", tz = "UTC") < "06:30", 
+    dplyr::mutate(Phase = ifelse(
+      format(DateTime, "%H:%M", tz = "UTC") >= "18:30" |
+        format(DateTime, "%H:%M", tz = "UTC") < "06:30",
       "Active", "Inactive"
     )) %>%
-    # Initialize consecutive phase columns
-    mutate(ConsecActive = 0, ConsecInactive = 0) %>%
-    # Update consecutive phases and add day phase_transitions
+    dplyr::mutate(ConsecActive = 0, ConsecInactive = 0) %>%
     count_phases() %>%
     compute_day_transitions()
 
-  # Define the output file path
-  outputFileDir <- file.path(output_dir, paste0(filename, "_preprocessed.csv"))
+  # Add half-hour synthetic rows WITHOUT overwriting seconds
+  data <- add_half_hour_transitions(data) %>%
+    dplyr::arrange(DateTime) %>%
+    dplyr::mutate(Phase = ifelse(
+      format(DateTime, "%H:%M", tz = "UTC") >= "18:30" |
+      format(DateTime, "%H:%M", tz = "UTC") < "06:30",
+      "Active", "Inactive"
+    ))
 
-  # Save the preprocessed data
-  write_csv(data, outputFileDir)
-
-  # Log message upon successful save
-  message(paste("File saved at", outputFileDir))
+  # Save output
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  outputFilePath <- file.path(output_dir, paste0(filename, "_preprocessed.csv"))
+  readr::write_csv(data, outputFilePath)
+  message(paste("File saved at", outputFilePath))
 }
+
+
+
+#' @title Add Half-Hourly Transition Rows
+#'
+#' @description
+#' Adds synthetic rows to the dataset at every half-hour mark (e.g., 00:00, 00:30, ..., 23:30) so that each animal in each system
+#' has a location entry carried over at each interval. The location and other data are copied from the last known entry before
+#' the half-hour point for each animal.
+#'
+#' @param preprocessed_data A tibble containing the experimental data, with columns for DateTime, System, and AnimalID.
+#' @return The tibble with added synthetic rows for each half-hour interval.
+add_half_hour_transitions <- function(preprocessed_data) {
+  preprocessed_data <- preprocessed_data %>%
+    dplyr::filter(!is.na(DateTime)) %>%
+    dplyr::mutate(DateTime = as.POSIXct(DateTime, origin = "1970-01-01", tz = "UTC"))
+
+  animals <- unique(preprocessed_data$AnimalID)
+  systems <- unique(preprocessed_data$System)
+  all_dates <- as.Date(preprocessed_data$DateTime, tz = "UTC")  # ensure real Date
+
+  # Generate all desired half-hour times (e.g., 18:30:00, etc.) for each date
+  all_half_hours <- unique(unlist(lapply(all_dates, function(date) {
+    seq(
+      as.POSIXct(paste0(format(date, "%Y-%m-%d"), " 00:00:00"), tz = "UTC"),
+      as.POSIXct(paste0(format(date, "%Y-%m-%d"), " 23:59:59"), tz = "UTC"),
+      by = "30 min"
+    )
+  })))
+
+  synthetic_rows <- list()
+  for (animal in animals) {
+    for (system in systems) {
+      dsub <- preprocessed_data %>% dplyr::filter(AnimalID == animal, System == system)
+      if (nrow(dsub) == 0) next
+      for (hh_time in all_half_hours) {
+        # If exists, skip
+        if (any(dsub$DateTime == hh_time)) next
+        # Most recent real row before hh_time
+        latest <- dsub %>% dplyr::filter(DateTime < hh_time)
+        if (nrow(latest) == 0) next
+        last_row <- latest %>% dplyr::slice_max(order_by = DateTime, with_ties = FALSE)
+        synth <- last_row
+        synth$DateTime <- hh_time
+        synthetic_rows[[length(synthetic_rows) + 1]] <- synth
+      }
+    }
+  }
+
+  if (length(synthetic_rows) > 0) {
+    synthetic_df <- dplyr::bind_rows(synthetic_rows)
+    # Ensure both are properly POSIXct before row binding!
+    preprocessed_data$DateTime <- as.POSIXct(preprocessed_data$DateTime, origin = "1970-01-01", tz = "UTC")
+    synthetic_df$DateTime <- as.POSIXct(synthetic_df$DateTime, origin = "1970-01-01", tz = "UTC")
+    full_df <- dplyr::bind_rows(preprocessed_data, synthetic_df)
+  } else {
+    full_df <- preprocessed_data
+  }
+  full_df %>% dplyr::arrange(System, AnimalID, DateTime)
+}
+
+
 
 #' Find Position ID Based on Coordinates
 #'
-#' This function searches for a corresponding position ID based on a given pair of x and y coordinates 
-#' in a lookup table. The coordinates are adjusted to specific predefined ranges before the search.
+#' This function searches for a corresponding position ID based on a 
+#' given pair of x and y coordinates in a lookup table. The coordinates 
+#' are adjusted to specific predefined ranges before the search.
 #'
 #' @param x_Pos A numeric value representing the x-coordinate of the cage.
 #' @param y_Pos A numeric value representing the y-coordinate of the cage.
-#' @param position_id A tibble containing the lookup table with columns `xPos`, `yPos`, and `PositionID`.
+#' @param position_id A tibble containing the lookup table with columns`xPos`, `yPos`, and `PositionID`.
 #'        The `xPos` and `yPos` columns represent the coordinates, and `PositionID` is the ID associated 
 #'        with each coordinate pair.
-#' 
+#'
 #' @return A numeric value representing the `PositionID` corresponding to the given coordinates, 
 #'         or `NA` if no match is found.
-#' 
+#'
 #' @details 
 #' The function first adjusts the x and y coordinates to predefined ranges before searching the 
 #' `position_id` for the matching position. If a match is found, the corresponding `PositionID` is returned. 
@@ -876,7 +938,7 @@ convert_rank_to_score <- function(rank_vec) {
   
   score_vec <- rank_vec
   return(score_vec)
-}  
+}
 
 #================================================
 # FUNCTIONS FOR SHANNON ENTROPY CALCULATION
