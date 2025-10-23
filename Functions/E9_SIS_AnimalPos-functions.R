@@ -56,7 +56,7 @@ preprocess_file <- function(batch, change, exclAnimals) {
     warning(paste("File", csvFilePath, "does not exist. Skipping to next file."))
     return(NULL)
   }
-
+  
   # Import, handle DateTime with or without seconds
   data <- as_tibble(readr::read_delim(csvFilePath, delim = ";", show_col_types = FALSE)) %>%
     dplyr::mutate(DateTime = ifelse(
@@ -65,19 +65,19 @@ preprocess_file <- function(batch, change, exclAnimals) {
       DateTime
     )) %>%
     dplyr::mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC"))
-
+  
   # Remove unnecessary columns and split Animal info
   data <- data %>%
     dplyr::select(-dplyr::any_of(c("RFID", "AM", "zPos"))) %>%
     tidyr::separate(Animal, into = c("AnimalID", "System"), sep = "[-_]", extra = "merge", fill = "right")
-
+  
   # Define Position mapping table
   position_ids <- tibble::tibble(
     PositionID = 1:8,
     xPos = c(0, 100, 200, 300, 0, 100, 200, 300),
     yPos = c(0, 0, 0, 0, 116, 116, 116, 116)
   )
-
+  
   data <- data %>%
     dplyr::rowwise() %>%
     dplyr::mutate(PositionID = find_id(xPos, yPos, position_id = position_ids)) %>%
@@ -85,8 +85,8 @@ preprocess_file <- function(batch, change, exclAnimals) {
     dplyr::select(DateTime, AnimalID, System, PositionID) %>%
     dplyr::filter(!AnimalID %in% exclAnimals) %>%
     dplyr::arrange(DateTime)
-
-  # Phase and transition information (leave as in your workflow)
+  
+  # Phase and transition information
   data <- data %>%
     compute_phase_transitions() %>%
     dplyr::mutate(Phase = ifelse(
@@ -98,7 +98,7 @@ preprocess_file <- function(batch, change, exclAnimals) {
     count_phases() %>%
     compute_day_transitions()
 
-  # Add half-hour synthetic rows WITHOUT overwriting seconds
+  # Add half-hour synthetic rows
   data <- add_half_hour_transitions(data) %>%
     dplyr::arrange(DateTime) %>%
     dplyr::mutate(Phase = ifelse(
@@ -107,14 +107,18 @@ preprocess_file <- function(batch, change, exclAnimals) {
       "Active", "Inactive"
     ))
 
+  # Remove unwanted phases (first inactive, last inactive if >4, last active if >4)
+  #data <- remove_phases(data)
+
+  # Count half-hours elapsed
+  #data <- count_half_hours_elapsed(data)
+
   # Save output
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   outputFilePath <- file.path(output_dir, paste0(filename, "_preprocessed.csv"))
   readr::write_csv(data, outputFilePath)
   message(paste("File saved at", outputFilePath))
 }
-
-
 
 #' @title Add Half-Hourly Transition Rows
 #'
@@ -174,7 +178,76 @@ add_half_hour_transitions <- function(preprocessed_data) {
   full_df %>% dplyr::arrange(System, AnimalID, DateTime)
 }
 
+#' Remove first and last Inactive Phase
+#' This function removes the first and last rows of the dataset for each animal in each system
+#' if they belong to the Inactive phase. This is done to ensure that the analysis focuses
+#' Removes Inactive Phase (ConsecInactive = 1) at the beginning and end of the dataset for each animal in each system.
+#' Removes Inactive Phase (ConsecInactive > 4) and Active Phase (ConsecActive > 4) at the beginning and end of the dataset for each animal in each system.
+#' on the relevant data and avoids potential artifacts from incomplete phases.
+#' @param data The dataset to process.
+#' @return The processed dataset with the first and last Inactive phase rows removed for each animal in each system.
+#' @export
+remove_phases <- function(data) {
+  animals <- unique(data$AnimalID)
+  systems <- unique(data$System)
+  
+  for (animal in animals) {
+    for (system in systems) {
+      dsub <- data %>% dplyr::filter(AnimalID == animal, System == system)
+      if (nrow(dsub) == 0) next
+      
+      # Remove first Inactive phase (ConsecInactive == 1)
+      first_inactive <- dsub %>% dplyr::filter(ConsecInactive == 1) %>% dplyr::slice(1)
+      if (nrow(first_inactive) > 0) {
+        data <- data %>% dplyr::filter(!(AnimalID == animal & System == system & ConsecInactive == 1))
+      }
+      
+      # Remove last Inactive phase if ConsecInactive > 4
+      max_inactive <- max(dsub$ConsecInactive, na.rm = TRUE)
+      if (!is.infinite(max_inactive) && max_inactive > 4) {
+        data <- data %>% dplyr::filter(!(AnimalID == animal & System == system & ConsecInactive == max_inactive))
+      }
+      
+      # Remove last Active phase if ConsecActive > 4
+      max_active <- max(dsub$ConsecActive, na.rm = TRUE)
+      if (!is.infinite(max_active) && max_active > 4) {
+        data <- data %>% dplyr::filter(!(AnimalID == animal & System == system & ConsecActive == max_active))
+      }
+    }
+  }
+  return(data)
+}
 
+#' @title Count HalfHoursElapsed
+#' Counts the number of half-hour intervals elapsed since the start of the experiment for each animal in each system.
+#' Based on the DateTime column, it calculates the number of half-hour intervals that have passed since the earliest recorded time for each animal.
+#' @param data The dataset to process.
+#' @return The dataset with an added HalfHoursElapsed column.
+#' @export
+count_half_hours_elapsed <- function(data) {
+  # Initialize column
+  data <- data %>% dplyr::mutate(HalfHoursElapsed = 0)
+  
+  animals <- unique(data$AnimalID)
+  systems <- unique(data$System)
+  
+  for (animal in animals) {
+    for (system in systems) {
+      dsub <- data %>% dplyr::filter(AnimalID == animal, System == system)
+      if (nrow(dsub) == 0) next
+      
+      start_time <- min(dsub$DateTime, na.rm = TRUE)
+      
+      data <- data %>%
+        dplyr::mutate(HalfHoursElapsed = ifelse(
+          AnimalID == animal & System == system,
+          as.numeric(difftime(DateTime, start_time, units = "mins")) %/% 30,
+          HalfHoursElapsed
+        ))
+    }
+  }
+  return(data)
+}
 
 #' Find Position ID Based on Coordinates
 #'
@@ -500,6 +573,7 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
   # Initialize an empty vector with four variables.
   times_vec <- rep(NA, times = 4)
 
+  print("Initializing animal positions...")
   print(system_animal_ids)
   for (i in 1:length(system_animal_ids)) { #i=1-4
 
@@ -508,8 +582,9 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
     system_animal_id <- system_animal_ids[[i]]
     if (is.na(system_animal_id)) {
       system_animal_id <- paste0("lost_", i)
-      start_time <- 0        #time value should be adapted at the end of this function
-      start_position <- (-1)  #add non existing position for non existing animal_id
+      start_time <- 0        # time value should be adapted at the end of this function
+      start_position <- (-1)  # add non existing position for non existing animal_id
+    #  print(paste("Animal ID is missing, assigned:", system_animal_id))
     } else {
       # Search for the first entry in the entire dataset.
       first_entry <- data %>%
@@ -518,6 +593,7 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
 
       start_time <- first_entry$DateTime
       start_position <- first_entry$PositionID
+    #  print(paste("Found first entry for", system_animal_id, "at time:", start_time, "with position:", start_position))
     }
 
     # Record the name, position, and timestamp of each animal into the animal_list.
@@ -533,11 +609,17 @@ initialize_animal_positions <- function(system_animal_ids, data, animal_list) {
   # If not, update all initial times to the latest shared time
   if (length(unique(times_vec)) != 1) {
     end_time <- max(times_vec)
-    #print(end_time)
+    # Convert to readable format for debugging
+    readable_time <- as.POSIXct(end_time, origin = "1970-01-01", tz = "UTC")
+  #  print(paste("Updating all initial times to the latest shared time:", end_time))
+  #  print(paste("Which corresponds to:", readable_time))
     for (i in 1:4) {
       animal_list[[i]][[2]] <- end_time
     }
+  } else {
+  #  print("All initial times are identical.")
   }
+  
   return(animal_list)
 }
 
@@ -770,7 +852,7 @@ update_movement <- function(previous_animal_positions, current_animal_positions,
   
   # Print a message if no movement occurred in this time step
   if (movement_count == 0) {
-    message("track_movement: No movement detected in this time step.")
+  #  message("track_movement: No movement detected in this time step.")
   }
   
   # Return the updated movement count list
@@ -1082,7 +1164,7 @@ update_animal_position_probability <- function(previous_animal_positions, curren
   return(animal_position_probability)
 }
 
-#' Calculate Shannon Entropy
+#' @title Calculate Shannon Entropy
 #'
 #' Calculates the Shannon entropy of a probability vector representing the distribution of animals across positions in a cage.
 #' Shannon entropy is a measure of uncertainty or disorder in a probability distribution, calculated as the negative 
@@ -1126,6 +1208,82 @@ calc_shannon_entropy <- function(prob_vec) {
   shannon_entropy <- -shannon_entropy
   
   return(shannon_entropy)
+}
+
+#' @title Generate Proximity Lineplot
+#' 
+#' @description This function generates a line plot to visualize the proximity data of animals over time.
+#' The function customizes various plot elements, including line thickness, point size, background, grid lines,
+#' axis titles, legend, and typography. It also incorporates a vibrant color palette for better
+#' distinction between different data series.
+#' 
+#' @param plot A ggplot2 object representing the initial proximity line plot.
+#' @param plot_title A character string representing the title of the plot.
+#' @param plot_subtitle A character string representing the subtitle of the plot.
+#' @param batch A character string representing the batch or experimental group.
+#' @param cageChange A numeric or character value indicating a change in the cage setup.
+#' @return A ggplot2 object representing the customized proximity line plot.
+#'
+# Function to generate proximity lineplot
+generate_proximity_lineplot <- function(plot, plot_title, plot_subtitle, batch, cageChange) {
+  plot +
+    # Increase line thickness and point size - modify the existing geom layers
+    aes(linewidth = 2, size = 4) +
+    theme_minimal(base_size = 18, base_family = "sans") +
+    theme(
+      # Pure white background with subtle shadow effect
+      plot.background = element_rect(fill = "#FFFFFF", color = NA),
+      panel.background = element_rect(fill = "#FAFAFA", color = NA),
+      
+      # Ultra-subtle grid lines
+      panel.grid.major = element_line(color = "#F0F0F0", linewidth = 0.3),
+      panel.grid.minor = element_blank(),
+      
+      # No axis lines for cleaner look
+      axis.line = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_text(face = "bold", color = "#1A1A1A", size = 16, 
+                                margin = margin(t = 10, b = 10)),
+      axis.text = element_text(color = "#666666", size = 14),
+      
+      # Floating legend
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold", size = 14, color = "#1A1A1A"),
+      legend.text = element_text(size = 13, color = "#333333"),
+      legend.background = element_blank(),
+      legend.key = element_blank(),
+      legend.key.size = unit(1.8, "lines"),
+      legend.key.width = unit(2, "cm"),
+      legend.spacing.x = unit(0.4, "cm"),
+      legend.margin = margin(t = 15, b = 8),
+      
+      # Bold, contemporary typography with larger sizes
+      plot.title = element_text(face = "bold", hjust = 0, size = 22, 
+                                color = "#0A0A0A", margin = margin(b = 4)),
+      plot.subtitle = element_text(hjust = 0, size = 14, color = "#757575", 
+                                   margin = margin(b = 20)),
+      
+      # Clean borders
+      panel.border = element_blank(),
+      
+      # Generous breathing room
+      plot.margin = margin(30, 30, 25, 30)
+    ) +
+    # Define color palette for lines and points
+    scale_color_manual(values = c("#8B5FBF", "#E36B6B", "#5DADE2", "#F4A460")) +
+    scale_fill_manual(values = c("#8B5FBF", "#E36B6B", "#5DADE2", "#F4A460")) +
+    # Control linewidth and size scales
+    scale_linewidth_identity() +
+    scale_size_identity() +
+    # Override legend key appearance for thicker lines and larger points
+    guides(
+      color = guide_legend(override.aes = list(linewidth = 2, size = 4))
+    ) +
+    # Add informative title and subtitle
+    labs(
+      title = plot_title,
+      subtitle = paste(plot_subtitle, "|", batch, "-", cageChange)
+    )
 }
 
 #' Generate Heatmap for Proximity Data
@@ -1176,17 +1334,36 @@ generateHeatMapProximity <- function(count_proximity_list, batch, cageChange, sy
   # Melt the data: Convert the matrix into a long-format data frame for ggplot
   data_melt <- melt(matrix_data, as.is = TRUE, value.name = "hours")
   
-  # Create the heatmap plot using ggplot2
-  ggp <- ggplot(data_melt, aes(Var1, Var2)) +
-    geom_tile(aes(fill = hours)) +
-    scale_fill_gradientn(colors = c("lightblue", "blue", "darkblue"), 
-                         limits = c(0, 15),
-                         breaks = c(2, 4, 6, 8, 10, 12, 14, ifelse(max(data_melt$hours) < 15, 15, warning("Higher scale required in heatmap for ", systemNum))),
-                         labels = c("2", "4", "6", "8", "10", "12", "14", "15")) +
-    labs(title = paste(batch, cageChange, systemNum, ": close contact, Phase: ", phase, phase_number), 
-         x = "ID", y = "ID")
-  
-  return(ggp)
+  # Create heatmap using ggplot2
+  heatmap <- ggplot(data_melt, aes(x = Var1, y = Var2, fill = hours)) +
+  geom_tile(color = "white", linewidth = 1.5) +
+  geom_text(aes(label = sprintf("%.1f", hours)), color = "white", size = 4, fontface = "bold") +
+  scale_fill_viridis_c(option = "plasma",
+       limits = c(0, 12), 
+       breaks = c(0, 2, 4, 6, 8, 10, 12),
+       labels = c("0", "2", "4", "6", "8", "10", "12"),
+       name = "Close Contact\n(hours)") + 
+  labs(title = paste0("Proximity Heatmap: ", batch, " - ", cageChange, " - System ", systemNum),
+   subtitle = paste0("Phase: ", phase, " ", phase_number),
+   x = "Animal ID", 
+   y = "Animal ID") +
+  theme_minimal() +
+  theme(
+  plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+  plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40"),
+  axis.title = element_text(face = "bold", size = 12),
+  axis.text = element_text(size = 10),
+  legend.title = element_text(face = "bold", size = 12),
+  legend.text = element_text(size = 10),
+  legend.key.size = unit(1, "cm"),
+  panel.grid = element_blank(),
+  plot.background = element_rect(fill = "white", color = NA),
+  panel.background = element_rect(fill = "gray95", color = NA),
+  plot.margin = margin(15, 15, 15, 15)
+  ) +
+  coord_fixed()  # Maintain aspect ratio
+
+  return(heatmap)
 }
 
 #' Generate Heatmap for Animal Positions
@@ -1228,33 +1405,55 @@ generateHeatMapPositions <- function(count_position_list, batch, cageChange, sys
   
   # Create a tibble with position IDs and corresponding x and y coordinates
   Positions_tibble <- tibble(PositionID = c(1:8), 
-                             xPos = c(0, 100, 200, 300, 0, 100, 200, 300), 
-                             yPos = c(0, 0, 0, 0, 116, 116, 116, 116))
+   xPos = c(0, 100, 200, 300, 0, 100, 200, 300), 
+   yPos = c(0, 0, 0, 0, 116, 116, 116, 116))
   
   # Merge position data with coordinates
   merged_df <- merge(df_positions, Positions_tibble, by.x = "V1", by.y = "PositionID", all = TRUE)
   
   # Convert time from seconds to hours
   hour_df <- merged_df %>%
-    mutate(V2 = ifelse(V2 != 0, V2 / 3600, V2))
+  mutate(V2 = ifelse(V2 != 0, V2 / 3600, V2))
   
   # Rename columns for clarity
   hour_df <- hour_df %>%
-    rename(ID = V1) %>%
-    rename(hours = V2)
+  rename(PositionID = V1) %>%
+  rename(OccupancyHours = V2)
   
-  # Create the heatmap using ggplot2
-  heatmap <- ggplot(hour_df, aes(x = xPos, y = yPos, fill = hours)) +
-    geom_tile() +                                                        # Create tiles based on hours
-    scale_x_continuous(breaks = c(0, 100, 200, 300), labels = c("0", "100", "200", "300")) +
-    scale_y_continuous(breaks = c(0, 116), labels = c("0", "116")) +
-    scale_fill_gradientn(colors = c("yellow", "orange", "red", "darkred", "#290000"), # Custom color palette
-                         limits = c(0, 12), 
-                         breaks = c(0, 2, 4, 6, 8, 10, ifelse(max(hour_df$hours) < 12, 12, warning("Higher scale required in heatmap for ", systemNum))),
-                         labels = c("0", "2", "4", "6", "8", "10", "12")) + 
-    labs(title = paste(batch, cageChange, systemNum, ": used positions, Phase: ", phase, phase_number),
-         x = "x-axis", 
-         y = "y-axis")   # Add title and axis labels
+  # Create heatmap using ggplot2
+  heatmap <- ggplot(hour_df, aes(x = xPos, y = yPos, fill = OccupancyHours)) +
+  geom_tile(color = "white", linewidth = 1.5, width = 100, height = 116) +
+  geom_text(aes(label = PositionID), color = "white", size = 8, fontface = "bold") +
+  scale_x_continuous(breaks = c(0, 100, 200, 300), 
+   labels = c("0", "100", "200", "300"),
+   expand = c(0, 0)) +
+  scale_y_continuous(breaks = c(0, 116), 
+   labels = c("0", "116"),
+   expand = c(0, 0)) +
+  scale_fill_viridis_c(option = "plasma",
+   limits = c(0, 12), 
+   breaks = c(0, 2, 4, 6, 8, 10, 12),
+   labels = c("0", "2", "4", "6", "8", "10", "12"),
+   name = "Occupancy\n(hours)") + 
+  labs(title = paste0("Position Occupancy Heatmap: ", batch, " - ", cageChange, " - System ", systemNum),
+   subtitle = paste0("Phase: ", phase, " ", phase_number),
+   x = "X Coordinate", 
+   y = "Y Coordinate") +
+  theme_minimal() +
+  theme(
+  plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+  plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40"),
+  axis.title = element_text(face = "bold", size = 12),
+  axis.text = element_text(size = 10),
+  legend.title = element_text(face = "bold", size = 12),
+  legend.text = element_text(size = 10),
+  legend.key.size = unit(1, "cm"),
+  panel.grid = element_blank(),  # Remove grid lines
+  plot.background = element_rect(fill = "white", color = NA),
+  panel.background = element_rect(fill = "gray95", color = NA),
+  plot.margin = margin(15, 15, 15, 15)
+  ) +
+  coord_fixed()  # Maintain aspect ratio
   
   return(heatmap)  # Return the generated ggplot object
 }
