@@ -14,6 +14,7 @@
 #' - `save_tables`: Save generated tables.
 #' - `working_directory`: Set the working directory.
 #' - `batch` and `cage change`: Define the filenames for processing.
+#' - `analyze_by_halfhour`: Set to TRUE to also analyze by half-hour periods
 #'
 #' @note
 #' The data in `data_preprocessed` has already been preprocessed in
@@ -23,7 +24,7 @@
 #' Tobias Pohl, Anja Magister
 #'
 #' @date
-#' February 2025
+#' October 2025
 
 # Load required packages
 if (!require("pacman")) install.packages("pacman")
@@ -32,18 +33,25 @@ pacman::p_load(readr, dplyr, lubridate, tibble, purrr, ggplot2, reshape2,
 
 # Customizable variables
 show_plots <- FALSE  # Set to TRUE to display plots in R
-save_plots <- FALSE  # Set to TRUE to save generated plots
-save_tables <- FALSE # Set to TRUE to save generated tables
-exclude_homecage <- FALSE
+save_plots <- TRUE  # Set to TRUE to save generated plots
+save_tables <- TRUE # Set to TRUE to save generated tables
+exclude_homecage <- TRUE  # Set to TRUE to exclude home cage positions
+analyze_by_halfhour <- TRUE  # Set to TRUE to also analyze by half-hour periods
 
 # Paths
-working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-plots_directory <- "/plots/noHomeCage"
-tables_directory <- "/tables/noHomeCage"
+#working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
+#saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
+
+working_directory <- "D:/MMMSociability"
+saving_directory <- "D:/MMMSociability"
+
+# Define base directories
+plots_base <- "/plots/noHomeCage_test"
+tables_base <- "/tables/noHomeCage_test"
 
 # Source required functions
-source(paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"))
+#source(paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"))
+source("C:/Users/Tobias Pohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R")
 
 # Define batch and cage change identifiers
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
@@ -59,10 +67,40 @@ for (batch in batches) {
   for (cageChange in cageChanges) {
     print(paste(batch, cageChange))
 
+    # ===================================================================
+    # CREATE FOLDER STRUCTURE FOR CURRENT BATCH AND CAGE CHANGE
+    # ===================================================================
+    # Define subdirectories for this specific batch and cage change
+    current_plots_dir <- paste0(plots_base, "/", batch, "/", cageChange)
+    current_tables_dir <- paste0(tables_base, "/", batch, "/", cageChange)
+    
+    # Create phase-based analysis directories
+    plots_dir_phase <- paste0(current_plots_dir, "/by_phase")
+    tables_dir_phase <- paste0(current_tables_dir, "/by_phase")
+    
+    # Create half-hour analysis directories
+    plots_dir_halfhour <- paste0(current_plots_dir, "/by_halfhour")
+    tables_dir_halfhour <- paste0(current_tables_dir, "/by_halfhour")
+    
+    # Create metadata directory
+    tables_dir_metadata <- paste0(current_tables_dir, "/metadata")
+    
+    # Create all directories
+    dir.create(paste0(saving_directory, plots_dir_phase), recursive = TRUE, showWarnings = FALSE)
+    dir.create(paste0(saving_directory, tables_dir_phase), recursive = TRUE, showWarnings = FALSE)
+    dir.create(paste0(saving_directory, tables_dir_metadata), recursive = TRUE, showWarnings = FALSE)
+    
+    if (analyze_by_halfhour) {
+      dir.create(paste0(saving_directory, plots_dir_halfhour), recursive = TRUE, showWarnings = FALSE)
+      dir.create(paste0(saving_directory, tables_dir_halfhour), recursive = TRUE, showWarnings = FALSE)
+    }
+    
+    message("✓ Created directory structure for ", batch, " ", cageChange)
+
     # Construct the filename for the current CSV file
     filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
     # Define the path to the CSV file
-    csvFilePath <- paste0(working_directory, "/preprocessed_data/", filename, "_preprocessed.csv")
+    csvFilePath <- paste0(working_directory, "/preprocessed_data_test/", filename, "_preprocessed.csv")
 
     # Read the preprocessed data from the CSV file into a tibble
     data_preprocessed <- as_tibble(read_delim(csvFilePath, delim = ",",
@@ -84,12 +122,31 @@ for (batch in batches) {
     phases <- c("Active", "Inactive")
 
     # Identify the number of active and inactive phases in the current dataset
+    # Preprocessing has already removed phase 0, first inactive, and last inactive
     active_phases_number <- unique(data_preprocessed$ConsecActive)
     inactive_phases_number <- unique(data_preprocessed$ConsecInactive)
 
-    # Remove the phase number 0 as it is not relevant for analysis
+    # remove active and inactive phases > 2 from CC4
+    if (cageChange == "CC4") {
+      active_phases_number <- active_phases_number[active_phases_number <= 2]
+      inactive_phases_number <- inactive_phases_number[inactive_phases_number <= 2]
+    } 
+
+    # Remove any remaining 0 values (safety check)
     active_phases_number <- active_phases_number[active_phases_number != 0]
-    inactive_phases_number <- inactive_phases_number[!inactive_phases_number %in% c(0, 1, max(inactive_phases_number))]
+    inactive_phases_number <- inactive_phases_number[inactive_phases_number != 0]
+
+
+    # Sort to ensure correct order
+    active_phases_number <- sort(active_phases_number)
+    inactive_phases_number <- sort(inactive_phases_number)
+
+    print(paste("Active phases in data:", paste(active_phases_number, collapse = ", ")))
+    print(paste("Inactive phases in data:", paste(inactive_phases_number, collapse = ", ")))
+
+    # Get unique half-hour periods
+    halfhour_periods <- sort(unique(data_preprocessed$HalfHoursElapsed))
+    print(paste("Half-hour periods in data:", paste(halfhour_periods, collapse = ", ")))
 
     # Extract unique animal IDs present in the current batch of data
     unique_animals <- unique(data_preprocessed$AnimalID)
@@ -98,19 +155,21 @@ for (batch in batches) {
     systemHeatmaps_proximity <- list()
     systemHeatmaps_positions <- list()
 
-    # Create a vector of phases in the correct order as they appear in reality
+    # Create a vector of phases using ACTUAL phase numbers from the data
     phases_column <- c()
-    for (i in 1:max(length(inactive_phases_number),
-                    length(active_phases_number))) {
-      # Add active phases to the vector
+    max_phases <- max(length(active_phases_number), length(inactive_phases_number))
+
+    for (i in 1:max_phases) {
+      # Add active phase with its actual phase number
       if (i <= length(active_phases_number)) {
-        phases_column <- c(phases_column, paste0("A", i))
+        phases_column <- c(phases_column, paste0("A", active_phases_number[i]))
       }
-        # Add inactive phases to the vector, starting with the second inactive phase
+      # Add inactive phase with its actual phase number
       if (i <= length(inactive_phases_number)) {
-        phases_column <- c(phases_column, paste0("I", i + 1))
+        phases_column <- c(phases_column, paste0("I", inactive_phases_number[i]))
       }
     }
+    print(paste("Phase column created:", paste(phases_column, collapse = ", ")))
 
     # Create a tibble to store total proximity data for each animal in each phase
     result_total_proximity <- tibble("Phase" = phases_column)
@@ -139,6 +198,29 @@ for (batch in batches) {
     # Add columns for each unique system ID to track positional data within the system
     for (system in unique_systems) {
       result_total_positions[[system]] <- NA
+    }
+
+    # ===================================================================
+    # CREATE HALF-HOUR ANALYSIS TIBBLES
+    # ===================================================================
+    if (analyze_by_halfhour) {
+      # Create column labels for half-hour periods (H0, H1, H2, etc.)
+      halfhour_column <- paste0("H", halfhour_periods)
+      
+      # Create tibbles for half-hour analysis
+      result_halfhour_proximity <- tibble("HalfHour" = halfhour_column)
+      result_halfhour_movement <- tibble("HalfHour" = halfhour_column)
+      
+      # Add columns for each animal
+      for (animal in unique_animals) {
+        result_halfhour_proximity[[animal]] <- NA
+        result_halfhour_movement[[animal]] <- NA
+      }
+      
+      # Add columns for each system in movement
+      for (system in unique_systems) {
+        result_halfhour_movement[[system]] <- NA
+      }
     }
 
     # Create a tibble to store information about animal IDs in each system for the current cage change
@@ -197,14 +279,21 @@ for (batch in batches) {
       # Add animal IDs to the system_animal_ids tibble
       system_animal_ids[[system_id]] <- c(animal_ids)
 
+      # ===================================================================
+      # ANALYSIS BY PHASE (Active/Inactive)
+      # ===================================================================
       # Loop through each phase (Active/Inactive)
       for (phase in phases) {
-
         print(phase)
 
         # Select phase numbers based on the current phase type (Active/Inactive)
-        phase_numbers <- ifelse(phase == "Active", active_phases_number, inactive_phases_number)
-        print(phase_numbers)
+        if (phase == "Active") {
+          phase_numbers <- active_phases_number
+        } else {
+          phase_numbers <- inactive_phases_number
+        }
+
+        print(paste("Phase numbers to process:", paste(phase_numbers, collapse = ", ")))
 
         # Iterate through each phase number
         for (phase_number in phase_numbers) {
@@ -215,6 +304,12 @@ for (batch in batches) {
             filter(ConsecActive == ifelse(phase == "Active", phase_number, 0)) %>%
             filter(ConsecInactive == ifelse(phase == "Inactive", phase_number, 0)) %>%
             as_tibble()
+          
+          # Skip if no data exists for this phase
+          if (nrow(data_system_phase) == 0) {
+            message(paste0("No data found for System: ", system_id, ", ", phase, " phase number: ", phase_number, ". Skipping..."))
+            next
+          }
 
           # Initialize lists for storing animal positions and temporary data
           animal_list <- list(
@@ -355,6 +450,124 @@ for (batch in batches) {
         }
       }
 
+      # ===================================================================
+      # ANALYSIS BY HALF-HOUR PERIODS
+      # ===================================================================
+      if (analyze_by_halfhour) {
+        message("Starting half-hour period analysis")
+        
+        for (halfhour_period in halfhour_periods) {
+          print(paste0("System: ", system_id, ", Half-hour period: ", halfhour_period))
+          
+          # Filter data for the current half-hour period
+          data_system_halfhour <- data_system %>%
+            filter(HalfHoursElapsed == halfhour_period) %>%
+            as_tibble()
+          
+          # Skip if no data exists for this period
+          if (nrow(data_system_halfhour) == 0) {
+            message(paste0("No data found for System: ", system_id, ", Half-hour period: ", halfhour_period, ". Skipping..."))
+            next
+          }
+          
+          # Initialize lists for storing animal positions and temporary data
+          animal_list <- list(
+            "animal_1" = list(name = "", time = "", position = 0),
+            "animal_2" = list(name = "", time = "", position = 0),
+            "animal_3" = list(name = "", time = "", position = 0),
+            "animal_4" = list(name = "", time = "", position = 0),
+            "data_temp" = list(elapsed_seconds = 0, current_row = 0)
+          )
+          
+          # Initialize lists storing proximity and movement results
+          total_proximity_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0),
+                                       c(animal_ids[3], 0), c(animal_ids[4], 0))
+          
+          count_movement_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0),
+                                      c(animal_ids[3], 0), c(animal_ids[4], 0),
+                                      c(system_id, 0))
+          
+          count_proximity_list <- list(m1 = c(0, 0, 0, 0),
+                                       m2 = c(0, 0, 0, 0),
+                                       m3 = c(0, 0, 0, 0),
+                                       m4 = c(0, 0, 0, 0))
+          
+          # Perform calculations for the current half-hour period
+          message("Calculating proximity and movement data for half-hour period")
+          
+          # Initialize animal positions
+          animal_list <- initialize_animal_positions(animal_ids, data_system_halfhour, animal_list)
+          
+          # Assign initial time and line number for the while loop
+          initial_time <- animal_list[[1]][[2]]
+          current_row <- 5
+          elapsed_seconds <- 0
+          total_rows <- nrow(data_system_halfhour) + 1
+          
+          # Iterate through the rows of the current half-hour period data
+          while (current_row != total_rows && current_row < total_rows) {
+            
+            # Make a copy of the previous animal list
+            previous_animal_list <- animal_list
+            
+            # Update animal list with new positions from the next row
+            animal_list <- update_animal_list(animal_ids,
+                                              animal_list,
+                                              data_system_halfhour,
+                                              initial_time,
+                                              current_row)
+            
+            # Update elapsed_seconds
+            elapsed_seconds <- animal_list[["data_temp"]][["elapsed_seconds"]]
+            
+            # Update result lists using analysis functions
+            if (system_complete) {
+              count_proximity_list <- update_proximity(previous_animal_list,
+                                                       animal_list,
+                                                       count_proximity_list,
+                                                       elapsed_seconds)
+              
+              total_proximity_list <- update_total_proximity(previous_animal_list,
+                                                             animal_list,
+                                                             total_proximity_list,
+                                                             elapsed_seconds)
+            }
+            
+            count_movement_list <- update_movement(previous_animal_list,
+                                                   animal_list,
+                                                   count_movement_list,
+                                                   elapsed_seconds)
+            
+            # Update current_row and initial_time for the next iteration
+            current_row <- animal_list[["data_temp"]][["current_row"]]
+            initial_time <- animal_list[[1]][[2]]
+          }
+          
+          # Record half-hour proximity data in the result tibble
+          if (system_complete) {
+            message("Recording half-hour proximity data in tibble")
+            for (i in 1:4) {
+              animal <- total_proximity_list[[i]][[1]]
+              h <- paste0("H", halfhour_period)
+              row <- which(result_halfhour_proximity$HalfHour == h)
+              result_halfhour_proximity[[animal]][[row]] <- total_proximity_list[[i]][[2]]
+            }
+          }
+          
+          # Record half-hour movement data in the result tibble
+          message("Recording half-hour movement data in tibble")
+          h <- paste0("H", halfhour_period)
+          row <- which(result_halfhour_movement$HalfHour == h)
+          for(i in 1:4) {
+            animal <- count_movement_list[[i]][[1]]
+            if(!is.na(animal)) {
+              result_halfhour_movement[[animal]][[row]] <- count_movement_list[[i]][[2]]
+            }
+          }
+          result_halfhour_movement[[system_id]][[row]] <- count_movement_list[[5]][[2]]
+        }
+      }
+
       # Generate total proximity graph
       if (system_complete) {
         message("Generating total proximity graph")
@@ -374,88 +587,323 @@ for (batch in batches) {
     }
 
     # ---------------------------------------------------
-    # Save Plots and Tables
+    # Save Tables and Plots
     # ---------------------------------------------------
-
-    # Save plots if save_plots is TRUE
-    if (save_plots == TRUE) {
-      message("Saving plots")
-
-      # Save total closeness plots
-      for (i in seq_along(all_plots_total_proximity)) {
-        print(i)
-        ggsave(
-          filename = paste0(saving_directory, plots_directory, "/total_proximity_", batch, "_", cageChange, "_sys.", i, ".svg"), 
-          plot = all_plots_total_proximity[[i]],
-          width = 5,
-          height = 2
-        )
-      }
-
-      # Save heatmaps for each system
-      for (i in seq_along(allHeatmaps_proximity)) {
-        print(i)
-
-        # Save proximity heatmaps
-        title <- allHeatmaps_proximity[[i]][[1]]$labels$title
-        pattern <- "sys..."
-        system_substring <- ifelse((match <- regexec(pattern, title))[[1]][1] > 0,
-                                   regmatches(title, match)[[1]],
-                                   "Pattern not found.")
-        ggsave(
-          filename = paste0(saving_directory, plots_directory, "/allHeatmaps_proximity_", batch, "_", cageChange, "_", system_substring, ".png"),
-          plot = gridExtra::arrangeGrob(grobs = allHeatmaps_proximity[[i]],
-                                        ncol = 2,
-                                        layout_matrix = rbind(c(1, 5),
-                                                              c(2, 6),
-                                                              c(3, 7),
-                                                              c(4, 8),
-                                                              c(NA, 9))),
-          width = 12,
-          height = 8
-        )
-
-        # Save positional heatmaps
-        title <- allHeatmaps_positions[[i]][[1]]$labels$title
-        system_substring <- ifelse((match <- regexec(pattern, title))[[1]][1] > 0,
-                                   regmatches(title, match)[[1]],
-                                   "Pattern not found.")
-        ggsave(
-          filename = paste0(saving_directory, plots_directory, "/allHeatmaps_positions_", batch, "_", cageChange, "_", system_substring, ".png"),
-          plot = gridExtra::arrangeGrob(grobs = allHeatmaps_positions[[i]],
-                                        ncol = 2,
-                                        layout_matrix = rbind(c(1, 5),
-                                                              c(2, 6),
-                                                              c(3, 7),
-                                                              c(4, 8),
-                                                              c(NA, 9))),
-          width = 12,
-          height = 8
-        )
-      }
+    
+    if (save_tables == TRUE || save_plots == TRUE) {
+      message("=======================================================================")
+      message("SAVING RESULTS FOR ", batch, " ", cageChange)
+      message("=======================================================================")
     }
-
-    # Save tables as CSV files if save_tables is TRUE
+    
+    # ===================================================================
+    # 1. SAVE METADATA
+    # ===================================================================
     if (save_tables == TRUE) {
-      message("Saving tables")
-
-      # Save Social Proximity tables
-      write.csv(result_total_proximity,
-                file = paste0(saving_directory, tables_directory, "/", batch, "_", cageChange, "_total_proximity.csv"), 
-                row.names = FALSE)
-
-      # Save Movement tables
-      write.csv(result_total_movement,
-                file = paste0(saving_directory, tables_directory, "/", batch, "_", cageChange, "_total_movement.csv"), 
-                row.names = FALSE)
-
+      message("1. Saving metadata tables...")
+      
       # Save System Animal ID tables
       write.csv(system_animal_ids,
-                file = paste0(saving_directory, tables_directory, "/", batch, "_", cageChange, "_animal_ids.csv"), 
+                file = paste0(saving_directory, tables_dir_metadata, "/", batch, "_", cageChange, "_animal_ids.csv"), 
                 row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_animal_ids.csv")
+      message("      Location: ", tables_dir_metadata)
+    }
+    
+    # ===================================================================
+    # 2. SAVE PHASE-BASED ANALYSIS (Active/Inactive)
+    # ===================================================================
+    if (save_tables == TRUE) {
+      message("2. Saving phase-based analysis tables...")
+      
+      # Save Social Proximity tables (by phase)
+      write.csv(result_total_proximity,
+                file = paste0(saving_directory, tables_dir_phase, "/", batch, "_", cageChange, "_total_proximity.csv"), 
+                row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_total_proximity.csv")
+      
+      # Save Movement tables (by phase)
+      write.csv(result_total_movement,
+                file = paste0(saving_directory, tables_dir_phase, "/", batch, "_", cageChange, "_total_movement.csv"), 
+                row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_total_movement.csv")
+      message("      Location: ", tables_dir_phase)
+    }
+    
+    if (save_plots == TRUE) {
+      message("3. Saving phase-based analysis plots...")
+      
+      # Save total proximity plots (one per complete system)
+      if (length(all_plots_total_proximity) > 0) {
+        
+        # Apply theme and save each plot
+        for (i in seq_along(all_plots_total_proximity)) {
+          # Extract plot information for title
+          original_plot <- all_plots_total_proximity[[i]]
+          plot_title <- if(!is.null(original_plot$labels$title)) original_plot$labels$title else paste("Total Proximity -", batch, cageChange)
+          plot_subtitle <- if(!is.null(original_plot$labels$subtitle)) original_plot$labels$subtitle else paste("System", i)
+          
+          # Apply ultra-modern minimalist theme
+          proximity_lineplot <- generate_proximity_lineplot(original_plot, plot_title, plot_subtitle, batch, cageChange)
+          
+          ggsave(
+        filename = paste0(saving_directory, plots_dir_phase, "/total_proximity_", batch, "_", cageChange, "_sys.", i, ".svg"), 
+        plot = proximity_lineplot,
+        width = 8,
+        height = 8,
+        dpi = 300
+          )
+        }
+        message("   ✓ Saved ", length(all_plots_total_proximity), " total proximity plots with ultra-modern minimal design")
+        
+        # Save proximity heatmaps (one per complete system, multiple phases per system)
+        if (length(allHeatmaps_proximity) > 0) {
+        saved_count <- 0
+        for (i in seq_along(allHeatmaps_proximity)) {
+          
+          # Check if heatmap list exists and has elements
+          if (length(allHeatmaps_proximity[[i]]) == 0) next
+          
+          # Check if the first heatmap exists and has a title
+          if (is.null(allHeatmaps_proximity[[i]][[1]]) || 
+            is.null(allHeatmaps_proximity[[i]][[1]]$labels) ||
+            is.null(allHeatmaps_proximity[[i]][[1]]$labels$title)) next
+          
+          # Extract system name from title
+          title <- allHeatmaps_proximity[[i]][[1]]$labels$title
+          pattern <- "sys\\.[0-9]"
+          
+          match_result <- regexec(pattern, title)
+          if (match_result[[1]][1] > 0) {
+          system_substring <- regmatches(title, match_result)[[1]]
+          } else {
+          system_substring <- paste0("system_", i)
+          }
+          
+          # Separate Active and Inactive phase heatmaps by checking subtitle
+          active_plots <- list()
+          inactive_plots <- list()
+          
+          for (plot in allHeatmaps_proximity[[i]]) {
+          if (!is.null(plot$labels$subtitle)) {
+            subtitle <- as.character(plot$labels$subtitle)
+            
+            # Debug: print subtitle to see format
+            # print(paste("Proximity subtitle:", subtitle))
+            
+            # Check if it starts with "Phase: Active" or "Phase: Inactive"
+            if (grepl("^Phase:\\s*Active", subtitle, ignore.case = TRUE)) {
+            active_plots <- c(active_plots, list(plot))
+            } else if (grepl("^Phase:\\s*Inactive", subtitle, ignore.case = TRUE)) {
+            inactive_plots <- c(inactive_plots, list(plot))
+            } else {
+            # Fallback: if subtitle contains the phase number pattern
+            message("   Warning: Could not classify proximity plot with subtitle: ", subtitle)
+            }
+          }
+          }
+          
+          n_active <- length(active_plots)
+          n_inactive <- length(inactive_plots)
+          n_rows <- max(n_active, n_inactive)
+          
+          message("   Arranging ", n_active, " active and ", n_inactive, " inactive proximity heatmaps for ", system_substring)
+          
+          # If no plots were classified, fall back to original list
+          if (n_active == 0 && n_inactive == 0) {
+          message("   Warning: No proximity plots classified by phase type. Using sequential layout.")
+          combined_plots <- allHeatmaps_proximity[[i]]
+          n_plots <- length(allHeatmaps_proximity[[i]])
+          n_rows <- ceiling(n_plots / 2)
+          layout_mat <- matrix(1:(n_rows * 2), ncol = 2, byrow = TRUE)
+          if (n_plots %% 2 == 1) layout_mat[n_rows, 2] <- NA
+          } else {
+          # Create layout matrix: Active on left, Inactive on right
+          layout_mat <- matrix(NA, nrow = n_rows, ncol = 2)
+          
+          # Fill left column with active plots (1, 2, 3, 4...)
+          if (n_active > 0) {
+            for (j in 1:n_active) {
+            layout_mat[j, 1] <- j
+            }
+          }
+          
+          # Fill right column with inactive plots (n_active+1, n_active+2, ...)
+          if (n_inactive > 0) {
+            for (j in 1:n_inactive) {
+            layout_mat[j, 2] <- n_active + j
+            }
+          }
+          
+          # Combine plots in order: all active first, then all inactive
+          combined_plots <- c(active_plots, inactive_plots)
+          }
+          
+          # Set plot dimensions
+          plot_width <- 14
+          plot_height <- 5 * n_rows
+          
+          # 
+          # Save proximity heatmap grid as SVG
+          tryCatch({
+          ggsave(
+            filename = paste0(saving_directory, plots_dir_phase, "/allHeatmaps_proximity_", batch, "_", cageChange, "_", system_substring, ".svg"),
+            plot = gridExtra::arrangeGrob(grobs = combined_plots,
+                          ncol = 2,
+                          layout_matrix = layout_mat),
+            width = plot_width,
+            height = plot_height
+          )
+          saved_count <- saved_count + 1
+          }, error = function(e) {
+          message("   ✗ Error saving proximity heatmap for ", system_substring, ": ", e$message)
+          })
+        }
+        message("   ✓ Saved ", saved_count, " proximity heatmap grids as SVG")
+        }
+        
+        # Save positional heatmaps (one per system, multiple phases per system)
+        if (length(allHeatmaps_positions) > 0 && 
+          !is.null(allHeatmaps_positions[[batch]]) && 
+          !is.null(allHeatmaps_positions[[batch]][[cageChange]])) {
+        
+        saved_count <- 0
+        
+        for (sys_name in names(allHeatmaps_positions[[batch]][[cageChange]])) {
+          heatmap_list <- allHeatmaps_positions[[batch]][[cageChange]][[sys_name]]
+          
+          # Check if heatmap list exists and has elements
+          if (is.null(heatmap_list) || length(heatmap_list) == 0) {
+          message("   Skipping empty position heatmap for ", sys_name)
+          next
+          }
+          
+          # Check if the first heatmap exists and has a title
+          if (is.null(heatmap_list[[1]]) || 
+            is.null(heatmap_list[[1]]$labels) ||
+            is.null(heatmap_list[[1]]$labels$title)) {
+          message("   Skipping position heatmap ", sys_name, " - no valid title found")
+          next
+          }
+          
+          # Separate Active and Inactive phase heatmaps by checking subtitle
+          active_plots <- list()
+          inactive_plots <- list()
+          
+          for (plot in heatmap_list) {
+          if (!is.null(plot$labels$subtitle)) {
+            subtitle <- as.character(plot$labels$subtitle)
+            
+            # Debug: print subtitle to see format
+            # print(paste("Subtitle:", subtitle))
+            
+            # Check if it starts with "Phase: Active" or "Phase: Inactive"
+            if (grepl("^Phase:\\s*Active", subtitle, ignore.case = TRUE)) {
+            active_plots <- c(active_plots, list(plot))
+            } else if (grepl("^Phase:\\s*Inactive", subtitle, ignore.case = TRUE)) {
+            inactive_plots <- c(inactive_plots, list(plot))
+            } else {
+            # Fallback: if subtitle contains the phase number pattern
+            message("   Warning: Could not classify plot with subtitle: ", subtitle)
+            }
+          }
+          }
+          
+          n_active <- length(active_plots)
+          n_inactive <- length(inactive_plots)
+          n_rows <- max(n_active, n_inactive)
+          
+          message("   Arranging ", n_active, " active and ", n_inactive, " inactive position heatmaps for ", sys_name)
+          
+          # If no plots were classified, fall back to original list
+          if (n_active == 0 && n_inactive == 0) {
+          message("   Warning: No plots classified by phase type. Using sequential layout.")
+          combined_plots <- heatmap_list
+          n_plots <- length(heatmap_list)
+          n_rows <- ceiling(n_plots / 2)
+          layout_mat <- matrix(1:(n_rows * 2), ncol = 2, byrow = TRUE)
+          if (n_plots %% 2 == 1) layout_mat[n_rows, 2] <- NA
+          } else {
+          # Create layout matrix: Active on left, Inactive on right
+          layout_mat <- matrix(NA, nrow = n_rows, ncol = 2)
+          
+          # Fill left column with active plots (1, 2, 3, 4...)
+          if (n_active > 0) {
+            for (i in 1:n_active) {
+            layout_mat[i, 1] <- i
+            }
+          }
+          
+          # Fill right column with inactive plots (n_active+1, n_active+2, ...)
+          if (n_inactive > 0) {
+            for (i in 1:n_inactive) {
+            layout_mat[i, 2] <- n_active + i
+            }
+          }
+          
+          # Combine plots in order: all active first, then all inactive
+          combined_plots <- c(active_plots, inactive_plots)
+          }
+          
+          # Set plot dimensions
+          plot_width <- 14
+          plot_height <- 5 * n_rows
+          
+          # Save positional heatmap grid as SVG
+          tryCatch({
+          ggsave(
+            filename = paste0(saving_directory, plots_dir_phase, "/allHeatmaps_positions_", batch, "_", cageChange, "_", sys_name, ".svg"),
+            plot = gridExtra::arrangeGrob(grobs = combined_plots,
+                          ncol = 2,
+                          layout_matrix = layout_mat),
+            width = plot_width,
+            height = plot_height
+          )
+          saved_count <- saved_count + 1
+          }, error = function(e) {
+          message("   ✗ Error saving position heatmap for ", sys_name, ": ", e$message)
+          })
+        }
+        
+        if (saved_count > 0) {
+          message("   ✓ Saved ", saved_count, " position heatmap grids as SVG")
+          message("      Location: ", plots_dir_phase)
+        }
+        }
+      }
+      
+      # ===================================================================
+      # 3. SAVE HALF-HOUR ANALYSIS
+      # ===================================================================
+      if (analyze_by_halfhour && save_tables == TRUE) {
+        message("4. Saving half-hour analysis tables...")
+        
+        # Save Social Proximity tables (by half-hour)
+        write.csv(result_halfhour_proximity,
+            file = paste0(saving_directory, tables_dir_halfhour, "/", batch, "_", cageChange, "_halfhour_proximity.csv"), 
+            row.names = FALSE)
+        message("   ✓ Saved: ", batch, "_", cageChange, "_halfhour_proximity.csv")
+        
+        # Save Movement tables (by half-hour)
+        write.csv(result_halfhour_movement,
+            file = paste0(saving_directory, tables_dir_halfhour, "/", batch, "_", cageChange, "_halfhour_movement.csv"), 
+            row.names = FALSE)
+        message("   ✓ Saved: ", batch, "_", cageChange, "_halfhour_movement.csv")
+        message("      Location: ", tables_dir_halfhour)
+      }
+      
+      # ===================================================================
+      # SUMMARY
+      # ===================================================================
+      if (save_tables == TRUE || save_plots == TRUE) {
+        message("=======================================================================")
+        message("FINISHED SAVING ", batch, " ", cageChange)
+        message("=======================================================================")
+        message("")
+      }
+      }
     }
   }
-}
 
 # ---------------------------------------------------
 # Display Plots in R
