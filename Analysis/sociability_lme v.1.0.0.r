@@ -26,6 +26,15 @@ min_groups  <- 2
 min_obs     <- 8
 min_time_lv <- 3
 
+# Suppress specific emmeans notes for large datasets
+options(
+  emmeans = list(
+    pbkrtest.limit = 10000,  # Increase limit for Kenward-Roger df adjustments
+    lmerTest.limit = 10000,  # Increase limit for Satterthwaite df adjustments
+    msg.interaction = FALSE  # Suppress interaction involvement warnings
+  )
+)
+
 # -------------------------------------------------
 # Base Paths
 # -------------------------------------------------
@@ -360,6 +369,34 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
         ms <- summary(model)
         cat(paste(Sys.time(), Change, Sex, Phase, "MAIN form:", deparse(formula(model)),
                   "singular:", lme4::isSingular(model), "\n"), file = log_file, append = TRUE)
+
+        # Save model object
+        model_filename <- paste0(
+        "model_", 
+        metric_name, "_",
+        "Change-", Change, "_",
+        "Sex-", Sex, "_",
+        "Phase-", Phase, 
+        ".rds"
+        )
+        saveRDS(model, file.path(dirs$models, model_filename))
+
+        # Save model summary as text
+        summary_filename <- paste0(
+        "summary_", 
+          metric_name, "_",
+          "Change-", Change, "_",
+          "Sex-", Sex, "_",
+          "Phase-", Phase, 
+          ".txt"
+        )
+        sink(file.path(dirs$models, summary_filename))
+        print(summary(model))
+        cat("\n\nFormula:\n")
+        print(formula(model))
+        cat("\n\nRandom effects:\n")
+        print(VarCorr(model))
+        sink()
         
         fx <- tibble::tibble(
           Fixed_effect = rownames(ms$coefficients),
@@ -519,6 +556,110 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
     }
   }
   
+  # -------------------------------------------------
+# Save to proper directories + generate manifest & inventory
+# -------------------------------------------------
+
+# 1. Move phase-average to correct folder
+if (nrow(phase_avg_means_tbl) > 0) {
+  openxlsx::write.xlsx(phase_avg_means_tbl, 
+                       file.path(dirs$tables_phase, paste0("phaseAvg_emmeans_", run_scope, ".xlsx")), 
+                       rowNames = FALSE)
+}
+
+if (nrow(phase_avg_contr_tbl) > 0) {
+  openxlsx::write.xlsx(phase_avg_contr_tbl, 
+                       file.path(dirs$tables_phase, paste0("phaseAvg_contrasts_", run_scope, ".xlsx")), 
+                       rowNames = FALSE)
+}
+
+# 2. Save contrasts separately
+if (nrow(emmeans_results) > 0) {
+  contrasts_only <- emmeans_results %>%
+    dplyr::filter(!is.na(contrast))
+  
+  if (nrow(contrasts_only) > 0) {
+    openxlsx::write.xlsx(contrasts_only, 
+                         file.path(dirs$tables_contr, paste0("contrasts_", run_scope, ".xlsx")), 
+                         rowNames = FALSE)
+  }
+}
+
+# 3. Generate inventory (data summary per slice)
+inventory_list <- list()
+
+for (Change in changes) {
+  for (Sex in sexes) {
+    for (Phase in phases) {
+      dsub <- data %>%
+        dplyr::filter(
+          (!includeChange | Change == !!Change),
+          (!includeSex    | Sex    == !!Sex),
+          (!includePhase  | Phase  == !!Phase)
+        )
+      
+      if (nrow(dsub) > 0) {
+        inventory_list[[length(inventory_list) + 1]] <- data.frame(
+          Change = as.character(Change),
+          Sex = as.character(Sex),
+          Phase = as.character(Phase),
+          n_observations = nrow(dsub),
+          n_animals = dplyr::n_distinct(dsub$AnimalNum),
+          n_groups = dplyr::n_distinct(dsub$Group),
+          n_timepoints = dplyr::n_distinct(dsub$HalfHourElapsed),
+          mean_Movement = mean(dsub$Movement, na.rm = TRUE),
+          sd_Movement = sd(dsub$Movement, na.rm = TRUE),
+          mean_Proximity = mean(dsub$Proximity, na.rm = TRUE),
+          sd_Proximity = sd(dsub$Proximity, na.rm = TRUE),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+}
+
+inventory_df <- dplyr::bind_rows(inventory_list)
+
+if (nrow(inventory_df) > 0) {
+  openxlsx::write.xlsx(inventory_df, 
+                       file.path(dirs$tables_inv, paste0("data_inventory_", run_scope, ".xlsx")), 
+                       rowNames = FALSE)
+}
+
+# 4. Generate manifest (analysis metadata)
+manifest <- data.frame(
+  metric = metric_name,
+  analysis_date = Sys.time(),
+  run_scope = run_scope,
+  includeChange = includeChange,
+  includeSex = includeSex,
+  includePhase = includePhase,
+  use_group_time_interaction = use_group_time_interaction,
+  min_animals = min_animals,
+  min_groups = min_groups,
+  min_obs = min_obs,
+  min_time_lv = min_time_lv,
+  n_models_fitted = nrow(summary_results) / length(unique(summary_results$Fixed_effect)),
+  n_contrasts = nrow(emmeans_results),
+  n_phase_avg_contrasts = nrow(phase_avg_contr_tbl),
+  total_observations = nrow(data),
+  total_animals = dplyr::n_distinct(data$AnimalNum),
+  data_file = data_file,
+  results_dir = results_dir,
+  stringsAsFactors = FALSE
+)
+
+openxlsx::write.xlsx(manifest, 
+                     file.path(dirs$tables_man, paste0("analysis_manifest_", metric_name, "_", run_scope, ".xlsx")), 
+                     rowNames = FALSE)
+
+cat(sprintf("\n✓ Additional tables saved:\n"))
+cat(sprintf("  - Inventory: %s\n", dirs$tables_inv))
+cat(sprintf("  - Manifest: %s\n", dirs$tables_man))
+cat(sprintf("  - Phase average: %s\n", dirs$tables_phase))
+cat(sprintf("  - Contrasts: %s\n", dirs$tables_contr))
+
+
   # -------------------------------------------------
   # Additional publication plots (volcano, panels A/B/C)
   # -------------------------------------------------
@@ -859,21 +1000,44 @@ corr_by_group <- corr_data %>%
     pearson_r = cor(Movement, Proximity, method = "pearson", use = "complete.obs"),
     spearman_rho = cor(Movement, Proximity, method = "spearman", use = "complete.obs"),
     .groups = "drop"
-  ) %>%
-  dplyr::mutate(
-    pearson_p = sapply(1:n(), function(i) {
-      d <- corr_data %>% 
-        dplyr::filter(Change == Change[i], Sex == Sex[i], Phase == Phase[i], Group == Group[i])
-      if(nrow(d) < 3) return(NA_real_)
-      cor.test(d$Movement, d$Proximity, method = "pearson")$p.value
-    }),
-    spearman_p = sapply(1:n(), function(i) {
-      d <- corr_data %>% 
-        dplyr::filter(Change == Change[i], Sex == Sex[i], Phase == Phase[i], Group == Group[i])
-      if(nrow(d) < 3) return(NA_real_)
-      cor.test(d$Movement, d$Proximity, method = "spearman")$p.value
-    })
   )
+
+# Calculate p-values separately (cleaner and faster)
+corr_by_group$pearson_p <- NA_real_
+corr_by_group$spearman_p <- NA_real_
+
+for (i in 1:nrow(corr_by_group)) {
+  d <- corr_data %>% 
+    dplyr::filter(
+      Change == corr_by_group$Change[i], 
+      Sex == corr_by_group$Sex[i], 
+      Phase == corr_by_group$Phase[i], 
+      Group == corr_by_group$Group[i]
+    )
+  
+  if (nrow(d) >= 3) {
+    # Pearson test
+    pearson_test <- tryCatch(
+      cor.test(d$Movement, d$Proximity, method = "pearson"),
+      error = function(e) NULL
+    )
+    if (!is.null(pearson_test)) {
+      corr_by_group$pearson_p[i] <- pearson_test$p.value
+    }
+    
+    # Spearman test (with exact = FALSE to avoid ties warning)
+    spearman_test <- tryCatch(
+      suppressWarnings(
+        cor.test(d$Movement, d$Proximity, method = "spearman", exact = FALSE)
+      ),
+      error = function(e) NULL
+    )
+    if (!is.null(spearman_test)) {
+      corr_by_group$spearman_p[i] <- spearman_test$p.value
+    }
+  }
+}
+
 
 # Save correlation statistics
 openxlsx::write.xlsx(
@@ -997,7 +1161,22 @@ if ("TH" %in% names(corr_data)) {
     dplyr::group_by(Change, Sex, Phase, Group, HalfHourElapsed) %>%
     dplyr::summarise(
       n = n(),
-      pearson_r = if(n() >= 3) cor(Movement, Proximity, method = "pearson", use = "complete.obs") else NA_real_,
+      pearson_r = {
+        if (n() >= 3) {
+          # Check for zero variance
+          var_movement <- var(Movement, na.rm = TRUE)
+          var_proximity <- var(Proximity, na.rm = TRUE)
+          
+          if (!is.na(var_movement) && !is.na(var_proximity) && 
+              var_movement > 0 && var_proximity > 0) {
+            cor(Movement, Proximity, method = "pearson", use = "complete.obs")
+          } else {
+            NA_real_
+          }
+        } else {
+          NA_real_
+        }
+      },
       .groups = "drop"
     ) %>%
     dplyr::filter(!is.na(pearson_r))
@@ -1031,7 +1210,12 @@ if ("TH" %in% names(corr_data)) {
     file.path(dirs_corr$tables, "correlation_time_resolved.xlsx"), 
     rowNames = FALSE
   )
+  
+  cat(sprintf("  - Time-resolved correlations: %d valid time points (out of %d total)\n", 
+              nrow(time_corr), 
+              nrow(corr_data %>% dplyr::group_by(Change, Sex, Phase, Group, HalfHourElapsed) %>% dplyr::summarise(n = n(), .groups = "drop"))))
 }
+
 
 # Correlation by animal (individual level) WITH STATISTICS
 # Correlation by animal (individual level) WITH COMPREHENSIVE STATISTICS
