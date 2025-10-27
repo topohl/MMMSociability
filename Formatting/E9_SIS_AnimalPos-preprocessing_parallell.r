@@ -20,7 +20,7 @@
 
 required_packages <- c("readr", "stringr", "dplyr", "lubridate", "tibble",
                        "writexl", "foreach", "doParallel", "parallel",
-                       "tidyverse")
+                       "tidyverse", "jsonlite", "rlang")
 
 # Load required packages using pacman
 if (!requireNamespace("pacman", quietly = TRUE)) {
@@ -28,11 +28,14 @@ if (!requireNamespace("pacman", quietly = TRUE)) {
 }
 pacman::p_load(readr, stringr, dplyr, lubridate, tibble,
                writexl, foreach, doParallel, parallel,
-               tidyverse, tcltk)
+               tidyverse, tcltk, jsonlite, rlang)
 
 # Set working directory and source functions
-setwd("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability")
-source('C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R')
+#setwd("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability")
+#source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R")
+
+setwd("D:/MMMSociability")
+source("C:/Users/Tobias Pohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R")
 
 # Check if preprocessed_data folder exists, if not create it
 if (!dir.exists("preprocessed_data")) {
