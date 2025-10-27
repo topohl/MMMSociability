@@ -46,8 +46,8 @@ working_directory <- "D:/MMMSociability"
 saving_directory <- "D:/MMMSociability"
 
 # Define base directories
-plots_base <- "/plots/noHomeCage_test"
-tables_base <- "/tables/noHomeCage_test"
+plots_base <- paste0("/plots/", ifelse(exclude_homecage, "noHomeCage", "withHomeCage"))
+tables_base <- paste0("/tables/", ifelse(exclude_homecage, "noHomeCage", "withHomeCage"))
 
 # Source required functions
 #source(paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"))
