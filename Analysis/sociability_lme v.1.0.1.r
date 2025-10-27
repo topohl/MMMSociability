@@ -708,6 +708,7 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
     cat(sprintf("  - Manifest: %s\n", dirs$tables_man))
     cat(sprintf("  - Phase average: %s\n", dirs$tables_phase))
     cat(sprintf("  - Contrasts: %s\n", dirs$tables_contr))
+  }
 
   # -------------------------------------------------
   # Additional plots (volcano, panels A/B/C)
@@ -733,97 +734,96 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
       Change = factor(Change),
       Sex = factor(Sex)
     )
-  
-  # Volcano plot
-plot_volcano_phaseavg <- function(df, n_labels = 10, pval_thresh = 0.05, effect_thresh = 1) {
-    df <- df %>%
+    # Volcano plot
+    plot_volcano_phaseavg <- function(df, n_labels = 10, pval_thresh = 0.05, effect_thresh = 1) {
+      df <- df %>%
         mutate(
-            sig = p.adjust < pval_thresh,
-            large_effect = abs(estimate) > effect_thresh,
-            label_flag = sig & large_effect,
-            contrast = factor(contrast, levels = c("RES - CON", "SUS - CON", "RES - SUS")),
-            Phase = factor(Phase, levels = c("Active", "Inactive")),
-            Sex = factor(Sex)
+          sig = p.adjust < pval_thresh,
+          large_effect = abs(estimate) > effect_thresh,
+          label_flag = sig & large_effect,
+          contrast = factor(contrast, levels = c("RES - CON", "SUS - CON", "RES - SUS")),
+          Phase = factor(Phase, levels = c("Active", "Inactive")),
+          Sex = factor(Sex)
         )
-    
-    # Calculate x-axis range based on data
-    est_range <- range(df$estimate, na.rm = TRUE)
-    est_min <- floor(est_range[1])
-    est_max <- ceiling(est_range[2])
-    x_breaks <- scales::pretty_breaks(n = 6)(c(est_min, est_max))
-    
-    ggplot(
+      
+      # Calculate x-axis range based on data
+      est_range <- range(df$estimate, na.rm = TRUE)
+      est_min <- floor(est_range[1])
+      est_max <- ceiling(est_range[2])
+      x_breaks <- scales::pretty_breaks(n = 6)(c(est_min, est_max))
+      
+      ggplot(
         df,
         aes(
-            x = estimate,
-            y = -log10(p.adjust),
-            color = contrast,
-            shape = Phase
+          x = estimate,
+          y = -log10(p.adjust),
+          color = contrast,
+          shape = Phase
         )
-    ) +
+      ) +
         geom_vline(
-            xintercept = c(-effect_thresh, effect_thresh),
-            linetype = "dotted",
-            color = "gray50"
+          xintercept = c(-effect_thresh, effect_thresh),
+          linetype = "dotted",
+          color = "gray50"
         ) +
         geom_hline(
-            yintercept = -log10(0.05),
-            linetype = "dashed",
-            color = "gray70"
+          yintercept = -log10(0.05),
+          linetype = "dashed",
+          color = "gray70"
         ) +
         geom_point(size = 5, alpha = 0.8) +
         scale_color_manual(values = c(
-            "RES - CON" = "#457B9D",
-            "SUS - CON" = "#E63946",
-            "RES - SUS" = "#C6C3BB"
+          "RES - CON" = "#457B9D",
+          "SUS - CON" = "#E63946",
+          "RES - SUS" = "#C6C3BB"
         )) +
         scale_shape_manual(values = c("Active" = 16, "Inactive" = 1), name = "Phase") +
         facet_grid(. ~ Sex) +
         theme_minimal(base_size = 14) +
         theme(
-            panel.grid.major.x = element_line(linewidth = 0.2),
-            panel.grid.major.y = element_line(linewidth = 0.2),
-            legend.position = "top"
+          panel.grid.major.x = element_line(linewidth = 0.2),
+          panel.grid.major.y = element_line(linewidth = 0.2),
+          legend.position = "top"
         ) +
         scale_x_continuous(breaks = x_breaks, minor_breaks = NULL) +
         labs(
-            x = "Effect size (estimate)",
-            y = expression(-log[10](adjusted~p~value)),
-            color = "Contrast",
-            title = paste("Volcano Plot:", metric_name)
+          x = "Effect size (estimate)",
+          y = expression(-log[10](adjusted~p~value)),
+          color = "Contrast",
+          title = paste("Volcano Plot:", metric_name)
         )
-}
-
-  volcano_plot_phaseavg <- plot_volcano_phaseavg(phase_avg_contr_tbl)
-  ggsave(file.path(dirs$plots_pub, paste0("volcano_phaseAvg_", run_scope, ".svg")), 
-         volcano_plot_phaseavg, width = 8, height = 6)
-  
-  # Forest plot (additional)
-  plot_forest_phaseavg <- function(df, contrast_levels = levels(df$contrast)) {
-    sub <- df %>% filter(contrast %in% contrast_levels)
-    ggplot(sub, aes(y = reorder(contrast, estimate), x = estimate, xmin = lwr, xmax = upr, color = contrast)) +
-      geom_point(size = 3) +
-      geom_errorbarh(height = 0.2) +
-      facet_grid(Phase ~ Change) +
-      theme_minimal(base_size = 14) +
-      labs(x = "Estimate (phase avg, with 95% CI)", y = "Contrast", 
-           title = paste("Forest Plot:", metric_name))
-  }
-  
-  forest_plot_phaseavg <- plot_forest_phaseavg(phase_avg_contr_tbl)
-  ggsave(file.path(dirs$plots_pub, paste0("forest_phaseAvg_", run_scope, ".svg")), 
-         forest_plot_phaseavg, width = 9, height = 7)
-  
-  # Dot estimation plot
-  plot_dot_estimation_phaseavg <- function(df) {
-    ggplot(df, aes(x = Group, y = emmean_avg, color = Sex)) +
-      geom_point(position = position_jitter(width = 0.2), size = 3) +
-      geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.2) +
-      facet_grid(Phase ~ Change) +
-      theme_minimal(base_size = 14) +
-      labs(x = "Group", y = "Estimated Phase Average", 
-           title = paste("Dot/Estimation Plot:", metric_name))
-  }
+    }
+    
+    volcano_plot_phaseavg <- plot_volcano_phaseavg(phase_avg_contr_tbl)
+    ggsave(file.path(dirs$plots_pub, paste0("volcano_phaseAvg_", run_scope, ".svg")), 
+           volcano_plot_phaseavg, width = 8, height = 6)
+    
+    # Forest plot (additional)
+    plot_forest_phaseavg <- function(df, contrast_levels = levels(df$contrast)) {
+      sub <- df %>% filter(contrast %in% contrast_levels)
+      ggplot(sub, aes(y = reorder(contrast, estimate), x = estimate, xmin = lwr, xmax = upr, color = contrast)) +
+        geom_point(size = 3) +
+        geom_errorbarh(height = 0.2) +
+        facet_grid(Phase ~ Change) +
+        theme_minimal(base_size = 14) +
+        labs(x = "Estimate (phase avg, with 95% CI)", y = "Contrast", 
+             title = paste("Forest Plot:", metric_name))
+    }
+    
+    forest_plot_phaseavg <- plot_forest_phaseavg(phase_avg_contr_tbl)
+    ggsave(file.path(dirs$plots_pub, paste0("forest_phaseAvg_", run_scope, ".svg")), 
+           forest_plot_phaseavg, width = 9, height = 7)
+    
+    # Dot estimation plot
+    plot_dot_estimation_phaseavg <- function(df) {
+      ggplot(df, aes(x = Group, y = emmean_avg, color = Sex)) +
+        geom_point(position = position_jitter(width = 0.2), size = 3) +
+        geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.2) +
+        facet_grid(Phase ~ Change) +
+        theme_minimal(base_size = 14) +
+        labs(x = "Group", y = "Estimated Phase Average", 
+             title = paste("Dot/Estimation Plot:", metric_name))
+    }
   
   dot_estimation_plot_phaseavg <- plot_dot_estimation_phaseavg(phase_avg_means_tbl)
   ggsave(file.path(dirs$plots_pub, paste0("dotEstimation_phaseAvg_", run_scope, ".svg")), 
@@ -1087,7 +1087,6 @@ for (i in 1:nrow(corr_by_group)) {
   }
 }
 
-
 # Save correlation statistics
 openxlsx::write.xlsx(
   corr_by_group, 
@@ -1265,9 +1264,7 @@ if ("TH" %in% names(corr_data)) {
               nrow(corr_data %>% dplyr::group_by(Change, Sex, Phase, Group, HalfHourElapsed) %>% dplyr::summarise(n = n(), .groups = "drop"))))
 }
 
-
 # Correlation by animal (individual level) WITH STATISTICS
-# Correlation by animal (individual level) WITH COMPREHENSIVE STATISTICS
 animal_corr <- corr_data %>%
   dplyr::group_by(AnimalNum, Group, Sex, Change) %>%
   dplyr::summarise(
@@ -1382,7 +1379,7 @@ for (sex_val in unique(animal_corr$Sex)) {
           posthoc_rows[[length(posthoc_rows) + 1]] <- data.frame(
             Sex = sex_val,
             test = "Wilcoxon",
-            comparison = paste(group2, group1, sep = " - "),  # Match Tukey format
+            comparison = paste(group2, group1, sep = " - "),
             group1 = group2,
             group2 = group1,
             p_value = p_val,
@@ -1456,7 +1453,7 @@ openxlsx::write.xlsx(
   rowNames = FALSE
 )
 
-# Enhanced violin plot with post-hoc comparisons (CORRECTED for facets)
+# Enhanced violin plot with post-hoc comparisons
 p_animal_corr <- ggplot(animal_corr, aes(x = Group, y = pearson_r, fill = Group)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   geom_violin(alpha = 0.6, trim = FALSE) +
@@ -1475,7 +1472,7 @@ p_animal_corr <- ggplot(animal_corr, aes(x = Group, y = pearson_r, fill = Group)
     plot.title = element_text(face = "bold", hjust = 0.5)
   )
 
-# Add post-hoc brackets - CORRECTED: Create data frames with Sex for proper faceting
+# Add post-hoc brackets
 for (sex_val in unique(posthoc_stats$Sex)) {
   posthoc_sex <- posthoc_stats %>% dplyr::filter(Sex == sex_val)
   
@@ -1686,22 +1683,17 @@ ggsave(
   p_animal_corr_bars, width = 10, height = 7
 )
 
-cat("\n✓ Animal-level correlation statistics with facet-specific annotations saved\n")
-
+cat("\n ✓ Animal-level correlation statistics with facet-specific annotations saved\n")
 cat(sprintf("  - Overall stats saved to: %s\n", file.path(dirs_corr$tables, "animal_correlation_overall_stats.xlsx")))
 cat(sprintf("  - Post-hoc stats saved to: %s\n", file.path(dirs_corr$tables, "animal_correlation_posthoc_stats.xlsx")))
 cat(sprintf("  - Summary stats saved to: %s\n", file.path(dirs_corr$tables, "animal_correlation_summary.xlsx")))
-
-
-
-cat("\n=== CORRELATION ANALYSIS COMPLETE ===\n")
+cat("\n === CORRELATION ANALYSIS COMPLETE ===\n")
 cat(sprintf("Results saved to: %s\n", correlation_dir))
-
 
 # -------------------------------------------------
 # Run analyses for both metrics
 # -------------------------------------------------
-cat("\n=== RUNNING ANALYSES FOR BOTH METRICS ===\n")
+cat("\n === RUNNING ANALYSES FOR BOTH METRICS ===\n")
 
 # Analysis for Movement
 movement_results <- run_analysis_for_metric("Movement", data_filtered_agg, includeChange, includeSex, includePhase)
