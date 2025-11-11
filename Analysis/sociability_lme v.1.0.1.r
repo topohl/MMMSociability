@@ -38,7 +38,8 @@ options(
 # -------------------------------------------------
 # Base Paths
 # -------------------------------------------------
-base_results_dir <- "D:/MMMSociability/statistics/lme/"
+#base_results_dir <- "D:/MMMSociability/statistics/lme/"
+base_results_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/statistics/lme/"
 if (!dir.exists(base_results_dir)) dir.create(base_results_dir, recursive = TRUE)
 dir_create_safe <- function(path) { if (!dir.exists(path)) dir.create(path, recursive = TRUE, showWarnings = FALSE) }
 
@@ -65,7 +66,8 @@ has_cols <- function(x, cols) all(cols %in% names(x))
 # LOAD DATA
 # -------------------------------------------------
 cat("Loading data...\n")
-data_file <- "D:/MMMSociability/processed_data/data_lme_format/data_filtered_agg.csv"
+#data_file <- "D:/MMMSociability/processed_data/data_lme_format/data_filtered_agg.csv"
+data_file <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/processed_data/data_lme_format/data_filtered_agg.csv"
 
 if (file.exists(data_file)) {
   data_filtered_agg <- read_csv(data_file, show_col_types = FALSE)
@@ -574,38 +576,63 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
     
     # Forest plot
     if (nrow(phase_avg_contr_tbl) > 0) {
+      phase_avg_contr_tbl$Change <- recode(phase_avg_contr_tbl$Change, "CC1" = "1", "CC2" = "2", "CC3" = "3", "CC4" = "4")
+      
+      # Calculate expanded x-axis limits
+      x_range <- range(phase_avg_contr_tbl$estimate, na.rm = TRUE)
+      x_margin <- diff(x_range) * 0.15  # Add 15% margin on each side
+      x_limits <- c(x_range[1] - x_margin, x_range[2] + x_margin)
+      
       forest_phaseavg <- ggplot(
-        phase_avg_contr_tbl,
-        aes(x = Change, y = estimate, ymin = lwr, ymax = upr, color = pair, shape = pair)
+      phase_avg_contr_tbl,
+      aes(x = Change, y = estimate, ymin = lwr, ymax = upr, color = pair, shape = pair)
       ) +
-        geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-        geom_pointrange(position = position_dodge(width = 0.55), linewidth = 0.6) +
-        geom_text(
-          aes(label = ifelse(p.adjust < 0.001, "***",
-            ifelse(p.adjust < 0.01, "**",
-              ifelse(p.adjust < 0.05, "*", "")
-              )
-            )
-          ),
-          position = position_dodge(width = 0.55),
-          vjust = -1.0,
-          size = 3.6,
-          color = "#333333"
-        ) +
-        scale_color_manual(values = c("RES-CON" = "grey60", "SUS-CON" = "#E63946", "RES-SUS" = "#457B9D")) +
-        scale_shape_manual(values = c("RES-CON" = 16, "SUS-CON" = 16, "RES-SUS" = 16)) +
-        labs(title = paste("Phase-averaged contrasts:", metric_name),
-             x = "Cage Change", y = "Estimate (difference)") +
-        facet_grid(Phase ~ Sex, scales = "free_x") +
-        theme_minimal(base_size = 12) +
-        theme(panel.grid.minor = element_blank(), legend.position = "top",
-              plot.title = element_text(face = "bold", hjust = 0.5)) +
-        coord_flip()
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+      geom_pointrange(position = position_dodge(width = 0.55), linewidth = 1.0, size = 1.1, alpha = 0.9) +
+      geom_text(
+      aes(label = ifelse(p.adjust < 0.001, "***",
+      ifelse(p.adjust < 0.01, "**",
+      ifelse(p.adjust < 0.05, "*", "")))),
+      position = position_dodge(width = 0.55),
+      vjust = 0.4,
+      size = 7,
+      fontface = "bold",
+      color = "#333333",
+      family = "Roboto",
+      show.legend = FALSE
+      ) +
+      scale_color_manual(values = c("RES-CON" = "#457B9D", "SUS-CON" = "#E63946", "RES-SUS" = "grey60")) +
+      scale_shape_manual(values = c("RES-CON" = 16, "SUS-CON" = 16, "RES-SUS" = 16)) +
+      labs(title = paste("Phase-averaged contrasts:", metric_name),
+       x = "Cage Change", y = "Estimate (difference)", color = NULL) +
+      facet_grid(Phase ~ Sex, scales = "free_x") +
+      theme_minimal(base_size = 16, base_family = "Roboto") +
+      theme(panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.background = element_rect(fill = "grey95", color = NA),
+      strip.background = element_rect(color = NA, linewidth = 0),
+      #legend.position = c(0.99, 0.99),
+      legend.position = "bottom",
+      legend.justification = c(1, 1),
+      #legend.direction = "vertical",
+      legend.text = element_text(size = 9, family = "Roboto"),
+      legend.title = element_blank(),
+      legend.key.size = unit(1, "lines"),  # Smaller legend symbols
+      legend.spacing.y = unit(0.4, "cm"),
+      legend.background = element_rect(fill = "white", color = "grey80"),
+      legend.margin = margin(5, 5, 5, 5),
+      axis.text = element_text(size = 14, family = "Roboto"),
+      axis.title = element_text(size = 15, family = "Roboto"),
+      strip.text = element_text(size = 14, family = "Roboto"),
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 17, family = "Roboto")) +
+      coord_flip(ylim = rev(x_limits)) + # Invert y-axis with expanded limits
+      guides(shape = "none")  # Remove shape legend
       
       ggsave(file.path(dirs$plots_pub, paste0("panelA_forest_phaseAvg_with_RES-SUS_", run_scope, ".svg")),
-             forest_phaseavg, width = 5, height = 9)
+       forest_phaseavg, width = 5, height = 9)
     }
-    
+
     # -------------------------------------------------
     # Save to proper directories + generate manifest & inventory
     # -------------------------------------------------
@@ -1701,7 +1728,11 @@ movement_results <- run_analysis_for_metric("Movement", data_filtered_agg, inclu
 # Analysis for Proximity  
 proximity_results <- run_analysis_for_metric("Proximity", data_filtered_agg, includeChange, includeSex, includePhase)
 
+# Analysis for Entropy
+#entropy_results <- run_analysis_for_metric("Entropy", data_filtered_agg, includeChange, includeSex, includePhase)
+
 cat("\n=== ANALYSIS COMPLETE ===\n")
 cat("Both Movement and Proximity have been analyzed.\n")
 cat(sprintf("Movement results directory: %s\n", movement_results$dirs$models))
 cat(sprintf("Proximity results directory: %s\n", proximity_results$dirs$models))
+#cat(sprintf("Entropy results directory: %s\n", entropy_results$dirs$models))
