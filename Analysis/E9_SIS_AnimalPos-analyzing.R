@@ -39,19 +39,19 @@ exclude_homecage <- TRUE  # Set to TRUE to exclude home cage positions
 analyze_by_halfhour <- TRUE  # Set to TRUE to also analyze by half-hour periods
 
 # Paths
-#working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
-#saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
+working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
+saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
 
-working_directory <- "D:/MMMSociability"
-saving_directory <- "D:/MMMSociability"
+#working_directory <- "D:/MMMSociability"
+#saving_directory <- "D:/MMMSociability"
 
 # Define base directories
 plots_base <- paste0("/plots/", ifelse(exclude_homecage, "noHomeCage", "withHomeCage"))
 tables_base <- paste0("/tables/", ifelse(exclude_homecage, "noHomeCage", "withHomeCage"))
 
 # Source required functions
-#source(paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"))
-source("C:/Users/Tobias Pohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R")
+source(paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"))
+#source("C:/Users/Tobias Pohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R")
 
 # Define batch and cage change identifiers
 batches <- c("B1", "B2", "B3", "B4", "B5", "B6")
@@ -73,34 +73,34 @@ for (batch in batches) {
     # Define subdirectories for this specific batch and cage change
     current_plots_dir <- paste0(plots_base, "/", batch, "/", cageChange)
     current_tables_dir <- paste0(tables_base, "/", batch, "/", cageChange)
-    
+
     # Create phase-based analysis directories
     plots_dir_phase <- paste0(current_plots_dir, "/by_phase")
     tables_dir_phase <- paste0(current_tables_dir, "/by_phase")
-    
+
     # Create half-hour analysis directories
     plots_dir_halfhour <- paste0(current_plots_dir, "/by_halfhour")
     tables_dir_halfhour <- paste0(current_tables_dir, "/by_halfhour")
-    
+
     # Create metadata directory
     tables_dir_metadata <- paste0(current_tables_dir, "/metadata")
-    
+
     # Create all directories
     dir.create(paste0(saving_directory, plots_dir_phase), recursive = TRUE, showWarnings = FALSE)
     dir.create(paste0(saving_directory, tables_dir_phase), recursive = TRUE, showWarnings = FALSE)
     dir.create(paste0(saving_directory, tables_dir_metadata), recursive = TRUE, showWarnings = FALSE)
-    
+
     if (analyze_by_halfhour) {
       dir.create(paste0(saving_directory, plots_dir_halfhour), recursive = TRUE, showWarnings = FALSE)
       dir.create(paste0(saving_directory, tables_dir_halfhour), recursive = TRUE, showWarnings = FALSE)
     }
-    
+
     message("✓ Created directory structure for ", batch, " ", cageChange)
 
     # Construct the filename for the current CSV file
     filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
     # Define the path to the CSV file
-    csvFilePath <- paste0(working_directory, "/preprocessed_data_test/", filename, "_preprocessed.csv")
+    csvFilePath <- paste0(working_directory, "/preprocessed_data/", filename, "_preprocessed.csv")
 
     # Read the preprocessed data from the CSV file into a tibble
     data_preprocessed <- as_tibble(read_delim(csvFilePath, delim = ",",
@@ -130,7 +130,7 @@ for (batch in batches) {
     if (cageChange == "CC4") {
       active_phases_number <- active_phases_number[active_phases_number <= 2]
       inactive_phases_number <- inactive_phases_number[inactive_phases_number <= 2]
-    } 
+    }
 
     # Remove any remaining 0 values (safety check)
     active_phases_number <- active_phases_number[active_phases_number != 0]
@@ -643,7 +643,7 @@ for (batch in batches) {
           plot_title <- if(!is.null(original_plot$labels$title)) original_plot$labels$title else paste("Total Proximity -", batch, cageChange)
           plot_subtitle <- if(!is.null(original_plot$labels$subtitle)) original_plot$labels$subtitle else paste("System", i)
           
-          # Apply ultra-modern minimalist theme
+          # Apply theme
           proximity_lineplot <- generate_proximity_lineplot(original_plot, plot_title, plot_subtitle, batch, cageChange)
           
           ggsave(
@@ -654,7 +654,7 @@ for (batch in batches) {
         dpi = 300
           )
         }
-        message("   ✓ Saved ", length(all_plots_total_proximity), " total proximity plots with ultra-modern minimal design")
+        message("   ✓ Saved ", length(all_plots_total_proximity), " total proximity plots")
         
         # Save proximity heatmaps (one per complete system, multiple phases per system)
         if (length(allHeatmaps_proximity) > 0) {
