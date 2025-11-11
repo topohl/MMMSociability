@@ -56,7 +56,7 @@ preprocess_file <- function(batch, change, exclAnimals) {
     warning(paste("File", csvFilePath, "does not exist. Skipping to next file."))
     return(NULL)
   }
-  
+
   # Import, handle DateTime with or without seconds
   data <- as_tibble(readr::read_delim(csvFilePath, delim = ";", show_col_types = FALSE)) %>%
     dplyr::mutate(DateTime = ifelse(
@@ -65,19 +65,19 @@ preprocess_file <- function(batch, change, exclAnimals) {
       DateTime
     )) %>%
     dplyr::mutate(DateTime = as.POSIXct(DateTime, format = "%d.%m.%Y %H:%M:%S", tz = "UTC"))
-  
+
   # Remove unnecessary columns and split Animal info
   data <- data %>%
     dplyr::select(-dplyr::any_of(c("RFID", "AM", "zPos"))) %>%
     tidyr::separate(Animal, into = c("AnimalID", "System"), sep = "[-_]", extra = "merge", fill = "right")
-  
+
   # Define Position mapping table
   position_ids <- tibble::tibble(
     PositionID = 1:8,
     xPos = c(0, 100, 200, 300, 0, 100, 200, 300),
     yPos = c(0, 0, 0, 0, 116, 116, 116, 116)
   )
-  
+
   data <- data %>%
     dplyr::rowwise() %>%
     dplyr::mutate(PositionID = find_id(xPos, yPos, position_id = position_ids)) %>%
@@ -85,7 +85,11 @@ preprocess_file <- function(batch, change, exclAnimals) {
     dplyr::select(DateTime, AnimalID, System, PositionID) %>%
     dplyr::filter(!AnimalID %in% exclAnimals) %>%
     dplyr::arrange(DateTime)
-  
+
+  # Read in CageChange and Batch from filename
+  data <- data %>%
+    dplyr::mutate(CageChange = change, Batch = batch)
+
   # Phase and transition information
   data <- data %>%
     compute_phase_transitions() %>%
@@ -108,10 +112,10 @@ preprocess_file <- function(batch, change, exclAnimals) {
     ))
 
   # Remove unwanted phases (first inactive, last inactive if >4, last active if >4)
-  #data <- remove_phases(data)
+  data <- remove_phases(data)
 
   # Count half-hours elapsed
-  #data <- count_half_hours_elapsed(data)
+  data <- count_half_hours_elapsed(data)
 
   # Save output
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
@@ -227,17 +231,17 @@ remove_phases <- function(data) {
 count_half_hours_elapsed <- function(data) {
   # Initialize column
   data <- data %>% dplyr::mutate(HalfHoursElapsed = 0)
-  
+
   animals <- unique(data$AnimalID)
   systems <- unique(data$System)
-  
+
   for (animal in animals) {
     for (system in systems) {
       dsub <- data %>% dplyr::filter(AnimalID == animal, System == system)
       if (nrow(dsub) == 0) next
-      
+
       start_time <- min(dsub$DateTime, na.rm = TRUE)
-      
+
       data <- data %>%
         dplyr::mutate(HalfHoursElapsed = ifelse(
           AnimalID == animal & System == system,
