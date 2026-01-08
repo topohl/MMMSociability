@@ -59,6 +59,10 @@ exploration_metrics_dir <- file.path(tables_dir, "exploration_metrics")
 metadata_dir <- file.path(combined_tables_dir, "metadata")
 
 dir.create(combined_tables_dir, recursive = TRUE, showWarnings = FALSE)
+# Ensure expected combined subfolders exist before saving/loading
+dir.create(file.path(combined_tables_dir, "phase_based"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(combined_tables_dir, "halfhour_based"), recursive = TRUE, showWarnings = FALSE)
+
 dir.create(batch_cage_tables_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(exploration_metrics_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(metadata_dir, recursive = TRUE, showWarnings = FALSE)
@@ -127,14 +131,14 @@ if (load_existing_data) {
   message("=======================================================================")
   
   files_to_load <- list(
-    cagePosProb = file.path(combined_tables_dir, "phase_based", "all_batches_all_cageChanges_cagePosProb.csv"),
-    cagePosEntropy = file.path(combined_tables_dir, "phase_based", "all_batches_all_cageChanges_cagePosEntropy.csv"),
-    animalPosEntropy = file.path(combined_tables_dir, "phase_based", "all_batches_all_cageChanges_animalPosEntropy.csv")
+    cagePosProb = file.path(combined_tables_dir, "phase_based", "all_batch_CC_cagePosProb.csv"),
+    cagePosEntropy = file.path(combined_tables_dir, "phase_based", "all_batch_CC_cagePosEntropy.csv"),
+    animalPosEntropy = file.path(combined_tables_dir, "phase_based", "all_batch_CC_animalPosEntropy.csv")
   )
   
   if (analyze_by_halfhour) {
-    files_to_load$cagePosEntropy_halfhour <- file.path(combined_tables_dir, "halfhour_based", "all_batches_all_cageChanges_cagePosEntropy_halfhour.csv")
-    files_to_load$animalPosEntropy_halfhour <- file.path(combined_tables_dir, "halfhour_based", "all_batches_all_cageChanges_animalPosEntropy_halfhour.csv")
+    files_to_load$cagePosEntropy_halfhour <- file.path(combined_tables_dir, "halfhour_based", "all_batch_CC_cagePosEntropy_halfhour.csv")
+    files_to_load$animalPosEntropy_halfhour <- file.path(combined_tables_dir, "halfhour_based", "all_batch_CC_animalPosEntropy_halfhour.csv")
   }
   
   all_files_exist <- all(file.exists(unlist(files_to_load)))
@@ -143,20 +147,20 @@ if (load_existing_data) {
     message("✓ All required files found. Loading data...")
     
     all_cagePosProb <- read_csv(files_to_load$cagePosProb, show_col_types = FALSE)
-    message("   ✓ Loaded: all_batches_all_cageChanges_cagePosProb.csv")
+    message("   ✓ Loaded: all_batch_CC_cagePosProb.csv")
     
     all_cagePosEntropy <- read_csv(files_to_load$cagePosEntropy, show_col_types = FALSE)
-    message("   ✓ Loaded: all_batches_all_cageChanges_cagePosEntropy.csv")
+    message("   ✓ Loaded: all_batch_CC_cagePosEntropy.csv")
     
     all_animalPosEntropy <- read_csv(files_to_load$animalPosEntropy, show_col_types = FALSE)
-    message("   ✓ Loaded: all_batches_all_cageChanges_animalPosEntropy.csv")
+    message("   ✓ Loaded: all_batch_CC_animalPosEntropy.csv")
     
     if (analyze_by_halfhour) {
       all_cagePosEntropy_halfhour <- read_csv(files_to_load$cagePosEntropy_halfhour, show_col_types = FALSE)
-      message("   ✓ Loaded: all_batches_all_cageChanges_cagePosEntropy_halfhour.csv")
+      message("   ✓ Loaded: all_batch_CC_cagePosEntropy_halfhour.csv")
     
       all_animalPosEntropy_halfhour <- read_csv(files_to_load$animalPosEntropy_halfhour, show_col_types = FALSE)
-      message("   ✓ Loaded: all_batches_all_cageChanges_animalPosEntropy_halfhour.csv")
+      message("   ✓ Loaded: all_batch_CC_animalPosEntropy_halfhour.csv")
     }
     
     message("=======================================================================")
@@ -433,18 +437,40 @@ if (!load_existing_data) {
       }
     }
     
-    # Half-hour processing
+    # -------------------------------------------------------------------
+    # Half-hour processing (FIXED: CC4 filtering applied BEFORE loop)
+    # -------------------------------------------------------------------
     if (analyze_by_halfhour) {
       for (system_id in unique_systems) {
-        system_data <- data_preprocessed %>% filter(System == system_id) %>% as_tibble()
+        system_data <- data_preprocessed %>% 
+          filter(System == system_id) %>% 
+          as_tibble()
+
         animal_ids <- unique(system_data$AnimalID)
         system_complete <- length(animal_ids) >= 4
         while (length(animal_ids) < 4) animal_ids <- append(animal_ids, NA)
-        
-        for (halfhour in sort(unique(system_data$HalfHoursElapsed))) {
-          data_halfhour <- system_data %>% filter(HalfHoursElapsed == halfhour) %>% as_tibble()
+
+        # ---- CC4-consistent half-hour filtering ----
+        valid_halfhours <- system_data$HalfHoursElapsed
+
+        if (cageChange == "CC4") {
+          valid_halfhours <- system_data %>%
+            filter(
+              ConsecActive <= cc4_max_active_phase |
+              ConsecInactive <= cc4_max_inactive_phase
+            ) %>%
+            pull(HalfHoursElapsed) %>%
+            unique()
+        }
+
+        for (halfhour in sort(valid_halfhours)) {
+
+          data_halfhour <- system_data %>%
+            filter(HalfHoursElapsed == halfhour) %>%
+            as_tibble()
+
           if (nrow(data_halfhour) == 0) next
-          
+
           animal_list <- list(
             animal_1 = list(name = "", time = "", position = 0),
             animal_2 = list(name = "", time = "", position = 0),
@@ -452,75 +478,90 @@ if (!load_existing_data) {
             animal_4 = list(name = "", time = "", position = 0),
             data_temp = list(elapsed_seconds = 0, current_row = 0)
           )
-          
-          cage_position_probability <- list(
-            c(1, 0, 0, 0), c(2, 0, 0, 0), c(3, 0, 0, 0), c(4, 0, 0, 0),
-            c(5, 0, 0, 0), c(6, 0, 0, 0), c(7, 0, 0, 0), c(8, 0, 0, 0)
+
+          cage_position_probability <- replicate(8, c(NA, 0, 0, 0), simplify = FALSE)
+          for (i in 1:8) cage_position_probability[[i]][1] <- i
+
+          animal_position_probability <- tibble(
+            AnimalID = rep(animal_ids, each = 8),
+            Position = rep(1:8, length.out = 32),
+            Seconds = 0,
+            SumPercentage = 0,
+            Prob = 0
           )
-          
-          animal_position_probability <- tibble(AnimalID=rep(animal_ids, each=8),
-                                                Position=rep(1:8, length.out=32),
-                                                Seconds=0, SumPercentage=0, Prob=0)
-          
+
           animal_list <- initialize_animal_positions(animal_ids, data_halfhour, animal_list)
           initial_time <- animal_list[[1]][[2]]
           current_row <- 5
           total_rows <- nrow(data_halfhour) + 1
-          
-          while (current_row != total_rows && current_row < total_rows) {
+
+          while (current_row < total_rows) {
             previous_positions <- animal_list
-            animal_list <- update_animal_list(animal_ids, animal_list, data_halfhour, initial_time, current_row)
-            elapsed_seconds <- animal_list[["data_temp"]][["elapsed_seconds"]]
+            animal_list <- update_animal_list(
+              animal_ids, animal_list, data_halfhour, initial_time, current_row
+            )
+
+            elapsed_seconds <- animal_list$data_temp$elapsed_seconds
+
             if (system_complete) {
-              cage_position_probability <- update_cage_position_probability(previous_positions, animal_list, cage_position_probability, elapsed_seconds)
+              cage_position_probability <- update_cage_position_probability(
+                previous_positions, animal_list,
+                cage_position_probability, elapsed_seconds
+              )
             }
-            animal_position_probability <- update_animal_position_probability(previous_positions, animal_list, animal_position_probability, elapsed_seconds)
-            current_row <- animal_list[["data_temp"]][["current_row"]]
+
+            animal_position_probability <- update_animal_position_probability(
+              previous_positions, animal_list,
+              animal_position_probability, elapsed_seconds
+            )
+
+            current_row <- animal_list$data_temp$current_row
             initial_time <- animal_list[[1]][[2]]
           }
+
           for (i in 1:8) {
-            if (cage_position_probability[[i]][[2]] > 0) {
-              cage_position_probability[[i]][[4]] <- cage_position_probability[[i]][[3]] / cage_position_probability[[i]][[2]]
-            } else {
-              cage_position_probability[[i]][[4]] <- 0
-            }
+            cage_position_probability[[i]][4] <-
+              ifelse(cage_position_probability[[i]][2] > 0,
+                    cage_position_probability[[i]][3] /
+                      cage_position_probability[[i]][2], 0)
           }
-          
+
           animal_position_probability <- animal_position_probability %>%
             mutate(Prob = ifelse(Seconds > 0, SumPercentage / Seconds, 0))
-          
+
           if (system_complete) {
-            cage_prob_vec <- sapply(cage_position_probability, function(x) x[4])
+            cage_prob_vec <- sapply(cage_position_probability, `[`, 4)
             cage_prob_vec <- cage_prob_vec[!is.na(cage_prob_vec) & !is.nan(cage_prob_vec)]
-            cage_shannon_entropy <- NA
-            if (length(cage_prob_vec) > 0 && sum(cage_prob_vec) > 0) {
-              cage_prob_vec <- cage_prob_vec / sum(cage_prob_vec)
-              cage_shannon_entropy <- calc_shannon_entropy(cage_prob_vec)
-            }
-            
+
+            cage_entropy <- if (sum(cage_prob_vec) > 0) {
+              calc_shannon_entropy(cage_prob_vec / sum(cage_prob_vec))
+            } else NA
+
             cagePosEntropy_halfhour <- cagePosEntropy_halfhour %>%
-              add_row(Batch=batch, Sex=sex, System=system_id, CageChange=cageChange,
-                      HalfHour=halfhour, CageEntropy=cage_shannon_entropy)
+              add_row(
+                Batch = batch, Sex = sex, System = system_id,
+                CageChange = cageChange, HalfHour = halfhour,
+                CageEntropy = cage_entropy
+              )
           }
-          
+
           for (animal in animal_ids) {
             if (is.na(animal)) next
-            
-            animal_prob_vec <- animal_position_probability %>%
+
+            prob_vec <- animal_position_probability %>%
               filter(AnimalID == animal) %>%
               pull(Prob)
-            
-            animal_prob_vec <- animal_prob_vec[!is.na(animal_prob_vec) & !is.nan(animal_prob_vec)]
-            
-            animal_shannon_entropy <- NA
-            if (length(animal_prob_vec) > 0 && sum(animal_prob_vec) > 0) {
-              animal_prob_vec <- animal_prob_vec / sum(animal_prob_vec)
-              animal_shannon_entropy <- calc_shannon_entropy(animal_prob_vec)
-            }
-            
+
+            entropy <- if (sum(prob_vec, na.rm = TRUE) > 0) {
+              calc_shannon_entropy(prob_vec / sum(prob_vec))
+            } else NA
+
             animalPosEntropy_halfhour <- animalPosEntropy_halfhour %>%
-              add_row(Batch=batch, Sex=sex, System=system_id, CageChange=cageChange,
-                      HalfHour=halfhour, AnimalID=animal, animalEntropy=animal_shannon_entropy)
+              add_row(
+                Batch = batch, Sex = sex, System = system_id,
+                CageChange = cageChange, HalfHour = halfhour,
+                AnimalID = animal, animalEntropy = entropy
+              )
           }
         }
       }
@@ -571,50 +612,84 @@ for (system_id in unique_systems) {
   }
 }
 
-    
     # Plot half-hour entropy per system and halfhour period
+# -------------------------------------------------------------------
+# Plot half-hour animal entropy (FIXED: uses half-hour data)
+# -------------------------------------------------------------------
 if (analyze_by_halfhour) {
   for (system_id in unique_systems) {
-    plot_folder <- file.path(saving_directory, "plots", "batch_cagechange", batch, cageChange, "halfhour_based")
+
+    plot_folder <- file.path(
+      saving_directory, "plots",
+      "batch_cagechange", batch, cageChange, "halfhour_based"
+    )
     dir.create(plot_folder, recursive = TRUE, showWarnings = FALSE)
-    
-    halfhours <- sort(unique(animalPosEntropy_halfhour$HalfHour))
-    
+
+    halfhours <- sort(unique(
+      animalPosEntropy_halfhour %>%
+        filter(System == system_id, CageChange == cageChange) %>%
+        pull(HalfHour)
+    ))
+
     for (halfhour in halfhours) {
-      plot_data <- animalPosEntropy %>% filter(System == system_id, Phase == phase_code) %>%
-  filter(!is.na(animalEntropy), !is.na(Group))  # Remove rows with missing essential data
 
-if (nrow(plot_data) == 0) next
+      plot_data <- animalPosEntropy_halfhour %>%
+        filter(
+          System == system_id,
+          CageChange == cageChange,
+          HalfHour == halfhour,
+          !is.na(animalEntropy),
+          !is.na(Group)
+        )
 
-p_phase_plot <- ggplot(plot_data, aes(x = Group, y = animalEntropy, color = Group)) +
-  geom_jitter(width = 0.2, size = 3, alpha = 0.7) +
-  stat_summary(fun = mean, geom = "point", shape = 18, size = 5, color = "black") +
-  scale_color_manual(values = c(sus = "#E63946", res = "grey60", con = "#457B9D")) +
-  labs(title = paste("Animal Entropy -", batch, cageChange, system_id, phase),
-       x = "Group", y = "Shannon Entropy") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5, size = 18),
-        axis.title = element_text(size = 14),
-        axis.text = element_text(size = 12),
-        legend.position = "none")
+      if (nrow(plot_data) == 0) next
 
-full_plot_path <- file.path(plot_folder, paste0("animal_entropy_", system_id, "_", phase_code, ".svg"))
-message("Trying to save plot at: ", full_plot_path)
-print(p_phase_plot)
+      p <- ggplot(plot_data, aes(x = Group, y = animalEntropy, color = Group)) +
+        geom_jitter(width = 0.2, size = 3, alpha = 0.7) +
+        stat_summary(fun = mean, geom = "point",
+                     shape = 18, size = 5, color = "black") +
+        scale_color_manual(
+          values = c(sus = "#E63946", res = "grey60", con = "#457B9D")
+        ) +
+        labs(
+          title = paste(
+            "Animal Entropy Over Time (Half-Hour)",
+            batch, cageChange, system_id,
+            paste("HH", halfhour)
+          ),
+          x = "Group",
+          y = "Shannon Entropy"
+        ) +
+        theme_minimal() +
+        theme(
+          plot.title = element_text(hjust = 0.5, size = 18),
+          axis.title = element_text(size = 14),
+          axis.text = element_text(size = 12),
+          legend.position = "none"
+        )
 
-tryCatch({
-  ggsave(filename = full_plot_path, plot = p_phase_plot, width = 10, height = 7, dpi = 300)
-  message("Plot saved successfully.")
-}, error = function(e) {
-  message("Error saving plot: ", e$message)
-})
-
+      ggsave(
+        filename = file.path(
+          plot_folder,
+          paste0("animal_entropy_", system_id, "_HH", halfhour, ".svg")
+        ),
+        plot = p, width = 10, height = 7, dpi = 300
+      )
     }
   }
 }
 
-    
-    # Save to CSV
+
+    # Append this batch/cageChange results to global combined tibbles
+    all_cagePosProb <- bind_rows(all_cagePosProb, cagePosProb)
+    all_cagePosEntropy <- bind_rows(all_cagePosEntropy, cagePosEntropy)
+    all_animalPosEntropy <- bind_rows(all_animalPosEntropy, animalPosEntropy)
+    if (analyze_by_halfhour) {
+      all_cagePosEntropy_halfhour <- bind_rows(all_cagePosEntropy_halfhour, cagePosEntropy_halfhour)
+      all_animalPosEntropy_halfhour <- bind_rows(all_animalPosEntropy_halfhour, animalPosEntropy_halfhour)
+    }
+
+    # Save per-batch CSVs
     write.csv(cagePosProb, file=file.path(current_tables_dir_phase, paste0(batch, "_", cageChange, "_cagePosProb.csv")), row.names=FALSE)
     write.csv(cagePosEntropy, file=file.path(current_tables_dir_phase, paste0(batch, "_", cageChange, "_cagePosEntropy.csv")), row.names=FALSE)
     write.csv(animalPosEntropy, file=file.path(current_tables_dir_phase, paste0(batch, "_", cageChange, "_animalPosEntropy.csv")), row.names=FALSE)
@@ -632,21 +707,21 @@ tryCatch({
     message("SAVING COMBINED RESULTS")
     message("=======================================================================")
     
-    write.csv(all_cagePosProb, file = file.path(combined_tables_dir, "phase_based", "all_batches_all_cageChanges_cagePosProb.csv"), row.names = FALSE)
-    message("   ✓ Saved: all_batches_all_cageChanges_cagePosProb.csv")
+    write.csv(all_cagePosProb, file = file.path(combined_tables_dir, "phase_based", "all_batch_CC_cagePosProb.csv"), row.names = FALSE)
+    message("   ✓ Saved: all_batch_CC_cagePosProb.csv")
     
-    write.csv(all_cagePosEntropy, file = file.path(combined_tables_dir, "phase_based", "all_batches_all_cageChanges_cagePosEntropy.csv"), row.names = FALSE)
-    message("   ✓ Saved: all_batches_all_cageChanges_cagePosEntropy.csv")
+    write.csv(all_cagePosEntropy, file = file.path(combined_tables_dir, "phase_based", "all_batch_CC_cagePosEntropy.csv"), row.names = FALSE)
+    message("   ✓ Saved: all_batch_CC_cagePosEntropy.csv")
     
-    write.csv(all_animalPosEntropy, file = file.path(combined_tables_dir, "phase_based", "all_batches_all_cageChanges_animalPosEntropy.csv"), row.names = FALSE)
-    message("   ✓ Saved: all_batches_all_cageChanges_animalPosEntropy.csv")
+    write.csv(all_animalPosEntropy, file = file.path(combined_tables_dir, "phase_based", "all_batch_CC_animalPosEntropy.csv"), row.names = FALSE)
+    message("   ✓ Saved: all_batch_CC_animalPosEntropy.csv")
     
     if(analyze_by_halfhour) {
-      write.csv(all_cagePosEntropy_halfhour, file = file.path(combined_tables_dir, "halfhour_based", "all_batches_all_cageChanges_cagePosEntropy_halfhour.csv"), row.names = FALSE)
-      message("   ✓ Saved: all_batches_all_cageChanges_cagePosEntropy_halfhour.csv")
+      write.csv(all_cagePosEntropy_halfhour, file = file.path(combined_tables_dir, "halfhour_based", "all_batch_CC_cagePosEntropy_halfhour.csv"), row.names = FALSE)
+      message("   ✓ Saved: all_batch_CC_cagePosEntropy_halfhour.csv")
       
-      write.csv(all_animalPosEntropy_halfhour, file = file.path(combined_tables_dir, "halfhour_based", "all_batches_all_cageChanges_animalPosEntropy_halfhour.csv"), row.names = FALSE)
-      message("   ✓ Saved: all_batches_all_cageChanges_animalPosEntropy_halfhour.csv")
+      write.csv(all_animalPosEntropy_halfhour, file = file.path(combined_tables_dir, "halfhour_based", "all_batch_CC_animalPosEntropy_halfhour.csv"), row.names = FALSE)
+      message("   ✓ Saved: all_batch_CC_animalPosEntropy_halfhour.csv")
     }
     message("      Location: ", combined_tables_dir)
   }
@@ -712,76 +787,127 @@ for (i in seq_along(entropy_tibble_names)) {
 }
 
 # ===================================================================
-# CONSECUTIVE ENTROPY PROCESSING (HALF-HOUR)
+# CONSECUTIVE ENTROPY PROCESSING (HALF-HOUR) - include phase counts
 # ===================================================================
 if (analyze_by_halfhour) {
   message("=======================================================================")
-  message("PREPROCESSING CONSECUTIVE ENTROPY DATA (HALF-HOUR)")
+  message("PREPROCESSING CONSECUTIVE ENTROPY DATA (HALF-HOUR) WITH PHASE COUNTS")
   message("=======================================================================")
-  
+
   consec_cage_entropy_halfhour <- all_cagePosEntropy_halfhour
   consec_animal_entropy_halfhour <- all_animalPosEntropy_halfhour
-  
-  entropy_halfhour_names <- c("consec_cage_entropy_halfhour", "consec_animal_entropy_halfhour")
-  max_halfhour <- 0
-  
-  for (i in seq_along(entropy_halfhour_names)) {
-    name <- entropy_halfhour_names[i]
-    entropy_list <- if (name == "consec_cage_entropy_halfhour") consec_cage_entropy_halfhour else consec_animal_entropy_halfhour
-    
+
+  # Ensure we have preprocessed data to extract per-halfhour phase counts
+  data_for_filter <- NULL
+  if (exists("data_preprocessed") && !is.null(data_preprocessed) && nrow(data_preprocessed) > 0) {
+    data_for_filter <- data_preprocessed
+  } else {
+    all_preprocessed <- tibble()
+    for (batch in batches) {
+      for (cageChange in cageChanges) {
+        filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
+        csvFilePath <- file.path(preprocessed_data_dir, paste0(filename, "_preprocessed.csv"))
+        if (file.exists(csvFilePath)) {
+          temp_data <- read_delim(csvFilePath, delim = ",", show_col_types = FALSE) %>% as_tibble()
+          all_preprocessed <- bind_rows(all_preprocessed, temp_data)
+        }
+      }
+    }
+    if (nrow(all_preprocessed) > 0) {
+      data_for_filter <- all_preprocessed
+      message("   ✓ Loaded combined preprocessed data with ", nrow(data_for_filter), " rows for phase lookup")
+    } else {
+      message("   Warning: No preprocessed CSVs found; phase counts cannot be joined to half-hour tables.")
+    }
+  }
+
+  # Build phase lookup: per Batch/System/CageChange/HalfHour get ConsecActive & ConsecInactive
+  phase_lookup <- NULL
+  if (!is.null(data_for_filter)) {
+    phase_lookup <- data_for_filter %>%
+      mutate(HalfHour = HalfHoursElapsed) %>%
+      group_by(Batch, System, CageChange, HalfHour) %>%
+      summarise(
+        ConsecActive = if (all(is.na(ConsecActive))) NA_real_ else max(ConsecActive, na.rm = TRUE),
+        ConsecInactive = if (all(is.na(ConsecInactive))) NA_real_ else max(ConsecInactive, na.rm = TRUE),
+        .groups = "drop"
+      )
+  }
+
+  # Add ConsecHalfHour and (if available) phase counts to entropy tables
+  max_halfhour_offset <- 0
+  for (name in c("consec_cage_entropy_halfhour", "consec_animal_entropy_halfhour")) {
+    entropy_tbl <- if (name == "consec_cage_entropy_halfhour") consec_cage_entropy_halfhour else consec_animal_entropy_halfhour
+
+    # add Group for animal table
     if (name == "consec_animal_entropy_halfhour") {
-      entropy_list <- entropy_list %>%
+      entropy_tbl <- entropy_tbl %>%
         mutate(Group = ifelse(AnimalID %in% sus_animals, "sus",
                               ifelse(AnimalID %in% con_animals, "con", "res")))
     }
-    entropy_list <- entropy_list %>% mutate(ConsecHalfHour = HalfHour)
-    
+
+    # ensure HalfHour column name matches
+    if (!"HalfHour" %in% colnames(entropy_tbl) && "HalfHoursElapsed" %in% colnames(entropy_tbl)) {
+      entropy_tbl <- entropy_tbl %>% rename(HalfHour = HalfHoursElapsed)
+    }
+
+    entropy_tbl <- entropy_tbl %>% mutate(ConsecHalfHour = HalfHour)
+
+    # perform cumulative offset across cage changes so ConsecHalfHour is continuous
     for (change in c("CC1", "CC2", "CC3", "CC4")) {
       if (change != "CC1") {
-        entropy_list <- entropy_list %>%
-          mutate(ConsecHalfHour = ifelse(CageChange == change, HalfHour + max_halfhour, ConsecHalfHour))
+        entropy_tbl <- entropy_tbl %>%
+          mutate(ConsecHalfHour = ifelse(CageChange == change, HalfHour + max_halfhour_offset, ConsecHalfHour))
       }
-      max_halfhour <- entropy_list %>% filter(CageChange == change) %>% pull(ConsecHalfHour) %>% max(na.rm = TRUE)
+      current_max <- entropy_tbl %>% filter(CageChange == change) %>% pull(ConsecHalfHour) %>% max(na.rm = TRUE)
+      if (is.finite(current_max)) max_halfhour_offset <- current_max
     }
-    
-    if (name == "consec_animal_entropy_halfhour") {
-      entropy_list <- entropy_list[c("CageChange", "Batch", "System", "AnimalID", "Sex", "Group", "HalfHour", "ConsecHalfHour", "animalEntropy")]
-      consec_animal_entropy_halfhour <- entropy_list
+
+    # join phase counts if available
+    if (!is.null(phase_lookup)) {
+      entropy_tbl <- entropy_tbl %>%
+        left_join(phase_lookup, by = c("Batch", "System", "CageChange", "HalfHour"))
     } else {
-      entropy_list <- entropy_list[c("CageChange", "Batch", "System", "Sex", "HalfHour", "ConsecHalfHour", "CageEntropy")]
-      consec_cage_entropy_halfhour <- entropy_list
+      entropy_tbl <- entropy_tbl %>%
+        mutate(ConsecActive = NA_real_, ConsecInactive = NA_real_)
+    }
+
+    # infer Phase for the half-hour (active if ConsecActive>0 else inactive)
+    entropy_tbl <- entropy_tbl %>%
+      mutate(Phase = ifelse(!is.na(ConsecActive) & ConsecActive > 0, "active",
+                            ifelse(!is.na(ConsecInactive) & ConsecInactive > 0, "inactive", NA_character_)))
+
+    # select / reorder columns
+    if (name == "consec_animal_entropy_halfhour") {
+      entropy_tbl <- entropy_tbl %>%
+        select(CageChange, Batch, System, AnimalID, Sex, Group, HalfHour, ConsecHalfHour, ConsecActive, ConsecInactive, Phase, animalEntropy)
+      consec_animal_entropy_halfhour <- entropy_tbl
+    } else {
+      entropy_tbl <- entropy_tbl %>%
+        select(CageChange, Batch, System, Sex, HalfHour, ConsecHalfHour, ConsecActive, ConsecInactive, Phase, CageEntropy)
+      consec_cage_entropy_halfhour <- entropy_tbl
     }
   }
-}
 
-if (analyze_by_halfhour && filter_cc4_late_phases) {
-  message("=======================================================================")
-  message("FILTERING CC4 HALF-HOURS BASED ON PHASE INFORMATION")
-  message("=======================================================================")
-  
-  if (!exists("data_preprocessed") || is.null(data_preprocessed) || nrow(data_preprocessed) == 0) {
-    message("   Warning: Cannot filter CC4 half-hours by phase - preprocessed data not available")
-    message("   Run with load_existing_data = FALSE to enable or use cc4_halfhour_cutoff instead")
-  } else {
-    cc4_valid_halfhours <- data_preprocessed %>%
-      filter(CageChange == "CC4") %>%
-      filter(ConsecActive <= cc4_max_active_phase | ConsecInactive <= cc4_max_inactive_phase) %>%
-      select(Batch, System, CageChange, HalfHour = HalfHoursElapsed) %>%
-      distinct() %>%
-      mutate(keep_halfhour = TRUE)
-    
+  # Apply CC4 filtering based on phase counts if requested
+  if (filter_cc4_late_phases && !is.null(phase_lookup)) {
+    message("=======================================================================")
+    message("FILTERING CC4 HALF-HOURS USING IMPORTED PHASE COUNTS")
+    message("=======================================================================")
+
     consec_animal_entropy_halfhour <- consec_animal_entropy_halfhour %>%
-      left_join(cc4_valid_halfhours, by = c("Batch", "System", "CageChange", "HalfHour")) %>%
-      filter(CageChange != "CC4" | !is.na(keep_halfhour)) %>%
-      select(-keep_halfhour)
-    
+      filter(!(CageChange == "CC4" & Phase == "active" & !is.na(ConsecActive) & ConsecActive > cc4_max_active_phase)) %>%
+      filter(!(CageChange == "CC4" & Phase == "inactive" & !is.na(ConsecInactive) & ConsecInactive > cc4_max_inactive_phase))
+
     consec_cage_entropy_halfhour <- consec_cage_entropy_halfhour %>%
-      left_join(cc4_valid_halfhours, by = c("Batch", "System", "CageChange", "HalfHour")) %>%
-      filter(CageChange != "CC4" | !is.na(keep_halfhour)) %>%
-      select(-keep_halfhour)
-    
-    message("✓ Filtered CC4 half-hours based on phase information")
-    message("  Remaining half-hour observations: ", nrow(consec_animal_entropy_halfhour))
+      filter(!(CageChange == "CC4" & Phase == "active" & !is.na(ConsecActive) & ConsecActive > cc4_max_active_phase)) %>%
+      filter(!(CageChange == "CC4" & Phase == "inactive" & !is.na(ConsecInactive) & ConsecInactive > cc4_max_inactive_phase))
+
+    message("✓ CC4 half-hours filtered by imported phase counts")
+    message("  Remaining animal half-hour rows: ", nrow(consec_animal_entropy_halfhour))
+    message("  Remaining cage half-hour rows: ", nrow(consec_cage_entropy_halfhour))
+  } else if (filter_cc4_late_phases) {
+    message("   Warning: phase lookup not available; CC4 half-hour filtering by phase skipped.")
   }
 }
 
@@ -1050,20 +1176,55 @@ plots <- list()
   
   # Half-hour plots with consecutive half-hours and per cagechange
   if (analyze_by_halfhour) {
-    message("Generating half-hour entropy plots with consecutive numbering...")
-    cage_boundaries <- consec_animal_entropy_halfhour %>%
-      group_by(CageChange) %>%
-      summarise(max_consec = max(ConsecHalfHour, na.rm = TRUE)) %>%
-      pull(max_consec) %>%
-      cumsum()
-    if (length(cage_boundaries) > 0) {
-      cage_boundaries <- cage_boundaries[-length(cage_boundaries)]
-    }
-    if (length(cage_boundaries) > 0) {
-      boundary_labels <- data.frame(
-        x = cage_boundaries,
-        label = paste("CC", 1:length(cage_boundaries), "→", 2:(length(cage_boundaries) + 1))
-      )
+    message("Generating half-hour entropy plots with consecutive numbering (boundaries after each 4th active phase)...")
+
+    # Prefer using phase counts per half-hour to place boundaries after every 4th active phase
+    ph_tbl <- consec_animal_entropy_halfhour
+
+    cage_boundaries <- c()
+    boundary_labels <- data.frame(x = numeric(0), label = character(0), stringsAsFactors = FALSE)
+
+    if (!is.null(ph_tbl) && nrow(ph_tbl) > 0 && "ConsecHalfHour" %in% colnames(ph_tbl) && "ConsecActive" %in% colnames(ph_tbl)) {
+      for (cc in unique(ph_tbl$CageChange)) {
+        cc_tbl <- ph_tbl %>% filter(CageChange == cc & Phase == "active" & !is.na(ConsecActive))
+        if (nrow(cc_tbl) == 0) next
+        max_act <- max(cc_tbl$ConsecActive, na.rm = TRUE)
+        if (!is.finite(max_act) || max_act < 4) next
+        targets <- seq(4, max_act, by = 4)
+        for (t in targets) {
+          hh_val <- cc_tbl %>% filter(ConsecActive == t) %>% pull(ConsecHalfHour)
+          if (length(hh_val) == 0) next
+          hh_max <- suppressWarnings(max(hh_val, na.rm = TRUE))
+          if (is.finite(hh_max)) {
+            cage_boundaries <- c(cage_boundaries, hh_max)
+            boundary_labels <- bind_rows(boundary_labels,
+                                         data.frame(x = hh_max,
+                                                    label = paste0(cc, " after A", t),
+                                                    stringsAsFactors = FALSE))
+          }
+        }
+      }
+      if (length(cage_boundaries) > 0) {
+        cage_boundaries <- sort(unique(cage_boundaries))
+      } else {
+        cage_boundaries <- numeric(0)
+      }
+    } else {
+      # Fallback: previous cumulative-max approach if phase counts unavailable
+      message("   Warning: phase counts not available for refined boundaries; using fallback cumulative approach.")
+      cage_boundaries <- consec_animal_entropy_halfhour %>%
+        group_by(CageChange) %>%
+        summarise(max_consec = max(ConsecHalfHour, na.rm = TRUE)) %>%
+        pull(max_consec) %>%
+        cumsum()
+      if (length(cage_boundaries) > 0) cage_boundaries <- cage_boundaries[-length(cage_boundaries)]
+      if (length(cage_boundaries) > 0) {
+        boundary_labels <- data.frame(
+          x = cage_boundaries,
+          label = paste("CC", 1:length(cage_boundaries), "→", 2:(length(cage_boundaries) + 1)),
+          stringsAsFactors = FALSE
+        )
+      }
     }
     
     animal_halfhour_plot_consec <- ggplot(data = consec_animal_entropy_halfhour,
@@ -1422,6 +1583,31 @@ if (save_plots) {
 # ===================================================================
 message("Generating transition network plots for each animal...")
 
+# Provide a fallback implementation if plot_transition_network is not defined
+if (!exists("plot_transition_network") || !is.function(plot_transition_network)) {
+  plot_transition_network <- function(seq_positions, animal_id = NULL) {
+    if (length(seq_positions) < 2) stop("Need at least two positions to build transitions.")
+    edges <- data.frame(from = head(seq_positions, -1), to = tail(seq_positions, -1), stringsAsFactors = FALSE)
+    edges <- edges %>% group_by(from, to) %>% summarise(weight = n(), .groups = "drop")
+    g <- graph_from_data_frame(edges, directed = TRUE)
+    E(g)$weight <- edges$weight
+    V(g)$label <- V(g)$name
+    node_degree <- degree(g, mode = "all")
+    p <- tryCatch({
+      ggraph(g, layout = "fr") +
+        geom_edge_fan(aes(width = weight, alpha = weight), arrow = arrow(length = unit(3, "mm"), type = "closed"), show.legend = TRUE) +
+        geom_node_point(aes(size = node_degree), color = "steelblue") +
+        geom_node_text(aes(label = label), repel = TRUE, size = 3) +
+        scale_edge_width(range = c(0.2, 3)) +
+        scale_size(range = c(3, 10)) +
+        theme_void() +
+        ggtitle(paste("Transition network", ifelse(is.null(animal_id), "", paste0("-", animal_id))))
+    }, error = function(e) stop("ggraph plotting failed: ", e$message))
+    return(p)
+  }
+  message("✓ Defined fallback plot_transition_network()")
+}
+
 # Load preprocessed data if needed
 if (!exists("data_preprocessed") || is.null(data_preprocessed) || nrow(data_preprocessed) == 0) {
   message("Reloading preprocessed data for transition network analysis...")
@@ -1440,33 +1626,376 @@ if (!exists("data_preprocessed") || is.null(data_preprocessed) || nrow(data_prep
   message("   ✓ Combined ", nrow(data_preprocessed), " rows from all batches/cage changes")
 }
 
+# Ensure there is a DateTime column to allow arranging; if missing, try common alternatives or create a fallback ordering column
+if (!"DateTime" %in% colnames(data_preprocessed)) {
+  dt_candidates <- intersect(c("DateTime", "Date_Time", "Timestamp", "timestamp", "datetime", "Date", "Time"), colnames(data_preprocessed))
+  if (length(dt_candidates) > 0) {
+    chosen_dt <- dt_candidates[1]
+    data_preprocessed$DateTime <- data_preprocessed[[chosen_dt]]
+    message("   ✓ Mapped existing column '", chosen_dt, "' to DateTime for ordering")
+  } else {
+    data_preprocessed$DateTime <- seq_len(nrow(data_preprocessed))
+    message("   Warning: No Date/Time column found; created synthetic DateTime ordering column")
+  }
+}
+
 animals <- unique(data_preprocessed$AnimalID)
 
 # Directory for transition networks
 trans_net_dir <- transition_networks_dir
-# Generate and save transition networks for each animal
-for (animal in animals) {
-  seq_positions <- data_preprocessed %>%
-    filter(AnimalID == animal) %>%
-    arrange(DateTime) %>%
-    pull(Position)
+dir.create(trans_net_dir, recursive = TRUE, showWarnings = FALSE)
 
-  p <- plot_transition_network(seq_positions, animal)
+# Detect position column
+possible_pos_cols <- c("PositionID", "Position", "position", "Pos", "pos", "position_id", "Zone", "zone")
+pos_candidates <- intersect(possible_pos_cols, colnames(data_preprocessed))
 
-  # Save plot
-  filename <- file.path(trans_net_dir, paste0("transition_network_", animal, ".svg"))
-  ggsave(filename, plot = p, width = 10, height = 10, dpi = 300)
+if (length(pos_candidates) == 0) {
+  message("Warning: No Position column found in preprocessed data; skipping transition network generation.")
+} else {
+  pos_col <- if ("PositionID" %in% pos_candidates) "PositionID" else pos_candidates[1]
+  message("Using position column: ", pos_col)
 
-  # Optionally show plot
-  if (show_plots) print(p)
+  processed_count <- 0L
 
-  # Save graph object as RDS
-  edges <- data.frame(from = head(seq_positions, -1), to = tail(seq_positions, -1))
-  g <- graph_from_data_frame(edges, directed = TRUE)
-  saveRDS(g, file = file.path(trans_net_dir, paste0("network_", animal, ".rds")))
+  for (animal in animals) {
+    seq_df <- data_preprocessed %>% filter(AnimalID == animal) %>% arrange(.data$DateTime)
+    if (nrow(seq_df) == 0) { message("   Skipping animal ", animal, ": no rows"); next }
+    if (!pos_col %in% colnames(seq_df)) { message("   Skipping animal ", animal, ": position column '", pos_col, "' missing"); next }
+
+    seq_positions <- seq_df[[pos_col]]
+    seq_positions <- seq_positions[!is.na(seq_positions)]
+
+    if (length(seq_positions) < 2) { message("   Skipping animal ", animal, ": not enough positions (", length(seq_positions), ")"); next }
+
+    p <- tryCatch(plot_transition_network(seq_positions, animal), error = function(e) { message("   Error plotting for ", animal, ": ", e$message); NULL })
+
+    if (!is.null(p)) {
+      fname_base <- gsub("[^A-Za-z0-9_\\-]", "_", as.character(animal))
+      svg_path <- file.path(trans_net_dir, paste0("transition_network_", fname_base, ".svg"))
+      tryCatch(ggsave(svg_path, plot = p, width = 10, height = 10, dpi = 300),
+               error = function(e) message("   Failed to save plot for ", animal, ": ", e$message))
+      if (show_plots) print(p)
+    }
+
+    edges <- data.frame(from = head(seq_positions, -1), to = tail(seq_positions, -1), stringsAsFactors = FALSE)
+    g <- tryCatch(graph_from_data_frame(edges, directed = TRUE), error = function(e) { message("   Graph build error for ", animal, ": ", e$message); NULL })
+    if (!is.null(g)) {
+      rds_path <- file.path(trans_net_dir, paste0("network_", gsub("[^A-Za-z0-9_\\-]", "_", as.character(animal)), ".rds"))
+      tryCatch(saveRDS(g, file = rds_path), error = function(e) message("   Failed to save RDS for ", animal, ": ", e$message))
+    }
+
+    processed_count <- processed_count + 1L
+  }
+
+  message("✓ Transition network plots and graphs saved for ", processed_count, " / ", length(animals), " animals.")
 }
 
-message("✓ Transition network plots and graphs saved for ", length(animals), " animals.")
+# Ensure Group and Sex columns exist in the combined preprocessed data
+if (!"Group" %in% colnames(data_preprocessed)) {
+  data_preprocessed <- data_preprocessed %>%
+    mutate(Group = ifelse(AnimalID %in% sus_animals, "sus",
+                          ifelse(AnimalID %in% con_animals, "con", "res")))
+}
+if (!"Sex" %in% colnames(data_preprocessed)) {
+  data_preprocessed <- data_preprocessed %>%
+    mutate(Sex = ifelse(Batch %in% c("B3", "B4", "B6"), "female", "male"))
+}
+
+# Ensure Phase exists (infer from ConsecActive/ConsecInactive if necessary)
+if (!"Phase" %in% colnames(data_preprocessed)) {
+  data_preprocessed <- data_preprocessed %>%
+    mutate(
+      Phase = case_when(
+        !is.na(ConsecActive) & ConsecActive > 0 ~ "Active",
+        !is.na(ConsecInactive) & ConsecInactive > 0 ~ "Inactive",
+        TRUE ~ NA_character_
+      )
+    )
+}
+
+# Per-group/sex combined networks (overall, and split by phase)
+for (phase_val in c(NA, "Active", "Inactive")) {
+  phase_label <- if (is.na(phase_val)) "overall" else phase_val
+  phase_dir <- file.path(trans_net_dir, paste0("phase_", phase_label))
+  dir.create(phase_dir, recursive = TRUE, showWarnings = FALSE)
+
+  message("Generating combined transition network plots by group and sex (phase: ", phase_label, ")...")
+
+  for (sex_val in c("male", "female")) {
+    for (group_val in c("sus", "res", "con")) {
+      seq_df <- data_preprocessed %>%
+        filter(Sex == sex_val, Group == group_val)
+
+      if (!is.na(phase_val)) seq_df <- seq_df %>% filter(Phase == phase_val)
+
+      seq_df <- seq_df %>% arrange(.data$DateTime) %>% select(AnimalID, !!sym(pos_col)) %>% filter(!is.na(!!sym(pos_col)))
+
+      if (nrow(seq_df) == 0) { message("   Skipping group/sex/phase combination: ", sex_val, "/", group_val, "/", phase_label); next }
+
+      combined_positions <- unlist(seq_df[[pos_col]])
+      combined_positions <- combined_positions[!is.na(combined_positions)]
+
+      if (length(combined_positions) < 2) { message("   Skipping group/sex/phase combination: ", sex_val, "/", group_val, "/", phase_label, " - not enough positions"); next }
+
+      p <- tryCatch(plot_transition_network(combined_positions, paste0(sex_val, "_", group_val, "_", phase_label)), error = function(e) { message("   Error plotting for ", sex_val, "/", group_val, " (", phase_label, "): ", e$message); NULL })
+
+      if (!is.null(p)) {
+        fname_base <- paste0(sex_val, "_", group_val, "_", phase_label)
+        svg_path <- file.path(phase_dir, paste0("transition_network_", fname_base, ".svg"))
+        tryCatch(ggsave(svg_path, plot = p, width = 10, height = 10, dpi = 300),
+                 error = function(e) message("   Failed to save plot for ", sex_val, "/", group_val, " (", phase_label, "): ", e$message))
+        if (show_plots) print(p)
+      }
+    }
+
+    # Merged network across groups for this sex, edges colored by Group (optionally filtered by phase)
+    message("Generating merged transition network for sex: ", sex_val, " (phase: ", phase_label, ")")
+    sex_seq_df <- data_preprocessed %>%
+      filter(Sex == sex_val)
+    if (!is.na(phase_val)) sex_seq_df <- sex_seq_df %>% filter(Phase == phase_val)
+
+    sex_seq_df <- sex_seq_df %>% arrange(.data$DateTime) %>% select(AnimalID, Group, DateTime, !!sym(pos_col)) %>% filter(!is.na(!!sym(pos_col)))
+
+    if (nrow(sex_seq_df) == 0) {
+      message("   No data for sex: ", sex_val, " (phase: ", phase_label, ") — skipping merged network.")
+    } else {
+      sex_edges <- sex_seq_df %>%
+        group_by(AnimalID) %>%
+        arrange(.data$DateTime) %>%
+        mutate(next_pos = lead(!!sym(pos_col))) %>%
+        ungroup() %>%
+        filter(!is.na(!!sym(pos_col)) & !is.na(next_pos)) %>%
+        transmute(from = as.character(!!sym(pos_col)), to = as.character(next_pos), Group = as.character(Group))
+
+      if (nrow(sex_edges) == 0) {
+        message("   Not enough transitions to build merged network for sex: ", sex_val, " (phase: ", phase_label, ")")
+      } else {
+        edges_agg_by_group <- sex_edges %>%
+          group_by(from, to, Group) %>%
+          summarise(weight = n(), .groups = "drop")
+
+        g_merged <- tryCatch({
+          graph_from_data_frame(edges_agg_by_group, directed = TRUE)
+        }, error = function(e) { message("   Graph build error for merged ", sex_val, " (", phase_label, "): ", e$message); NULL })
+
+        if (!is.null(g_merged)) {
+          E(g_merged)$weight <- edges_agg_by_group$weight
+          E(g_merged)$group <- edges_agg_by_group$Group
+
+          p_sex <- tryCatch({
+            ggraph(g_merged, layout = "fr") +
+              geom_edge_fan(aes(width = weight, color = group, alpha = weight),
+                            arrow = arrow(length = unit(3, "mm"), type = "closed"),
+                            show.legend = TRUE) +
+              scale_edge_width(range = c(0.2, 3)) +
+              scale_edge_colour_manual(values = c(sus = "#E63946", res = "grey60", con = "#457B9D")) +
+              geom_node_point(aes(size = degree(g_merged, mode = "all")), color = "steelblue") +
+              geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+              theme_void() +
+              guides(alpha = "none") +
+              ggtitle(paste0("Merged transition network (sex=", sex_val, ", phase=", phase_label, ")"))
+          }, error = function(e) { message("   Error plotting merged network for ", sex_val, " (", phase_label, "): ", e$message); NULL })
+
+          if (!is.null(p_sex)) {
+            fname_sex <- paste0(sex_val, "_merged_by_group_", phase_label)
+            svg_path_sex <- file.path(phase_dir, paste0("transition_network_", fname_sex, ".svg"))
+            tryCatch(ggsave(svg_path_sex, plot = p_sex, width = 10, height = 10, dpi = 300),
+                     error = function(e) message("   Failed to save merged plot for ", sex_val, " (", phase_label, "): ", e$message))
+            if (show_plots) print(p_sex)
+          }
+
+          rds_path_sex <- file.path(phase_dir, paste0("network_", paste0(sex_val, "_merged_by_group_", phase_label), ".rds"))
+          tryCatch(saveRDS(g_merged, file = rds_path_sex), error = function(e) message("   Failed to save merged RDS for ", sex_val, " (", phase_label, "): ", e$message))
+        }
+      }
+    }
+  } # end sex loop
+} # end phase loop
+message("✓ Combined transition network plots saved.")
+
+
+# -------------------------------------------------------------------
+# STATISTICAL COMPARISONS OF TRANSITION NETWORKS
+# a) Within sex between groups (edgewise tests + network entropy)
+# b) Between sex for group "con"
+# c) Add comparison plots for male vs female group "con"
+# -------------------------------------------------------------------
+
+# helper: aggregate transitions for a filtered df
+aggregate_transitions <- function(df, pos_col) {
+  df %>%
+    arrange(.data$DateTime) %>%
+    group_by(AnimalID) %>%
+    mutate(next_pos = lead(!!sym(pos_col))) %>%
+    ungroup() %>%
+    filter(!is.na(!!sym(pos_col)) & !is.na(next_pos)) %>%
+    transmute(from = as.character(!!sym(pos_col)), to = as.character(next_pos))
+}
+
+# helper: build edge counts table
+edge_counts_table <- function(trans_df) {
+  trans_df %>% group_by(from, to) %>% summarise(weight = n(), .groups = "drop")
+}
+
+# helper: entropy of transition probability distribution (works for arbitrary edge counts)
+transition_entropy <- function(edge_counts) {
+  if (nrow(edge_counts) == 0) return(NA_real_)
+  probs <- edge_counts$weight / sum(edge_counts$weight)
+  probs <- probs[!is.na(probs) & probs > 0]
+  if (length(probs) == 0) return(NA_real_)
+  # compute Shannon entropy in bits without relying on calc_shannon_entropy (which may expect a fixed-length vector)
+  -sum(probs * log2(probs))
+}
+
+# Helper: edgewise contingency tests between two groups (within same sex)
+edgewise_comparisons <- function(edgesA, edgesB, out_prefix) {
+  totalA <- sum(edgesA$weight)
+  totalB <- sum(edgesB$weight)
+  all_edges <- full_join(edgesA, edgesB, by = c("from", "to"), suffix = c(".A", ".B")) %>%
+    replace_na(list(weight.A = 0, weight.B = 0))
+  res <- all_edges %>% rowwise() %>% mutate({
+    mat <- matrix(c(weight.A, totalA - weight.A, weight.B, totalB - weight.B), nrow = 2)
+    test <- tryCatch({
+      if (min(chisq.test(mat)$expected, na.rm = TRUE) >= 5) {
+        t <- chisq.test(mat)
+        list(test_type = "chisq", p_value = as.numeric(t$p.value), statistic = as.numeric(t$statistic))
+      } else {
+        t <- fisher.test(mat, simulate.p.value = TRUE)
+        list(test_type = "fisher", p_value = as.numeric(t$p.value), statistic = NA_real_)
+      }
+    }, error = function(e) list(test_type = "error", p_value = NA_real_, statistic = NA_real_))
+    tibble(test_type = test$test_type, p_value = test$p_value, statistic = test$statistic)
+  }) %>% ungroup()
+  res_adj <- res %>% mutate(p_adj = p.adjust(p_value, method = "BH"))
+  write.csv(bind_cols(all_edges, res_adj), file = file.path(trans_net_dir, paste0(out_prefix, "_edgewise_tests.csv")), row.names = FALSE)
+  return(bind_cols(all_edges, res_adj))
+}
+
+# Helper: permutation test comparing entropies via resampling transitions
+perm_test_entropy <- function(edgesA, edgesB, n_perm = 1000, seed = 42) {
+  set.seed(seed)
+  vecA <- rep(paste0(edgesA$from, "->", edgesA$to), edgesA$weight)
+  vecB <- rep(paste0(edgesB$from, "->", edgesB$to), edgesB$weight)
+  nA <- length(vecA); nB <- length(vecB)
+  pool <- c(vecA, vecB)
+  obs_entropy_diff <- transition_entropy(edge_counts_table(tibble(from = sub("->.*", "", vecA), to = sub(".*->", "", vecA)))) -
+    transition_entropy(edge_counts_table(tibble(from = sub("->.*", "", vecB), to = sub(".*->", "", vecB))))
+  if (length(pool) < 2) return(list(obs = obs_entropy_diff, p_value = NA_real_))
+  perm_diffs <- replicate(n_perm, {
+    samp <- sample(pool, length(pool), replace = FALSE)
+    a <- samp[1:nA]; b <- samp[(nA + 1):(nA + nB)]
+    ea <- edge_counts_table(tibble(from = sub("->.*", "", a), to = sub(".*->", "", a)))
+    eb <- edge_counts_table(tibble(from = sub("->.*", "", b), to = sub(".*->", "", b)))
+    transition_entropy(ea) - transition_entropy(eb)
+  })
+  pval <- mean(abs(perm_diffs) >= abs(obs_entropy_diff))
+  list(obs = obs_entropy_diff, p_value = pval, perm_diffs = perm_diffs)
+}
+
+analysis_dir <- file.path(trans_net_dir, "analysis")
+dir.create(analysis_dir, recursive = TRUE, showWarnings = FALSE)
+
+# a) Within sex, compare groups pairwise
+groups <- c("sus", "res", "con")
+for (sex_val in c("male", "female")) {
+  message("Running within-sex group comparisons for sex = ", sex_val)
+  sex_df <- data_preprocessed %>% filter(Sex == sex_val)
+  if (nrow(sex_df) == 0) next
+  trans_all <- aggregate_transitions(sex_df, pos_col)
+  # build per-group edge counts
+  per_group_edges <- sex_df %>%
+    arrange(.data$DateTime) %>%
+    group_by(AnimalID, Group) %>%
+    mutate(next_pos = lead(!!sym(pos_col))) %>%
+    ungroup() %>%
+    filter(!is.na(!!sym(pos_col)) & !is.na(next_pos)) %>%
+    transmute(from = as.character(!!sym(pos_col)), to = as.character(next_pos), Group = Group)
+  edges_by_group <- per_group_edges %>% group_by(Group, from, to) %>% summarise(weight = n(), .groups = "drop")
+  # pairwise comparisons
+  combs <- combn(groups, 2, simplify = FALSE)
+  entropy_summary <- list()
+  for (cmp in combs) {
+    g1 <- cmp[1]; g2 <- cmp[2]
+    e1 <- edges_by_group %>% filter(Group == g1) %>% select(from, to, weight)
+    e2 <- edges_by_group %>% filter(Group == g2) %>% select(from, to, weight)
+    e1_tbl <- edge_counts_table(e1)
+    e2_tbl <- edge_counts_table(e2)
+    edgewise_res <- edgewise_comparisons(e1_tbl, e2_tbl, paste0("within_sex_", sex_val, "_", g1, "_vs_", g2))
+    # entropy permutation test
+    perm_res <- perm_test_entropy(e1_tbl, e2_tbl, n_perm = 1000)
+    entropy_summary[[paste0(sex_val, "_", g1, "_vs_", g2)]] <- list(groupA = g1, groupB = g2,
+                                                                   entropy_diff = perm_res$obs, p_value = perm_res$p_value)
+    message("   ", sex_val, " ", g1, " vs ", g2, ": entropy diff = ", signif(perm_res$obs, 4), ", p = ", signif(perm_res$p_value, 4))
+  }
+  entropy_df <- bind_rows(lapply(names(entropy_summary), function(k) tibble(comparison = k, !!!entropy_summary[[k]])))
+  write.csv(entropy_df, file = file.path(analysis_dir, paste0("within_sex_", sex_val, "_entropy_comparisons.csv")), row.names = FALSE)
+}
+
+# b) Between sex for group "con"
+message("Comparing male vs female for group 'con'")
+con_df <- data_preprocessed %>% filter(Group == "con")
+if (nrow(con_df) > 0) {
+  male_df <- con_df %>% filter(Sex == "male")
+  female_df <- con_df %>% filter(Sex == "female")
+  e_male <- aggregate_transitions(male_df, pos_col) %>% edge_counts_table()
+  e_female <- aggregate_transitions(female_df, pos_col) %>% edge_counts_table()
+  edgewise_consex <- edgewise_comparisons(e_male, e_female, "con_male_vs_female")
+  perm_consex <- perm_test_entropy(e_male, e_female, n_perm = 2000)
+  write.csv(tibble(metric = c("entropy_diff_obs", "entropy_perm_p"), value = c(perm_consex$obs, perm_consex$p_value)),
+            file = file.path(analysis_dir, "con_male_vs_female_entropy_test.csv"), row.names = FALSE)
+  message("   con male vs female: entropy diff = ", signif(perm_consex$obs,4), ", p = ", signif(perm_consex$p_value,4))
+} else {
+  message("   No 'con' data available for male/female comparison.")
+}
+
+# c) Transition plot comparison between male and female group "con" animals
+message("Generating differential transition plot for 'con' males vs females")
+if (nrow(con_df) > 0 && nrow(male_df) > 0 && nrow(female_df) > 0) {
+  male_edges <- aggregate_transitions(male_df, pos_col) %>% edge_counts_table() %>% mutate(sex = "male")
+  female_edges <- aggregate_transitions(female_df, pos_col) %>% edge_counts_table() %>% mutate(sex = "female")
+  all_edges <- full_join(male_edges, female_edges, by = c("from", "to"), suffix = c(".male", ".female")) %>%
+    replace_na(list(weight.male = 0, weight.female = 0)) %>%
+    mutate(diff = weight.male - weight.female,
+           diff_norm = diff / pmax(1, weight.male + weight.female))
+  # create graph with diff attribute
+  g_diff <- graph_from_data_frame(all_edges %>% select(from, to, weight.male, weight.female, diff, diff_norm), directed = TRUE)
+  E(g_diff)$weight_male <- all_edges$weight.male
+  E(g_diff)$weight_female <- all_edges$weight.female
+  E(g_diff)$diff <- all_edges$diff
+  # plot: color edges by diff (male>female red, female>male blue)
+  p_diff <- tryCatch({
+    ggraph(g_diff, layout = "fr") +
+      geom_edge_fan(aes(width = abs(diff), color = diff), arrow = arrow(length = unit(3, "mm"), type = "closed"), show.legend = TRUE) +
+      scale_edge_colour_gradient2(low = "#457B9D", mid = "grey80", high = "#E63946", midpoint = 0, name = "male - female") +
+      scale_edge_width(range = c(0.2, 4)) +
+      geom_node_point(aes(size = degree(g_diff, mode = "all")), color = "black") +
+      geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+      theme_void() +
+      ggtitle("Differential transitions: con males vs con females")
+  }, error = function(e) { message("   Error creating differential plot: ", e$message); NULL })
+  if (!is.null(p_diff)) {
+    svg_path_diff <- file.path(trans_net_dir, "con_male_vs_female_difference.svg")
+    tryCatch(ggsave(svg_path_diff, plot = p_diff, width = 10, height = 10, dpi = 300),
+             error = function(e) message("   Failed to save differential plot: ", e$message))
+    if (show_plots) print(p_diff)
+  }
+  # also save combined male and female network plots side-by-side
+  pm <- tryCatch(plot_transition_network(rep(male_edges$from, male_edges$weight.male) %>% c(rep(male_edges$to, male_edges$weight.male)), "con_male"), error = function(e) NULL)
+  pf <- tryCatch(plot_transition_network(rep(female_edges$from, female_edges$weight.female) %>% c(rep(female_edges$to, female_edges$weight.female)), "con_female"), error = function(e) NULL)
+  if (!is.null(pm)) {
+    tryCatch(ggsave(file.path(trans_net_dir, "con_male_network.svg"), plot = pm, width = 10, height = 10, dpi = 300), error = function(e) NULL)
+  }
+  if (!is.null(pf)) {
+    tryCatch(ggsave(file.path(trans_net_dir, "con_female_network.svg"), plot = pf, width = 10, height = 10, dpi = 300), error = function(e) NULL)
+  }
+  write.csv(all_edges, file = file.path(analysis_dir, "con_male_vs_female_edge_counts.csv"), row.names = FALSE)
+  message("   Differential plots and tables saved.")
+} else {
+  message("   Insufficient con male/female data to create comparison plots.")
+}
+
+message("✓ Transition network statistical comparisons complete. Results in: ", analysis_dir)
+
 
 # ===================================================================
 # ENTROPY DYNAMICS OVER TIME (Per animal)
