@@ -29,7 +29,8 @@ min_time_lv <- 3
 # -------------------------------------------------
 # Base Paths
 # -------------------------------------------------
-base_results_dir <- "D:/MMMSociability/statistics/lme/"
+#base_results_dir <- "D:/MMMSociability/statistics/lme/"
+base_results_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/statistics/lme/"
 if (!dir.exists(base_results_dir)) dir.create(base_results_dir, recursive = TRUE)
 dir_create_safe <- function(path) { if (!dir.exists(path)) dir.create(path, recursive = TRUE, showWarnings = FALSE) }
 
@@ -56,7 +57,8 @@ has_cols <- function(x, cols) all(cols %in% names(x))
 # LOAD DATA
 # -------------------------------------------------
 cat("Loading data...\n")
-data_file <- "D:/MMMSociability/processed_data/data_filtered_agg.csv"
+#data_file <- "D:/MMMSociability/processed_data/data_filtered_agg.csv"
+data_file <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/processed_data/data_lme_format/data_filtered_agg.csv"
 
 if (file.exists(data_file)) {
   data_filtered_agg <- read_csv(data_file, show_col_types = FALSE)
