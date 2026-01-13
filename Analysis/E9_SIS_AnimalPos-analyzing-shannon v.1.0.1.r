@@ -1423,6 +1423,580 @@ if (save_plots) {
 }
 
 # ===================================================================
+# STATISTICAL ANALYSIS: SEX x GROUP (2x3 DESIGN)
+# ===================================================================
+
+# Define specific sub-folders for Sex x Group analysis output
+sex_stats_dir <- file.path(exploration_metrics_dir, "sex_comparisons")
+if (save_tables && !dir.exists(sex_stats_dir)) dir.create(sex_stats_dir, recursive = TRUE)
+
+# We check if a corresponding plots folder exists in the main plots structure, otherwise we create it
+# As 'exploration_metrics_dir' is inside 'tables', we should put plots in 'plots/exploration_metrics/sex_comparisons'
+sex_plots_dir <- file.path(plots_dir, "exploration_metrics", "sex_comparisons")
+if (save_plots && !dir.exists(sex_plots_dir)) dir.create(sex_plots_dir, recursive = TRUE)
+
+# 1. 2x3 ANOVA for Exploration Diversity (Entropy when exploring)
+# -------------------------------------------------------------------
+message("Running 2x3 ANOVA (Sex x Group) for Exploration Diversity...")
+
+anova_results <- list()
+posthoc_results_list <- list()
+
+for (phase_val in c("active", "inactive")) {
+  # Filter for explore-only events to analyze diversity quality
+  model_data <- consec_animal_entropy %>%
+    filter(Phase == phase_val, explored == TRUE)
+  
+  if (nrow(model_data) > 10) { # Ensure enough data points
+    # Two-way ANOVA with Interaction
+    aov_model <- aov(animalEntropy ~ Sex * Group, data = model_data)
+    
+    # Store summary
+    tidy_aov <- broom::tidy(aov_model)
+    tidy_aov$Phase <- phase_val
+    anova_results[[phase_val]] <- tidy_aov
+    
+    message(paste0("   Phase: ", phase_val))
+    print(summary(aov_model))
+    
+    # ADEQUATE POST-HOC: Estimated Marginal Means with Tukey Adjustment
+    # Using emmeans for robust pairwise comparisons and Type I error control
+    
+    # Load emmeans Model
+    emm_model <- emmeans(aov_model, ~ Sex * Group)
+    
+    # A. Pairwise comparisons: Groups within each Sex
+    pairs_group_by_sex <- pairs(emm_model, by = "Sex", adjust = "tukey")
+    message("   --- Pairwise Comparisons: Group within Sex (Tukey) ---")
+    print(pairs_group_by_sex)
+    
+    # B. Pairwise comparisons: Sex within each Group
+    pairs_sex_by_group <- pairs(emm_model, by = "Group", adjust = "tukey")
+    message("   --- Pairwise Comparisons: Sex within Group (Tukey) ---")
+    print(pairs_sex_by_group)
+    
+    # Save posthoc stats
+    res_g_s <- as.data.frame(pairs_group_by_sex)
+    res_g_s$ComparisonType <- "Group_within_Sex"
+    res_g_s$Phase <- phase_val
+    
+    res_s_g <- as.data.frame(pairs_sex_by_group)
+    res_s_g$ComparisonType <- "Sex_within_Group"
+    res_s_g$Phase <- phase_val
+    
+    posthoc_results_list[[paste0(phase_val, "_Gs")]] <- res_g_s
+    posthoc_results_list[[paste0(phase_val, "_Sg")]] <- res_s_g
+  }
+}
+
+if (length(anova_results) > 0) {
+  all_anova_results <- bind_rows(anova_results)
+  if (save_tables) {
+    write.csv(all_anova_results, file = file.path(sex_stats_dir, "SexGroup_Diversity_ANOVA.csv"), row.names = FALSE)
+  }
+}
+
+if (length(posthoc_results_list) > 0) {
+  all_posthoc_results <- bind_rows(posthoc_results_list)
+  if (save_tables) {
+    write.csv(all_posthoc_results, file = file.path(sex_stats_dir, "SexGroup_Diversity_PostHoc.csv"), row.names = FALSE)
+  }
+}
+
+# 2. Categorical Analysis: Sex differences WITHIN Groups
+# -------------------------------------------------------------------
+message("Running Chi-Square analysis for Sex differences within each Group (Sex impacts on Category)...")
+
+sex_group_cat_stats <- list()
+
+for (phase_val in c("active", "inactive")) {
+  for (group_val in unique(consec_animal_entropy$Group)) {
+    
+    # Create contingency table: Sex vs Exploration Category for specific Group & Phase
+    test_data <- consec_animal_entropy %>%
+      filter(Phase == phase_val, Group == group_val) %>%
+      select(Sex, exploration_category) %>%
+      table()
+    
+    # Only run if we have data for both sexes
+    if (nrow(test_data) == 2 && ncol(test_data) > 1) {
+      
+      expected_counts <- tryCatch(chisq.test(test_data)$expected, error = function(e) matrix(0,1,1))
+      min_expected <- min(expected_counts)
+      
+      # Choose test based on sample size
+      if (min_expected >= 5) {
+        test_res <- chisq.test(test_data)
+        method <- "Chi-square"
+        pval <- test_res$p.value
+        stat <- test_res$statistic
+      } else {
+        test_res <- fisher.test(test_data, simulate.p.value = TRUE)
+        method <- "Fisher's Exact"
+        pval <- test_res$p.value
+        stat <- NA
+      }
+      
+      sex_group_cat_stats[[paste(phase_val, group_val, sep="_")]] <- tibble(
+        Phase = phase_val,
+        Group = group_val,
+        Test_Method = method,
+        Statistic = as.numeric(stat),
+        P_Value = as.numeric(pval),
+        Significant = pval < 0.05
+      )
+    }
+  }
+}
+
+if (length(sex_group_cat_stats) > 0) {
+  sex_group_stats_df <- bind_rows(sex_group_cat_stats)
+  print(sex_group_stats_df)
+  if (save_tables) {
+    write.csv(sex_group_stats_df, file = file.path(sex_stats_dir, "SexGroup_Category_ChiSq.csv"), row.names = FALSE)
+  }
+}
+
+# 2b. Exploration Diversity - Sex Comparison (within Group) PLOT
+exploration_diversity_sex_plot <- ggplot(explored_only, aes(x = Group, y = animalEntropy, color = Sex, group = Sex)) +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), size = 2, alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 4, position = position_dodge(width = 0.8), color = "black") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, position = position_dodge(width = 0.8), color = "black") +
+  facet_grid(Phase ~ .) +
+  stat_compare_means(aes(group = Sex), label = "p.signif", method = "t.test", hide.ns = FALSE) +
+  scale_color_manual(values = c("male" = "#8585ab", "female" = "#d7c39d")) +
+  labs(title = "Exploration Diversity: Sex Differences within Groups",
+       subtitle = "Shannon Entropy during exploratory periods",
+       y = "Shannon Entropy",
+       x = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 18),
+        plot.subtitle = element_text(hjust = 0.5, size = 14))
+
+if (save_plots) {
+  ggsave(filename = file.path(sex_plots_dir, "SexGroup_Diversity_Plot.svg"),
+         exploration_diversity_sex_plot, width = 8, height = 8, dpi = 300)
+}
+
+# ===================================================================
+# 3b. Exploration Diversity - Averaged per Animal (Sex Comparison)
+# ===================================================================
+# Create an averaged summary per animal to avoid pseudo-replication
+explored_averaged <- explored_only %>%
+  group_by(AnimalID, Group, Sex, Phase) %>%
+  summarise(mean_animalEntropy = mean(animalEntropy, na.rm = TRUE), .groups = "drop")
+
+# -------------------------------------------------------------------
+# Statistical Analysis: 2x3 ANOVA & Tukey Post-Hoc for Averaged Data
+# -------------------------------------------------------------------
+message("Running 2x3 ANOVA (Sex x Group) for Averaged Exploration Diversity...")
+
+anova_avg_results <- list()
+posthoc_avg_results <- list()
+
+for (phase_val in c("active", "inactive")) {
+  # Filter data for specific phase
+  model_data <- explored_averaged %>% filter(Phase == phase_val)
+  
+  # Ensure sufficient data points
+  if (nrow(model_data) > 6) {
+    # 1. Run ANOVA
+    aov_model <- aov(mean_animalEntropy ~ Sex * Group, data = model_data)
+    
+    # Store ANOVA results
+    tidy_res <- broom::tidy(aov_model)
+    tidy_res$Phase <- phase_val
+    anova_avg_results[[phase_val]] <- tidy_res
+    
+    # Print summary to console
+    message(paste0("   Phase (Avg): ", phase_val))
+    print(summary(aov_model))
+    
+    # 2. Tukey Post-Hoc Tests via emmeans
+    emm_model <- emmeans(aov_model, ~ Sex * Group)
+    
+    # A. Pairwise: Sex within Group
+    pairs_sex_within_group <- pairs(emm_model, by = "Group", adjust = "tukey")
+    res_s_g <- as.data.frame(pairs_sex_within_group)
+    res_s_g$ComparisonType <- "Sex_within_Group"
+    res_s_g$Phase <- phase_val
+    res_s_g$PostHoc_Test <- "Tukey"
+    res_s_g$Adjustment_Method <- "tukey"
+    
+    # B. Pairwise: Group within Sex
+    pairs_group_within_sex <- pairs(emm_model, by = "Sex", adjust = "tukey")
+    res_g_s <- as.data.frame(pairs_group_within_sex)
+    res_g_s$ComparisonType <- "Group_within_Sex"
+    res_g_s$Phase <- phase_val
+    res_g_s$PostHoc_Test <- "Tukey"
+    res_g_s$Adjustment_Method <- "tukey"
+    
+    # Rename columns for clarity in CSV if needed (emmeans usually gives p.value)
+    # Ensure p-value info is explicit
+    # emmeans output usually has columns: contrast, <factors>, estimate, SE, df, t.ratio, p.value
+    
+    posthoc_avg_results[[paste0(phase_val, "_Sg")]] <- res_s_g
+    posthoc_avg_results[[paste0(phase_val, "_Gs")]] <- res_g_s
+  }
+}
+
+# Save ANOVA and Post-Hoc Tables
+if (length(anova_avg_results) > 0 && save_tables) {
+  all_anova_avg <- bind_rows(anova_avg_results)
+  write.csv(all_anova_avg, 
+            file = file.path(sex_stats_dir, "SexGroup_Diversity_Avg_ANOVA.csv"), 
+            row.names = FALSE)
+  message("   ✓ Saved averaged ANOVA results")
+}
+
+if (length(posthoc_avg_results) > 0 && save_tables) {
+  all_posthoc_avg <- bind_rows(posthoc_avg_results)
+  write.csv(all_posthoc_avg, 
+            file = file.path(sex_stats_dir, "SexGroup_Diversity_Avg_PostHoc.csv"), 
+            row.names = FALSE)
+  message("   ✓ Saved averaged Post-hoc results")
+}
+
+
+# -------------------------------------------------------------------
+# Plotting Averaged Data
+# -------------------------------------------------------------------
+
+# Prepare annotation dataframe from previously computed Post-Hoc results to ensure plot matches tables
+stat_test_df <- tibble()
+if (exists("posthoc_avg_results") && length(posthoc_avg_results) > 0) {
+  
+  # Bind all results
+  all_ph <- bind_rows(posthoc_avg_results)
+  
+  # Filter for Sex differences within Groups (Sg)
+  if ("ComparisonType" %in% colnames(all_ph)) {
+    stat_test_df <- all_ph %>%
+      filter(ComparisonType == "Sex_within_Group")
+    
+    if (nrow(stat_test_df) > 0) {
+      # Prepare for ggpubr: needs group1, group2, y.position
+      stat_test_df <- stat_test_df %>%
+        mutate(
+          Group = as.character(Group),
+          group1 = "male",
+          group2 = "female",
+          p.signif = case_when(
+            p.value < 0.001 ~ "***",
+            p.value < 0.01  ~ "**",
+            p.value < 0.05  ~ "*",
+            TRUE            ~ "ns"
+          )
+        )
+      
+      # Determine Y-position for brackets (max data value + buffer)
+      y_max_values <- explored_averaged %>%
+        group_by(Group, Phase) %>%
+        summarise(max_val = max(mean_animalEntropy, na.rm = TRUE), .groups = "drop")
+      
+      stat_test_df <- stat_test_df %>%
+        left_join(y_max_values, by = c("Group", "Phase")) %>%
+        mutate(y.position = max_val + 0.3) # Shift bracket slightly higher
+    }
+  }
+}
+
+group_cols <- c("con" = "#477c9e", "res" = "#c6c3bb", "sus" = "#e63947")
+
+exploration_diversity_sex_plot_avg <- ggplot(explored_averaged, aes(x = Group, y = mean_animalEntropy)) +
+  geom_jitter(aes(color = Group, shape = Sex, group = Sex), 
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+              size = 4, alpha = 0.7) +
+  # Changed from point (shape 18) to crossbar or errorbar with just the y to represent mean as a horizontal line
+  stat_summary(aes(group = Sex), fun = mean, geom = "crossbar", width = 0.6, 
+               position = position_dodge(width = 0.8), color = "black", show.legend = FALSE, fatten = 1, size = 0.4) +
+  stat_summary(aes(group = Sex), fun.data = mean_se, geom = "errorbar", width = 0.2, 
+               position = position_dodge(width = 0.8), color = "black", show.legend = FALSE) +
+  facet_grid(Phase ~ ., scales = "free_y") +
+  scale_color_manual(values = group_cols) +
+  scale_shape_manual(values = c("female" = 16, "male" = 1)) +
+  labs(title = "Exploration Diversity: Sex Differences within Groups",
+       subtitle = "Mean Shannon Entropy per animal (averaged across explored phases)",
+       y = "Mean Shannon Entropy",
+       x = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 18),
+        plot.subtitle = element_text(hjust = 0.5, size = 14),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# Add statistical brackets: Use pre-computed ANOVA/Tukey if available, else fallback to t-test
+if (nrow(stat_test_df) > 0) {
+  exploration_diversity_sex_plot_avg <- exploration_diversity_sex_plot_avg +
+    stat_pvalue_manual(
+      stat_test_df, 
+      x = "Group",
+      label = "p.signif", 
+      tip.length = 0.01,
+      hide.ns = FALSE
+    )
+} else {
+  exploration_diversity_sex_plot_avg <- exploration_diversity_sex_plot_avg +
+    geom_pwc(
+      aes(group = Sex), 
+      method = "t_test", 
+      label = "p.signif",
+      bracket.nudge.y = 0.2, 
+      hide.ns = FALSE
+    )
+}
+
+if (save_plots) {
+  ggsave(filename = file.path(sex_plots_dir, "SexGroup_Diversity_Avg_Plot.svg"),
+         exploration_diversity_sex_plot_avg, width = 5, height = 5, dpi = 300)
+}
+
+# 3b. Exploration Category Distribution - Sex Comparison (within Group) PLOT & STATS
+# -------------------------------------------------------------------
+# Statistical Analysis: 2x3 ANOVA (Parametric) or Rank-Based (Non-Parametric)
+# -------------------------------------------------------------------
+# We treat 'pct' of exploration categories as the dependent variable.
+# We analyze the proportion of "meaningful exploration" (100% - "No exploration").
+
+message("Running Sex x Group Analysis for Proportion of Meaningful Exploration...")
+message("   Step 1: Checking Normal Distribution of Residuals (Shapiro-Wilk)")
+message("   Step 2: Selecting Parametric (ANOVA) or Non-Parametric (Wilcoxon/Kruskal) tests")
+
+# First, calculate the per-animal percentage of time spent in meaningful exploration categories
+# to avoid pseudo-replication on the summary table.
+meaningful_exploration_data <- consec_animal_entropy %>%
+  mutate(is_meaningful = exploration_category != "No exploration") %>%
+  group_by(AnimalID, Group, Sex, Phase) %>%
+  summarise(
+    total_obs = n(),
+    meaningful_obs = sum(is_meaningful),
+    pct_meaningful = 100 * meaningful_obs / total_obs,
+    .groups = "drop"
+  )
+
+anova_cat_results <- list()
+posthoc_cat_results <- list()
+normality_log <- list()
+
+for (phase_val in c("active", "inactive")) {
+  # Filter data for specific phase
+  model_data <- meaningful_exploration_data %>% filter(Phase == phase_val)
+  
+  if (nrow(model_data) > 6 && n_distinct(model_data$Sex) > 1 && n_distinct(model_data$Group) > 1) {
+    
+    # Run initial ANOVA model to check residuals
+    aov_model <- aov(pct_meaningful ~ Sex * Group, data = model_data)
+    
+    # Check Normality
+    # Use residuals from the model
+    resid_shapiro <- tryCatch(shapiro.test(residuals(aov_model)), error = function(e) list(p.value = 1))
+    
+    is_normal <- resid_shapiro$p.value > 0.05
+    test_method <- ifelse(is_normal, "Parametric (ANOVA + Tukey)", "Non-Parametric (Split Wilcoxon/Kruskal)")
+    
+    normality_log[[phase_val]] <- tibble(
+      Phase = phase_val,
+      Shapiro_P = resid_shapiro$p.value,
+      Is_Normal = is_normal,
+      Selected_Method = test_method
+    )
+    
+    message(sprintf("   Phase: %s | Normality p=%.4f | Method: %s", phase_val, resid_shapiro$p.value, test_method))
+    
+    if (is_normal) {
+      # --- PARAMETRIC ---
+      
+      # 1. Main ANOVA
+      tidy_res <- broom::tidy(aov_model)
+      tidy_res$Phase <- phase_val
+      tidy_res$Test_Type <- "ANOVA"
+      anova_cat_results[[phase_val]] <- tidy_res
+      
+      print(summary(aov_model))
+      
+      # 2. Post-Hoc (Tukey)
+      emm_model <- emmeans(aov_model, ~ Sex * Group)
+      
+      # Sex within Group
+      pairs_sex_within_group <- pairs(emm_model, by = "Group", adjust = "tukey")
+      res_s_g <- as.data.frame(pairs_sex_within_group)
+      res_s_g$ComparisonType <- "Sex_within_Group"
+      res_s_g$Phase <- phase_val
+      res_s_g$Test_Type <- "Tukey"
+      
+      # Group within Sex
+      pairs_group_within_sex <- pairs(emm_model, by = "Sex", adjust = "tukey")
+      res_g_s <- as.data.frame(pairs_group_within_sex)
+      res_g_s$ComparisonType <- "Group_within_Sex"
+      res_g_s$Phase <- phase_val
+      res_g_s$Test_Type <- "Tukey"
+      
+      posthoc_cat_results[[paste0(phase_val, "_Sg")]] <- res_s_g
+      posthoc_cat_results[[paste0(phase_val, "_Gs")]] <- res_g_s
+      
+    } else {
+      # --- NON-PARAMETRIC ---
+      # Assumptions violated. Perform stratified non-parametric tests.
+      
+      # 1. Sex within Group (Mann-Whitney U / Wilcoxon Rank Sum)
+      # Equivalent to the plot comparison
+      s_g_list <- list()
+      for(g in unique(model_data$Group)) {
+        sub_d <- model_data %>% filter(Group == g)
+        if(n_distinct(sub_d$Sex) == 2) {
+          wt <- wilcox.test(pct_meaningful ~ Sex, data = sub_d, exact = FALSE)
+          s_g_list[[g]] <- tibble(
+            Group = g,
+            contrast = "male - female", # Direction label
+            estimate = NA,
+            p.value = wt$p.value,
+            ComparisonType = "Sex_within_Group",
+            Phase = phase_val,
+            Test_Type = "Wilcoxon"
+          )
+        }
+      }
+      if(length(s_g_list) > 0) posthoc_cat_results[[paste0(phase_val, "_Sg")]] <- bind_rows(s_g_list)
+      
+      # 2. Group within Sex (Kruskal-Wallis + Pairwise Wilcoxon with BH adjust)
+      g_s_list <- list()
+      for(s in unique(model_data$Sex)) {
+        sub_d <- model_data %>% filter(Sex == s)
+        if(n_distinct(sub_d$Group) > 1) {
+          # Pairwise Wilcoxon
+          pwt <- pairwise.wilcox.test(sub_d$pct_meaningful, sub_d$Group, p.adjust.method = "BH")
+          
+          # Convert triangular p-value matrix to table
+          if (!is.null(pwt$p.value)) {
+            p_mat <- as.table(pwt$p.value)
+            p_df <- as.data.frame(p_mat) %>% 
+              na.omit() %>%
+              rename(group1 = Var1, group2 = Var2, p.value = Freq) %>%
+              mutate(
+                Sex = s,
+                contrast = paste(group1, "-", group2),
+                estimate = NA,
+                ComparisonType = "Group_within_Sex",
+                Phase = phase_val,
+                Test_Type = "WilcoxBH"
+              )
+            g_s_list[[s]] <- p_df
+          }
+        }
+      }
+      if(length(g_s_list) > 0) posthoc_cat_results[[paste0(phase_val, "_Gs")]] <- bind_rows(g_s_list)
+      
+      # We do not produce a global ANOVA table for non-parametric split path
+      # but we can log the decision
+      anova_cat_results[[phase_val]] <- tibble(
+        term = c("Normality_Check", "Method"),
+        statistic = c(resid_shapiro$statistic, NA),
+        p.value = c(resid_shapiro$p.value, NA),
+        Phase = phase_val,
+        Test_Type = "Assumption Check"
+      )
+    }
+  }
+}
+
+# Save Stats Tables
+if (save_tables) {
+  if (length(normality_log) > 0) {
+    write.csv(bind_rows(normality_log),
+              file = file.path(sex_stats_dir, "SexGroup_MeaningfulExpl_Normality.csv"),
+              row.names = FALSE)
+  }
+  if (length(anova_cat_results) > 0) {
+    write.csv(bind_rows(anova_cat_results), 
+              file = file.path(sex_stats_dir, "SexGroup_MeaningfulExpl_Main.csv"), 
+              row.names = FALSE)
+  }
+  if (length(posthoc_cat_results) > 0) {
+    write.csv(bind_rows(posthoc_cat_results), 
+              file = file.path(sex_stats_dir, "SexGroup_MeaningfulExpl_PostHoc.csv"), 
+              row.names = FALSE)
+  }
+}
+
+# Prepare annotation for plot (Sex differences within Group)
+stat_cat_df <- tibble()
+if (length(posthoc_cat_results) > 0) {
+  all_cat_ph <- bind_rows(posthoc_cat_results)
+  
+  if ("ComparisonType" %in% colnames(all_cat_ph)) {
+    stat_cat_df <- all_cat_ph %>%
+      filter(ComparisonType == "Sex_within_Group") %>%
+      mutate(
+        Group = as.character(Group),
+        group1 = "male", # mapping for ggpubr/plots usually needs x-axis checks
+        group2 = "female",
+        p.signif = case_when(
+          p.value < 0.001 ~ "***",
+          p.value < 0.01  ~ "**",
+          p.value < 0.05  ~ "*",
+          TRUE            ~ "ns"
+        )
+      ) %>%
+      filter(p.signif != "ns") # Keep only significant
+  }
+}
+
+# Plot Generation
+exploration_category_sex_plot <- ggplot(exploration_cat_dist, aes(x = Sex, y = pct, fill = exploration_category)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(Phase ~ Group) +
+  scale_fill_manual(values = c(
+    "No exploration" = "#d62828",
+    "Minimal (1 position)" = "#f77f00",
+    "Low diversity" = "#fcbf49",
+    "Moderate diversity" = "#06a77d",
+    "High diversity" = "#003049"
+  ), name = "Exploration Type") +
+  labs(title = "Exploration Categories: Sex Differences within Groups",
+       subtitle = "Significant differences in meaningful exploration (Test depends on Normality)",
+       y = "Percentage (%)",
+       x = "Sex") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 18),
+        plot.subtitle = element_text(hjust = 0.5, size = 12),
+        axis.text.x = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.key.size = unit(2, "lines"),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12))
+
+# Add statistical annotations
+if (nrow(stat_cat_df) > 0) {
+  # Add y.position for brackets (above 100%)
+  stat_cat_df$y.position <- 105
+  stat_cat_df$xmin <- 1 # male on factor axis (usually alphabetic order by default in R factor, check levels if custom)
+  stat_cat_df$xmax <- 2 # female
+  
+  # Ensure Sex order is alphabetic or matches plot
+  # If ggplot default, female=1, male=2 (f comes before m). 
+  # Let's verify levels of Sex in data frame data_preprocessed?
+  # "female", "male". -> female=1, male=2.
+  stat_cat_df$xmin <- 1 # female
+  stat_cat_df$xmax <- 2 # male
+  
+  exploration_category_sex_plot <- exploration_category_sex_plot +
+    geom_signif(
+      data = stat_cat_df,
+      aes(xmin = xmin, xmax = xmax, annotations = p.signif, y_position = y.position, group = NULL),
+      manual = TRUE,
+      inherit.aes = FALSE,
+      tip_length = 0.01,
+      vjust = 0.5
+    ) +
+    scale_y_continuous(limits = c(0, 115), breaks = seq(0, 100, 25))
+}
+
+if (save_plots) {
+  ggsave(filename = file.path(sex_plots_dir, "SexGroup_Category_Dist_Plot.svg"),
+         exploration_category_sex_plot, width = 8, height = 8, dpi = 300)
+}
+
+# ===================================================================
 # STATISTICAL TESTS FOR EXPLORATION CATEGORIES
 # ===================================================================
 message("Running statistical tests on exploration categories...")
