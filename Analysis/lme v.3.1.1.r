@@ -493,7 +493,8 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
         aes(x = Change, y = estimate, ymin = lwr, ymax = upr, color = pair, shape = pair)
       ) +
         geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-        geom_pointrange(position = position_dodge(width = 0.55), linewidth = 0.6) +
+        geom_pointrange(position = position_dodge(width = 0.55), size = 1.5, linewidth = 1.2) +
+        scale_x_discrete(labels = function(x) stringr::str_extract(x, "\\d+")) +
         geom_text(
           aes(label = ifelse(p.adjust < 0.001, "***",
             ifelse(p.adjust < 0.01, "**",
@@ -503,21 +504,27 @@ run_analysis_for_metric <- function(metric_name, data, includeChange, includeSex
           ),
           position = position_dodge(width = 0.55),
           vjust = -1.0,
-          size = 3.6,
+          size = 6,
           color = "#333333"
         ) +
-        scale_color_manual(values = c("RES-CON" = "grey60", "SUS-CON" = "#E63946", "RES-SUS" = "#457B9D")) +
+        scale_color_manual(values = c("RES-CON" = "#457B9D", "SUS-CON" = "#E63946", "RES-SUS" = "grey60")) +
         scale_shape_manual(values = c("RES-CON" = 16, "SUS-CON" = 16, "RES-SUS" = 16)) +
         labs(title = paste("Phase-averaged contrasts:", metric_name),
              x = "Cage Change", y = "Estimate (difference)") +
         facet_grid(Phase ~ Sex, scales = "free_x") +
-        theme_minimal(base_size = 12) +
-        theme(panel.grid.minor = element_blank(), legend.position = "top",
-              plot.title = element_text(face = "bold", hjust = 0.5)) +
+        theme_minimal(base_size = 20) +
+        theme(
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "top",
+          plot.title = element_text(face = "bold", hjust = 0.5, size = 24),
+          axis.title = element_text(size = 22, face = "bold"),
+          axis.text = element_text(size = 18)
+        ) +
         coord_flip()
       
       ggsave(file.path(dirs$plots_pub, paste0("panelA_forest_phaseAvg_with_RES-SUS_", run_scope, ".svg")),
-             forest_phaseavg, width = 5, height = 9)
+             forest_phaseavg, width = 6, height = 9)
     }
   }
   
@@ -1492,515 +1499,513 @@ cat(sprintf("Proximity results directory: %s\n", proximity_results$dirs$models))
 
 
 
-
-
-# =========================
-# Edge analysis for current metric
-# This should be added at the END of run_analysis_for_metric() function
-# OR run separately after both metrics are processed
-# =========================
-
-run_edge_analysis_for_metric <- function(metric_name, data, dirs, includeChange, includeSex, includePhase) {
-  
-  cat(sprintf("\n=== Running edge analysis for %s ===\n", metric_name))
-  
-  # First, create edge_animal_means_collapsed using current metric
-  edges_all_segments <- data %>%
-    dplyr::mutate(
-      seg_id = dplyr::case_when(
-        Phase == "Active"   ~ as.integer(ConsecActive),
-        Phase == "Inactive" ~ as.integer(ConsecInactive),
-        TRUE ~ NA_integer_
-      )
-    ) %>% 
-    dplyr::filter(!is.na(seg_id), seg_id >= 1L)
-  
-  seg_bounds <- edges_all_segments %>%
-    dplyr::group_by(Change, Sex, Phase, AnimalNum, seg_id) %>%
-    dplyr::summarise(
-      seg_h0 = min(HalfHourElapsed, na.rm = TRUE),
-      seg_h1 = max(HalfHourElapsed, na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  edges_labeled_all <- edges_all_segments %>%
-    dplyr::left_join(seg_bounds, by = c("Change","Sex","Phase","AnimalNum","seg_id")) %>%
-    dplyr::mutate(
-      edge_bin = dplyr::case_when(
-        HalfHourElapsed >= seg_h0 & HalfHourElapsed <= seg_h0 + 3L ~ "start4",
-        HalfHourElapsed >= seg_h1 - 3L & HalfHourElapsed <= seg_h1   ~ "end4",
-        TRUE ~ NA_character_
-      )
-    ) %>%
-    dplyr::filter(!is.na(edge_bin)) %>%
-    dplyr::select(Change, Sex, Phase, Group, AnimalNum, seg_id, HalfHourElapsed, 
-                  ActivityEdge = all_of(metric_name), edge_bin)  # KEY CHANGE: rename metric to ActivityEdge
-  
-  edge_animal_means_all <- edges_labeled_all %>%
-    dplyr::group_by(Change, Sex, Phase, Group, AnimalNum, seg_id, edge_bin) %>%
-    dplyr::summarise(ActivityEdge = mean(ActivityEdge, na.rm = TRUE), .groups = "drop")
-  
-  edge_animal_means_collapsed <- edge_animal_means_all %>%
-    dplyr::group_by(Change, Sex, Phase, Group, AnimalNum, edge_bin) %>%
-    dplyr::summarise(ActivityEdge = mean(ActivityEdge, na.rm = TRUE), .groups = "drop")
-  
-  # EMMeans options
-  emm_options(
-    pbkrtest.limit = 100000,
-    lmerTest.limit = 100000,
-    lmer.df = "kenward-roger"
-  )
-  
-  # Canonical levels
-  lvl_change <- sort(unique(as.character(edge_animal_means_collapsed$Change)))
-  lvl_phase  <- c("Active", "Inactive")
-  lvl_group  <- c("CON", "RES", "SUS")
-  lvl_sex    <- sort(unique(as.character(edge_animal_means_collapsed$Sex)))
-  lvl_edge   <- c("start4", "end4")
-  
-  # Prepare data
-  edge_dat <- edge_animal_means_collapsed %>%
-    dplyr::transmute(
-      ActivityEdge = as.numeric(ActivityEdge),
-      Change_f = factor(as.character(Change), levels = lvl_change),
-      Change   = as.character(Change),
-      Sex_f    = factor(as.character(Sex), levels = lvl_sex),
-      Sex      = as.character(Sex),
-      Phase_f  = factor(as.character(Phase), levels = lvl_phase),
-      Phase    = as.character(Phase),
-      Group_f  = factor(as.character(Group), levels = lvl_group),
-      Group    = as.character(Group),
-      AnimalNum = as.factor(AnimalNum),
-      edge_bin  = factor(as.character(edge_bin), levels = lvl_edge)
-    )
-  
-  edge_start <- edge_dat %>% dplyr::filter(edge_bin == "start4")
-  edge_end   <- edge_dat %>% dplyr::filter(edge_bin == "end4")
-  
-  # Mixed-model fitting function
-  fit_emm_subset <- function(df) {
-    if (dplyr::n_distinct(df$Group_f) < 2 ||
-        dplyr::n_distinct(df$AnimalNum) < 2) {
-      return(NULL)
-    }
-    ok_change <- dplyr::n_distinct(df$Change_f) >= 2
-    ok_phase  <- dplyr::n_distinct(df$Phase_f)  >= 2
-    form_try <- if (ok_change && ok_phase) {
-      ActivityEdge ~ Group_f + Phase_f + Change_f +
-        Group_f:Phase_f + Group_f:Change_f + (1 | AnimalNum)
-    } else {
-      ActivityEdge ~ Group_f + Phase_f + Change_f + (1 | AnimalNum)
-    }
-    m <- quiet_singular(
-      lmerTest::lmer(
-        form_try,
-        data = df,
-        control = lme4::lmerControl(
-          optimizer = "bobyqa",
-          optCtrl = list(maxfun = 2e5)
-        )
-      )
-    )
-    emmeans::emmeans(m, specs = ~ Group_f | Phase_f + Change_f)
-  }
-  
-  # Converter function
-  emm_to_df <- function(emm_obj, sex_label, edge_lab) {
-    smry <- try(summary(emm_obj, infer = TRUE), silent = TRUE)
-    if (inherits(smry, "try-error")) {
-      smry <- emm_obj
-    }
-    
-    df_emm <- NULL
-    if (is.data.frame(smry)) {
-      df_emm <- smry
-    } else if (is.list(smry)) {
-      df_emm <- try(as.data.frame(smry, stringsAsFactors = FALSE), silent = TRUE)
-      if (inherits(df_emm, "try-error") || !is.data.frame(df_emm)) {
-        df_emm <- tibble::tibble(emmean = NA_real_)
-      }
-    } else {
-      df_emm <- tibble::tibble(emmean = NA_real_)
-    }
-    
-    if (!("emmean" %in% names(df_emm)) && ("lsmean" %in% names(df_emm))) {
-      df_emm$emmean <- df_emm$lsmean
-    }
-    if (!("lower.CL" %in% names(df_emm)) && ("asymp.LCL" %in% names(df_emm))) {
-      df_emm$lower.CL <- df_emm$asymp.LCL
-    }
-    if (!("upper.CL" %in% names(df_emm)) && ("asymp.UCL" %in% names(df_emm))) {
-      df_emm$upper.CL <- df_emm$asymp.UCL
-    }
-    
-    if ("Phase_f" %in% names(df_emm) && !("Phase" %in% names(df_emm))) {
-      df_emm$Phase <- as.character(df_emm$Phase_f)
-    }
-    if ("Change_f" %in% names(df_emm) && !("Change" %in% names(df_emm))) {
-      df_emm$Change <- as.character(df_emm$Change_f)
-    }
-    if ("Group_f" %in% names(df_emm) && !("Group" %in% names(df_emm))) {
-      df_emm$Group <- as.character(df_emm$Group_f)
-    }
-    
-    if (!("Phase" %in% names(df_emm)))  df_emm$Phase  <- NA_character_
-    if (!("Change" %in% names(df_emm))) df_emm$Change <- NA_character_
-    if (!("Group" %in% names(df_emm)))  df_emm$Group  <- NA_character_
-    
-    df_emm$Sex <- sex_label
-    
-    if (!("emmean" %in% names(df_emm)))   df_emm$emmean   <- NA_real_
-    if (!("SE" %in% names(df_emm)))       df_emm$SE       <- NA_real_
-    if (!("df" %in% names(df_emm)))       df_emm$df       <- NA_real_
-    if (!("lower.CL" %in% names(df_emm))) df_emm$lower.CL <- NA_real_
-    if (!("upper.CL" %in% names(df_emm))) df_emm$upper.CL <- NA_real_
-    
-    em_vec  <- suppressWarnings(as.numeric(df_emm[["emmean"]]))
-    se_vec  <- suppressWarnings(as.numeric(df_emm[["SE"]]))
-    df_vec  <- suppressWarnings(as.numeric(df_emm[["df"]]))
-    lwr_vec <- suppressWarnings(as.numeric(df_emm[["lower.CL"]]))
-    upr_vec <- suppressWarnings(as.numeric(df_emm[["upper.CL"]]))
-    
-    out <- tibble::tibble(
-      Change   = factor(as.character(df_emm[["Change"]]), levels = lvl_change),
-      Phase    = factor(as.character(df_emm[["Phase"]]),  levels = lvl_phase),
-      Group    = factor(as.character(df_emm[["Group"]]),  levels = lvl_group),
-      Sex      = factor(as.character(df_emm[["Sex"]]),    levels = lvl_sex),
-      emmean   = em_vec,
-      SE       = se_vec,
-      df       = df_vec,
-      lwr      = lwr_vec,
-      upr      = upr_vec,
-      edge_bin = factor(edge_lab, levels = lvl_edge)
-    )
-    out
-  }
-  
-  # Build EMMeans per sex
-  emm_list_start <- list()
-  emm_list_end   <- list()
-  for (sx in levels(edge_dat$Sex_f)) {
-    cat("\n---- Processing Sex:", sx, "----\n")
-    ds <- edge_start %>% dplyr::filter(Sex == !!sx)
-    de <- edge_end   %>% dplyr::filter(Sex == !!sx)
-    
-    es <- fit_emm_subset(ds)
-    ee <- fit_emm_subset(de)
-    
-    if (!is.null(es)) {
-      emm_list_start[[sx]] <- emm_to_df(es, sx, "start4")
-    }
-    if (!is.null(ee)) {
-      emm_list_end[[sx]] <- emm_to_df(ee, sx, "end4")
-    }
-  }
-  
-  df_emm_start <- if (length(emm_list_start)) {
-    dplyr::bind_rows(emm_list_start)
-  } else {
-    tibble::tibble(
-      Change   = factor(character(), levels = lvl_change),
-      Phase    = factor(character(), levels = lvl_phase),
-      Group    = factor(character(), levels = lvl_group),
-      Sex      = factor(character(), levels = lvl_sex),
-      emmean   = double(),
-      SE       = double(),
-      df       = double(),
-      lwr      = double(),
-      upr      = double(),
-      edge_bin = factor(character(), levels = lvl_edge)
-    )
-  }
-  
-  df_emm_end <- if (length(emm_list_end)) {
-    dplyr::bind_rows(emm_list_end)
-  } else {
-    tibble::tibble(
-      Change   = factor(character(), levels = lvl_change),
-      Phase    = factor(character(), levels = lvl_phase),
-      Group    = factor(character(), levels = lvl_group),
-      Sex      = factor(character(), levels = lvl_sex),
-      emmean   = double(),
-      SE       = double(),
-      df       = double(),
-      lwr      = double(),
-      upr      = double(),
-      edge_bin = factor(character(), levels = lvl_edge)
-    )
-  }
-  
-  # Normalize function
-  normalize_emm_df <- function(x) {
-    dplyr::mutate(
-      x,
-      Change   = factor(as.character(.data$Change), levels = lvl_change),
-      Phase    = factor(as.character(.data$Phase),  levels = lvl_phase),
-      Group    = factor(as.character(.data$Group),  levels = lvl_group),
-      Sex      = factor(as.character(.data$Sex),    levels = lvl_sex),
-      edge_bin = factor(as.character(.data$edge_bin), levels = lvl_edge),
-      emmean   = as.numeric(.data$emmean),
-      SE       = as.numeric(.data$SE),
-      df       = as.numeric(.data$df),
-      lwr      = as.numeric(.data$lwr),
-      upr      = as.numeric(.data$upr)
-    )
-  }
-  
-  df_emm_start <- normalize_emm_df(df_emm_start)
-  df_emm_end   <- normalize_emm_df(df_emm_end)
-  df_emm_all   <- normalize_emm_df(dplyr::bind_rows(df_emm_start, df_emm_end))
-  
-  run_scope <- scope_all(includeChange, includeSex, includePhase)
-  
-  # Save table
-  openxlsx::write.xlsx(
-    df_emm_all,
-    file = file.path(
-      dirs$tables_emm,
-      paste0("edge_EMMeans_linearPred_", run_scope, ".xlsx")
-    ),
-    rowNames = FALSE
-  )
-  
-  # Plotting
-  facet_formula_all <- Phase + Sex ~ Change
-  pal_grp <- c("CON"="#457B9D","RES"="#C6C3BB","SUS"="#E63946")
-  
-  # START plot
-  df_emm_start$Group <- factor(df_emm_start$Group, levels = c("CON","RES","SUS"))
-  plot_start_all <- ggplot(df_emm_start, aes(x = .data$Group, y = .data$emmean)) +
-    geom_pointrange(
-      aes(ymin = .data$lwr, ymax = .data$upr, color = .data$Group),
-      linewidth = 0.9, fatten = 1.8
-    ) +
-    geom_point(
-      aes(fill = .data$Group),
-      shape = 21, color = "white", size = 3.4, stroke = 1.0
-    ) +
-    scale_color_manual(values = pal_grp, guide = "none") +
-    scale_fill_manual(values = pal_grp, name = "Group") +
-    scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
-    facet_grid(facet_formula_all, scales = "free_y") +
-    labs(
-      title = paste("Edge START (first 2h) —", metric_name),
-      x = "Group", y = "Linear Prediction (EMM)"
-    ) +
-    theme_minimal(base_size = 13) +
-    theme(
-      panel.grid.major.x = element_blank(),
-      panel.grid.minor = element_blank(),
-      axis.ticks = element_blank(),
-      legend.position = "top",
-      plot.title = element_text(face = "bold", hjust = 0.5)
-    )
-  
-  ggsave(
-    file.path(
-      dirs$edgeAggAll,
-      paste0("EMM_edge_START_all_", run_scope, ".svg")
-    ),
-    plot_start_all,
-    width = 8,
-    height = 5.2
-  )
-  
-  # END plot
-  df_emm_end$Group <- factor(df_emm_end$Group, levels = c("CON","RES","SUS"))
-  plot_end_all <- ggplot(df_emm_end, aes(x = .data$Group, y = .data$emmean)) +
-    geom_pointrange(
-      aes(ymin = .data$lwr, ymax = .data$upr, color = .data$Group),
-      linewidth = 0.9, fatten = 1.8
-    ) +
-    geom_point(
-      aes(fill = .data$Group),
-      shape = 21, color = "white", size = 3.4, stroke = 1.0
-    ) +
-    scale_color_manual(values = pal_grp, guide = "none") +
-    scale_fill_manual(values = pal_grp, name = "Group") +
-    scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
-    facet_grid(facet_formula_all, scales = "free_y") +
-    labs(
-      title = paste("Edge END (last 2h) —", metric_name),
-      x = "Group", y = "Linear Prediction (EMM)"
-    ) +
-    theme_minimal(base_size = 13) +
-    theme(
-      panel.grid.major.x = element_blank(),
-      panel.grid.minor = element_blank(),
-      axis.ticks = element_blank(),
-      legend.position = "top",
-      plot.title = element_text(face = "bold", hjust = 0.5)
-    )
-  
-  ggsave(
-    file.path(
-      dirs$edgeAggAll,
-      paste0("EMM_edge_END_all_", run_scope, ".svg")
-    ),
-    plot_end_all,
-    width = 8,
-    height = 5.2
-  )
-  
-  # Trajectory plots
-  make_traj <- function(df_emm, title) {
-    df_emm <- normalize_emm_df(df_emm)
-    df_emm$Change <- factor(as.character(df_emm$Change), levels = lvl_change)
-    ggplot(
-      df_emm,
-      aes(x = .data$Change, y = .data$emmean, color = .data$Group, group = .data$Group)
-    ) +
-      geom_errorbar(
-        aes(ymin = .data$lwr, ymax = .data$upr),
-        width = 0.15,
-        alpha = 0.9,
-        position = position_dodge2(width = 0.25, padding = 0.15)
-      ) +
-      geom_point(
-        size = 2.6,
-        position = position_dodge2(width = 0.25, padding = 0.15)
-      ) +
-      geom_line(
-        linewidth = 0.8,
-        position = position_dodge2(width = 0.25, padding = 0.15)
-      ) +
-      scale_color_manual(values = pal_grp) +
-      facet_grid(Phase ~ Sex, scales = "free_y") +
-      labs(title = title, x = "Cage Change", y = "Linear Prediction (EMM)") +
-      theme_minimal(base_size = 12) +
-      theme(legend.position = "top", plot.title = element_text(face = "bold", hjust = 0.5))
-  }
-  
-  plot_start_traj <- make_traj(
-    df_emm_start,
-    paste("START (first 2h) —", metric_name)
-  )
-  ggsave(
-    file.path(
-      dirs$edgeAggAll,
-      paste0("EMM_edge_START_trajectory_", run_scope, ".svg")
-    ),
-    plot_start_traj,
-    width = 8,
-    height = 5.5
-  )
-  
-  plot_end_traj <- make_traj(
-    df_emm_end,
-    paste("END (last 2h) —", metric_name)
-  )
-  ggsave(
-    file.path(
-      dirs$edgeAggAll,
-      paste0("EMM_edge_END_trajectory_", run_scope, ".svg")
-    ),
-    plot_end_traj,
-    width = 8,
-    height = 5.5
-  )
-  
-  # Compute edge statistics
-  compute_edge_stats <- function(df_edge, edge_lab) {
-    out_means <- list()
-    out_contr <- list()
-    
-    for (sx in levels(df_edge$Sex_f)) {
-      d_sx <- df_edge %>% dplyr::filter(Sex == !!sx)
-      if (nrow(d_sx) < 1) next
-      
-      emm_obj <- fit_emm_subset(d_sx)
-      if (is.null(emm_obj)) next
-      
-      emm_tbl <- try(summary(emm_obj, infer = TRUE), silent = TRUE)
-      if (!inherits(emm_tbl, "try-error")) {
-        emm_df <- as.data.frame(emm_tbl)
-        names(emm_df) <- gsub("^lsmean$", "emmean", names(emm_df))
-        names(emm_df) <- sub("^asymp\\.LCL$", "lower.CL", names(emm_df))
-        names(emm_df) <- sub("^asymp\\.UCL$", "upper.CL", names(emm_df))
-        
-        emm_df$Sex      <- sx
-        emm_df$edge_bin <- edge_lab
-        if ("Group_f" %in% names(emm_df)) emm_df$Group <- as.character(emm_df$Group_f)
-        if ("Phase_f" %in% names(emm_df)) emm_df$Phase <- as.character(emm_df$Phase_f)
-        if ("Change_f" %in% names(emm_df)) emm_df$Change <- as.character(emm_df$Change_f)
-        
-        out_means[[paste(edge_lab, sx, sep="_")]] <- emm_df %>%
-          dplyr::select(Change, Phase, Sex, Group, emmean, SE, df, lower.CL, upper.CL, edge_bin)
-      }
-      
-      contr_pairs <- try(
-        summary(pairs(emm_obj, by = c("Phase_f","Change_f")), infer = TRUE, adjust = "holm"),
-        silent = TRUE
-      )
-      if (!inherits(contr_pairs, "try-error")) {
-        contr_df <- as.data.frame(contr_pairs)
-        if ("Phase_f" %in% names(contr_df)) contr_df$Phase  <- as.character(contr_df$Phase_f)
-        if ("Change_f" %in% names(contr_df)) contr_df$Change <- as.character(contr_df$Change_f)
-        
-        contr_df$Sex      <- sx
-        contr_df$edge_bin <- edge_lab
-        if (!("p.value" %in% names(contr_df))) {
-          if (all(c("t.ratio","df") %in% names(contr_df))) {
-            contr_df$p.value <- 2 * pt(-abs(contr_df$t.ratio), df = contr_df$df)
-          } else {
-            contr_df$p.value <- NA_real_
-          }
-        }
-        contr_df$p.holm <- p.adjust(contr_df$p.value, "holm")
-        contr_df$p.BH   <- p.adjust(contr_df$p.value, "BH")
-        
-        out_contr[[paste(edge_lab, sx, sep="_")]] <- contr_df %>%
-          dplyr::select(Change, Phase, Sex, edge_bin, contrast, estimate, SE, df, t.ratio, p.value, p.holm, p.BH, lower.CL, upper.CL)
-      }
-    }
-    
-    list(
-      means = dplyr::bind_rows(out_means),
-      contr = dplyr::bind_rows(out_contr)
-    )
-  }
-  
-  stats_start <- compute_edge_stats(edge_start, "start4")
-  stats_end   <- compute_edge_stats(edge_end,   "end4")
-  
-  edge_emm_means    <- dplyr::bind_rows(stats_start$means, stats_end$means) %>%
-    dplyr::mutate(
-      Change = factor(Change, levels = lvl_change),
-      Phase  = factor(Phase,  levels = lvl_phase),
-      Sex    = factor(Sex,    levels = lvl_sex),
-      Group  = factor(Group,  levels = lvl_group),
-      edge_bin = factor(edge_bin, levels = lvl_edge)
-    )
-  
-  edge_emm_contrasts <- dplyr::bind_rows(stats_start$contr, stats_end$contr) %>%
-    dplyr::mutate(
-      Change = factor(Change, levels = lvl_change),
-      Phase  = factor(Phase,  levels = lvl_phase),
-      Sex    = factor(Sex,    levels = lvl_sex),
-      edge_bin = factor(edge_bin, levels = lvl_edge)
-    )
-  
-  edge_stats_inventory <- edge_emm_contrasts %>%
-    dplyr::mutate(sig_holm = p.holm < 0.05, sig_BH = p.BH < 0.05)
-  
-  # Save edge statistics
-  edge_means_xlsx <- file.path(dirs$tables_emm, paste0("edge_emm_means_", run_scope, ".xlsx"))
-  edge_contr_xlsx <- file.path(dirs$tables_emm, paste0("edge_emm_contrasts_", run_scope, ".xlsx"))
-  edge_contr_csv  <- file.path(dirs$tables_emm, paste0("edge_stats_inventory_", run_scope, ".csv"))
-  
-  openxlsx::write.xlsx(edge_emm_means, edge_means_xlsx, rowNames = FALSE)
-  openxlsx::write.xlsx(edge_emm_contrasts, edge_contr_xlsx, rowNames = FALSE)
-  readr::write_csv(edge_stats_inventory, edge_contr_csv)
-  
-  cat(sprintf("\n=== Edge analysis complete for %s ===\n", metric_name))
-}
-
-# -------------------------------------------------
-# Call edge analysis for both metrics
-# -------------------------------------------------
-
-# Run edge analysis for Movement
-run_edge_analysis_for_metric("Movement", data_filtered_agg, movement_results$dirs, includeChange, includeSex, includePhase)
-
-# Run edge analysis for Proximity
-run_edge_analysis_for_metric("Proximity", data_filtered_agg, proximity_results$dirs, includeChange, includeSex, includePhase)
+# # =========================
+# # Edge analysis for current metric
+# # This should be added at the END of run_analysis_for_metric() function
+# # OR run separately after both metrics are processed
+# # =========================
+# 
+# run_edge_analysis_for_metric <- function(metric_name, data, dirs, includeChange, includeSex, includePhase) {
+#   
+#   cat(sprintf("\n=== Running edge analysis for %s ===\n", metric_name))
+#   
+#   # First, create edge_animal_means_collapsed using current metric
+#   edges_all_segments <- data %>%
+#     dplyr::mutate(
+#       seg_id = dplyr::case_when(
+#         Phase == "Active"   ~ as.integer(ConsecActive),
+#         Phase == "Inactive" ~ as.integer(ConsecInactive),
+#         TRUE ~ NA_integer_
+#       )
+#     ) %>% 
+#     dplyr::filter(!is.na(seg_id), seg_id >= 1L)
+#   
+#   seg_bounds <- edges_all_segments %>%
+#     dplyr::group_by(Change, Sex, Phase, AnimalNum, seg_id) %>%
+#     dplyr::summarise(
+#       seg_h0 = min(HalfHourElapsed, na.rm = TRUE),
+#       seg_h1 = max(HalfHourElapsed, na.rm = TRUE),
+#       .groups = "drop"
+#     )
+#   
+#   edges_labeled_all <- edges_all_segments %>%
+#     dplyr::left_join(seg_bounds, by = c("Change","Sex","Phase","AnimalNum","seg_id")) %>%
+#     dplyr::mutate(
+#       edge_bin = dplyr::case_when(
+#         HalfHourElapsed >= seg_h0 & HalfHourElapsed <= seg_h0 + 3L ~ "start4",
+#         HalfHourElapsed >= seg_h1 - 3L & HalfHourElapsed <= seg_h1   ~ "end4",
+#         TRUE ~ NA_character_
+#       )
+#     ) %>%
+#     dplyr::filter(!is.na(edge_bin)) %>%
+#     dplyr::select(Change, Sex, Phase, Group, AnimalNum, seg_id, HalfHourElapsed, 
+#                   ActivityEdge = all_of(metric_name), edge_bin)  # KEY CHANGE: rename metric to ActivityEdge
+#   
+#   edge_animal_means_all <- edges_labeled_all %>%
+#     dplyr::group_by(Change, Sex, Phase, Group, AnimalNum, seg_id, edge_bin) %>%
+#     dplyr::summarise(ActivityEdge = mean(ActivityEdge, na.rm = TRUE), .groups = "drop")
+#   
+#   edge_animal_means_collapsed <- edge_animal_means_all %>%
+#     dplyr::group_by(Change, Sex, Phase, Group, AnimalNum, edge_bin) %>%
+#     dplyr::summarise(ActivityEdge = mean(ActivityEdge, na.rm = TRUE), .groups = "drop")
+#   
+#   # EMMeans options
+#   emm_options(
+#     pbkrtest.limit = 100000,
+#     lmerTest.limit = 100000,
+#     lmer.df = "kenward-roger"
+#   )
+#   
+#   # Canonical levels
+#   lvl_change <- sort(unique(as.character(edge_animal_means_collapsed$Change)))
+#   lvl_phase  <- c("Active", "Inactive")
+#   lvl_group  <- c("CON", "RES", "SUS")
+#   lvl_sex    <- sort(unique(as.character(edge_animal_means_collapsed$Sex)))
+#   lvl_edge   <- c("start4", "end4")
+#   
+#   # Prepare data
+#   edge_dat <- edge_animal_means_collapsed %>%
+#     dplyr::transmute(
+#       ActivityEdge = as.numeric(ActivityEdge),
+#       Change_f = factor(as.character(Change), levels = lvl_change),
+#       Change   = as.character(Change),
+#       Sex_f    = factor(as.character(Sex), levels = lvl_sex),
+#       Sex      = as.character(Sex),
+#       Phase_f  = factor(as.character(Phase), levels = lvl_phase),
+#       Phase    = as.character(Phase),
+#       Group_f  = factor(as.character(Group), levels = lvl_group),
+#       Group    = as.character(Group),
+#       AnimalNum = as.factor(AnimalNum),
+#       edge_bin  = factor(as.character(edge_bin), levels = lvl_edge)
+#     )
+#   
+#   edge_start <- edge_dat %>% dplyr::filter(edge_bin == "start4")
+#   edge_end   <- edge_dat %>% dplyr::filter(edge_bin == "end4")
+#   
+#   # Mixed-model fitting function
+#   fit_emm_subset <- function(df) {
+#     if (dplyr::n_distinct(df$Group_f) < 2 ||
+#         dplyr::n_distinct(df$AnimalNum) < 2) {
+#       return(NULL)
+#     }
+#     ok_change <- dplyr::n_distinct(df$Change_f) >= 2
+#     ok_phase  <- dplyr::n_distinct(df$Phase_f)  >= 2
+#     form_try <- if (ok_change && ok_phase) {
+#       ActivityEdge ~ Group_f + Phase_f + Change_f +
+#         Group_f:Phase_f + Group_f:Change_f + (1 | AnimalNum)
+#     } else {
+#       ActivityEdge ~ Group_f + Phase_f + Change_f + (1 | AnimalNum)
+#     }
+#     m <- quiet_singular(
+#       lmerTest::lmer(
+#         form_try,
+#         data = df,
+#         control = lme4::lmerControl(
+#           optimizer = "bobyqa",
+#           optCtrl = list(maxfun = 2e5)
+#         )
+#       )
+#     )
+#     emmeans::emmeans(m, specs = ~ Group_f | Phase_f + Change_f)
+#   }
+#   
+#   # Converter function
+#   emm_to_df <- function(emm_obj, sex_label, edge_lab) {
+#     smry <- try(summary(emm_obj, infer = TRUE), silent = TRUE)
+#     if (inherits(smry, "try-error")) {
+#       smry <- emm_obj
+#     }
+#     
+#     df_emm <- NULL
+#     if (is.data.frame(smry)) {
+#       df_emm <- smry
+#     } else if (is.list(smry)) {
+#       df_emm <- try(as.data.frame(smry, stringsAsFactors = FALSE), silent = TRUE)
+#       if (inherits(df_emm, "try-error") || !is.data.frame(df_emm)) {
+#         df_emm <- tibble::tibble(emmean = NA_real_)
+#       }
+#     } else {
+#       df_emm <- tibble::tibble(emmean = NA_real_)
+#     }
+#     
+#     if (!("emmean" %in% names(df_emm)) && ("lsmean" %in% names(df_emm))) {
+#       df_emm$emmean <- df_emm$lsmean
+#     }
+#     if (!("lower.CL" %in% names(df_emm)) && ("asymp.LCL" %in% names(df_emm))) {
+#       df_emm$lower.CL <- df_emm$asymp.LCL
+#     }
+#     if (!("upper.CL" %in% names(df_emm)) && ("asymp.UCL" %in% names(df_emm))) {
+#       df_emm$upper.CL <- df_emm$asymp.UCL
+#     }
+#     
+#     if ("Phase_f" %in% names(df_emm) && !("Phase" %in% names(df_emm))) {
+#       df_emm$Phase <- as.character(df_emm$Phase_f)
+#     }
+#     if ("Change_f" %in% names(df_emm) && !("Change" %in% names(df_emm))) {
+#       df_emm$Change <- as.character(df_emm$Change_f)
+#     }
+#     if ("Group_f" %in% names(df_emm) && !("Group" %in% names(df_emm))) {
+#       df_emm$Group <- as.character(df_emm$Group_f)
+#     }
+#     
+#     if (!("Phase" %in% names(df_emm)))  df_emm$Phase  <- NA_character_
+#     if (!("Change" %in% names(df_emm))) df_emm$Change <- NA_character_
+#     if (!("Group" %in% names(df_emm)))  df_emm$Group  <- NA_character_
+#     
+#     df_emm$Sex <- sex_label
+#     
+#     if (!("emmean" %in% names(df_emm)))   df_emm$emmean   <- NA_real_
+#     if (!("SE" %in% names(df_emm)))       df_emm$SE       <- NA_real_
+#     if (!("df" %in% names(df_emm)))       df_emm$df       <- NA_real_
+#     if (!("lower.CL" %in% names(df_emm))) df_emm$lower.CL <- NA_real_
+#     if (!("upper.CL" %in% names(df_emm))) df_emm$upper.CL <- NA_real_
+#     
+#     em_vec  <- suppressWarnings(as.numeric(df_emm[["emmean"]]))
+#     se_vec  <- suppressWarnings(as.numeric(df_emm[["SE"]]))
+#     df_vec  <- suppressWarnings(as.numeric(df_emm[["df"]]))
+#     lwr_vec <- suppressWarnings(as.numeric(df_emm[["lower.CL"]]))
+#     upr_vec <- suppressWarnings(as.numeric(df_emm[["upper.CL"]]))
+#     
+#     out <- tibble::tibble(
+#       Change   = factor(as.character(df_emm[["Change"]]), levels = lvl_change),
+#       Phase    = factor(as.character(df_emm[["Phase"]]),  levels = lvl_phase),
+#       Group    = factor(as.character(df_emm[["Group"]]),  levels = lvl_group),
+#       Sex      = factor(as.character(df_emm[["Sex"]]),    levels = lvl_sex),
+#       emmean   = em_vec,
+#       SE       = se_vec,
+#       df       = df_vec,
+#       lwr      = lwr_vec,
+#       upr      = upr_vec,
+#       edge_bin = factor(edge_lab, levels = lvl_edge)
+#     )
+#     out
+#   }
+#   
+#   # Build EMMeans per sex
+#   emm_list_start <- list()
+#   emm_list_end   <- list()
+#   for (sx in levels(edge_dat$Sex_f)) {
+#     cat("\n---- Processing Sex:", sx, "----\n")
+#     ds <- edge_start %>% dplyr::filter(Sex == !!sx)
+#     de <- edge_end   %>% dplyr::filter(Sex == !!sx)
+#     
+#     es <- fit_emm_subset(ds)
+#     ee <- fit_emm_subset(de)
+#     
+#     if (!is.null(es)) {
+#       emm_list_start[[sx]] <- emm_to_df(es, sx, "start4")
+#     }
+#     if (!is.null(ee)) {
+#       emm_list_end[[sx]] <- emm_to_df(ee, sx, "end4")
+#     }
+#   }
+#   
+#   df_emm_start <- if (length(emm_list_start)) {
+#     dplyr::bind_rows(emm_list_start)
+#   } else {
+#     tibble::tibble(
+#       Change   = factor(character(), levels = lvl_change),
+#       Phase    = factor(character(), levels = lvl_phase),
+#       Group    = factor(character(), levels = lvl_group),
+#       Sex      = factor(character(), levels = lvl_sex),
+#       emmean   = double(),
+#       SE       = double(),
+#       df       = double(),
+#       lwr      = double(),
+#       upr      = double(),
+#       edge_bin = factor(character(), levels = lvl_edge)
+#     )
+#   }
+#   
+#   df_emm_end <- if (length(emm_list_end)) {
+#     dplyr::bind_rows(emm_list_end)
+#   } else {
+#     tibble::tibble(
+#       Change   = factor(character(), levels = lvl_change),
+#       Phase    = factor(character(), levels = lvl_phase),
+#       Group    = factor(character(), levels = lvl_group),
+#       Sex      = factor(character(), levels = lvl_sex),
+#       emmean   = double(),
+#       SE       = double(),
+#       df       = double(),
+#       lwr      = double(),
+#       upr      = double(),
+#       edge_bin = factor(character(), levels = lvl_edge)
+#     )
+#   }
+#   
+#   # Normalize function
+#   normalize_emm_df <- function(x) {
+#     dplyr::mutate(
+#       x,
+#       Change   = factor(as.character(.data$Change), levels = lvl_change),
+#       Phase    = factor(as.character(.data$Phase),  levels = lvl_phase),
+#       Group    = factor(as.character(.data$Group),  levels = lvl_group),
+#       Sex      = factor(as.character(.data$Sex),    levels = lvl_sex),
+#       edge_bin = factor(as.character(.data$edge_bin), levels = lvl_edge),
+#       emmean   = as.numeric(.data$emmean),
+#       SE       = as.numeric(.data$SE),
+#       df       = as.numeric(.data$df),
+#       lwr      = as.numeric(.data$lwr),
+#       upr      = as.numeric(.data$upr)
+#     )
+#   }
+#   
+#   df_emm_start <- normalize_emm_df(df_emm_start)
+#   df_emm_end   <- normalize_emm_df(df_emm_end)
+#   df_emm_all   <- normalize_emm_df(dplyr::bind_rows(df_emm_start, df_emm_end))
+#   
+#   run_scope <- scope_all(includeChange, includeSex, includePhase)
+#   
+#   # Save table
+#   openxlsx::write.xlsx(
+#     df_emm_all,
+#     file = file.path(
+#       dirs$tables_emm,
+#       paste0("edge_EMMeans_linearPred_", run_scope, ".xlsx")
+#     ),
+#     rowNames = FALSE
+#   )
+#   
+#   # Plotting
+#   facet_formula_all <- Phase + Sex ~ Change
+#   pal_grp <- c("CON"="#457B9D","RES"="#C6C3BB","SUS"="#E63946")
+#   
+#   # START plot
+#   df_emm_start$Group <- factor(df_emm_start$Group, levels = c("CON","RES","SUS"))
+#   plot_start_all <- ggplot(df_emm_start, aes(x = .data$Group, y = .data$emmean)) +
+#     geom_pointrange(
+#       aes(ymin = .data$lwr, ymax = .data$upr, color = .data$Group),
+#       linewidth = 0.9, fatten = 1.8
+#     ) +
+#     geom_point(
+#       aes(fill = .data$Group),
+#       shape = 21, color = "white", size = 3.4, stroke = 1.0
+#     ) +
+#     scale_color_manual(values = pal_grp, guide = "none") +
+#     scale_fill_manual(values = pal_grp, name = "Group") +
+#     scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
+#     facet_grid(facet_formula_all, scales = "free_y") +
+#     labs(
+#       title = paste("Edge START (first 2h) —", metric_name),
+#       x = "Group", y = "Linear Prediction (EMM)"
+#     ) +
+#     theme_minimal(base_size = 13) +
+#     theme(
+#       panel.grid.major.x = element_blank(),
+#       panel.grid.minor = element_blank(),
+#       axis.ticks = element_blank(),
+#       legend.position = "top",
+#       plot.title = element_text(face = "bold", hjust = 0.5)
+#     )
+#   
+#   ggsave(
+#     file.path(
+#       dirs$edgeAggAll,
+#       paste0("EMM_edge_START_all_", run_scope, ".svg")
+#     ),
+#     plot_start_all,
+#     width = 8,
+#     height = 5.2
+#   )
+#   
+#   # END plot
+#   df_emm_end$Group <- factor(df_emm_end$Group, levels = c("CON","RES","SUS"))
+#   plot_end_all <- ggplot(df_emm_end, aes(x = .data$Group, y = .data$emmean)) +
+#     geom_pointrange(
+#       aes(ymin = .data$lwr, ymax = .data$upr, color = .data$Group),
+#       linewidth = 0.9, fatten = 1.8
+#     ) +
+#     geom_point(
+#       aes(fill = .data$Group),
+#       shape = 21, color = "white", size = 3.4, stroke = 1.0
+#     ) +
+#     scale_color_manual(values = pal_grp, guide = "none") +
+#     scale_fill_manual(values = pal_grp, name = "Group") +
+#     scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
+#     facet_grid(facet_formula_all, scales = "free_y") +
+#     labs(
+#       title = paste("Edge END (last 2h) —", metric_name),
+#       x = "Group", y = "Linear Prediction (EMM)"
+#     ) +
+#     theme_minimal(base_size = 13) +
+#     theme(
+#       panel.grid.major.x = element_blank(),
+#       panel.grid.minor = element_blank(),
+#       axis.ticks = element_blank(),
+#       legend.position = "top",
+#       plot.title = element_text(face = "bold", hjust = 0.5)
+#     )
+#   
+#   ggsave(
+#     file.path(
+#       dirs$edgeAggAll,
+#       paste0("EMM_edge_END_all_", run_scope, ".svg")
+#     ),
+#     plot_end_all,
+#     width = 8,
+#     height = 5.2
+#   )
+#   
+#   # Trajectory plots
+#   make_traj <- function(df_emm, title) {
+#     df_emm <- normalize_emm_df(df_emm)
+#     df_emm$Change <- factor(as.character(df_emm$Change), levels = lvl_change)
+#     ggplot(
+#       df_emm,
+#       aes(x = .data$Change, y = .data$emmean, color = .data$Group, group = .data$Group)
+#     ) +
+#       geom_errorbar(
+#         aes(ymin = .data$lwr, ymax = .data$upr),
+#         width = 0.15,
+#         alpha = 0.9,
+#         position = position_dodge2(width = 0.25, padding = 0.15)
+#       ) +
+#       geom_point(
+#         size = 2.6,
+#         position = position_dodge2(width = 0.25, padding = 0.15)
+#       ) +
+#       geom_line(
+#         linewidth = 0.8,
+#         position = position_dodge2(width = 0.25, padding = 0.15)
+#       ) +
+#       scale_color_manual(values = pal_grp) +
+#       facet_grid(Phase ~ Sex, scales = "free_y") +
+#       labs(title = title, x = "Cage Change", y = "Linear Prediction (EMM)") +
+#       theme_minimal(base_size = 12) +
+#       theme(legend.position = "top", plot.title = element_text(face = "bold", hjust = 0.5))
+#   }
+#   
+#   plot_start_traj <- make_traj(
+#     df_emm_start,
+#     paste("START (first 2h) —", metric_name)
+#   )
+#   ggsave(
+#     file.path(
+#       dirs$edgeAggAll,
+#       paste0("EMM_edge_START_trajectory_", run_scope, ".svg")
+#     ),
+#     plot_start_traj,
+#     width = 8,
+#     height = 5.5
+#   )
+#   
+#   plot_end_traj <- make_traj(
+#     df_emm_end,
+#     paste("END (last 2h) —", metric_name)
+#   )
+#   ggsave(
+#     file.path(
+#       dirs$edgeAggAll,
+#       paste0("EMM_edge_END_trajectory_", run_scope, ".svg")
+#     ),
+#     plot_end_traj,
+#     width = 8,
+#     height = 5.5
+#   )
+#   
+#   # Compute edge statistics
+#   compute_edge_stats <- function(df_edge, edge_lab) {
+#     out_means <- list()
+#     out_contr <- list()
+#     
+#     for (sx in levels(df_edge$Sex_f)) {
+#       d_sx <- df_edge %>% dplyr::filter(Sex == !!sx)
+#       if (nrow(d_sx) < 1) next
+#       
+#       emm_obj <- fit_emm_subset(d_sx)
+#       if (is.null(emm_obj)) next
+#       
+#       emm_tbl <- try(summary(emm_obj, infer = TRUE), silent = TRUE)
+#       if (!inherits(emm_tbl, "try-error")) {
+#         emm_df <- as.data.frame(emm_tbl)
+#         names(emm_df) <- gsub("^lsmean$", "emmean", names(emm_df))
+#         names(emm_df) <- sub("^asymp\\.LCL$", "lower.CL", names(emm_df))
+#         names(emm_df) <- sub("^asymp\\.UCL$", "upper.CL", names(emm_df))
+#         
+#         emm_df$Sex      <- sx
+#         emm_df$edge_bin <- edge_lab
+#         if ("Group_f" %in% names(emm_df)) emm_df$Group <- as.character(emm_df$Group_f)
+#         if ("Phase_f" %in% names(emm_df)) emm_df$Phase <- as.character(emm_df$Phase_f)
+#         if ("Change_f" %in% names(emm_df)) emm_df$Change <- as.character(emm_df$Change_f)
+#         
+#         out_means[[paste(edge_lab, sx, sep="_")]] <- emm_df %>%
+#           dplyr::select(Change, Phase, Sex, Group, emmean, SE, df, lower.CL, upper.CL, edge_bin)
+#       }
+#       
+#       contr_pairs <- try(
+#         summary(pairs(emm_obj, by = c("Phase_f","Change_f")), infer = TRUE, adjust = "holm"),
+#         silent = TRUE
+#       )
+#       if (!inherits(contr_pairs, "try-error")) {
+#         contr_df <- as.data.frame(contr_pairs)
+#         if ("Phase_f" %in% names(contr_df)) contr_df$Phase  <- as.character(contr_df$Phase_f)
+#         if ("Change_f" %in% names(contr_df)) contr_df$Change <- as.character(contr_df$Change_f)
+#         
+#         contr_df$Sex      <- sx
+#         contr_df$edge_bin <- edge_lab
+#         if (!("p.value" %in% names(contr_df))) {
+#           if (all(c("t.ratio","df") %in% names(contr_df))) {
+#             contr_df$p.value <- 2 * pt(-abs(contr_df$t.ratio), df = contr_df$df)
+#           } else {
+#             contr_df$p.value <- NA_real_
+#           }
+#         }
+#         contr_df$p.holm <- p.adjust(contr_df$p.value, "holm")
+#         contr_df$p.BH   <- p.adjust(contr_df$p.value, "BH")
+#         
+#         out_contr[[paste(edge_lab, sx, sep="_")]] <- contr_df %>%
+#           dplyr::select(Change, Phase, Sex, edge_bin, contrast, estimate, SE, df, t.ratio, p.value, p.holm, p.BH, lower.CL, upper.CL)
+#       }
+#     }
+#     
+#     list(
+#       means = dplyr::bind_rows(out_means),
+#       contr = dplyr::bind_rows(out_contr)
+#     )
+#   }
+#   
+#   stats_start <- compute_edge_stats(edge_start, "start4")
+#   stats_end   <- compute_edge_stats(edge_end,   "end4")
+#   
+#   edge_emm_means    <- dplyr::bind_rows(stats_start$means, stats_end$means) %>%
+#     dplyr::mutate(
+#       Change = factor(Change, levels = lvl_change),
+#       Phase  = factor(Phase,  levels = lvl_phase),
+#       Sex    = factor(Sex,    levels = lvl_sex),
+#       Group  = factor(Group,  levels = lvl_group),
+#       edge_bin = factor(edge_bin, levels = lvl_edge)
+#     )
+#   
+#   edge_emm_contrasts <- dplyr::bind_rows(stats_start$contr, stats_end$contr) %>%
+#     dplyr::mutate(
+#       Change = factor(Change, levels = lvl_change),
+#       Phase  = factor(Phase,  levels = lvl_phase),
+#       Sex    = factor(Sex,    levels = lvl_sex),
+#       edge_bin = factor(edge_bin, levels = lvl_edge)
+#     )
+#   
+#   edge_stats_inventory <- edge_emm_contrasts %>%
+#     dplyr::mutate(sig_holm = p.holm < 0.05, sig_BH = p.BH < 0.05)
+#   
+#   # Save edge statistics
+#   edge_means_xlsx <- file.path(dirs$tables_emm, paste0("edge_emm_means_", run_scope, ".xlsx"))
+#   edge_contr_xlsx <- file.path(dirs$tables_emm, paste0("edge_emm_contrasts_", run_scope, ".xlsx"))
+#   edge_contr_csv  <- file.path(dirs$tables_emm, paste0("edge_stats_inventory_", run_scope, ".csv"))
+#   
+#   openxlsx::write.xlsx(edge_emm_means, edge_means_xlsx, rowNames = FALSE)
+#   openxlsx::write.xlsx(edge_emm_contrasts, edge_contr_xlsx, rowNames = FALSE)
+#   readr::write_csv(edge_stats_inventory, edge_contr_csv)
+#   
+#   cat(sprintf("\n=== Edge analysis complete for %s ===\n", metric_name))
+# }
+# 
+# # -------------------------------------------------
+# # Call edge analysis for both metrics
+# # -------------------------------------------------
+# 
+# # Run edge analysis for Movement
+# run_edge_analysis_for_metric("Movement", data_filtered_agg, movement_results$dirs, includeChange, includeSex, includePhase)
+# 
+# # Run edge analysis for Proximity
+# run_edge_analysis_for_metric("Proximity", data_filtered_agg, proximity_results$dirs, includeChange, includeSex, includePhase)
