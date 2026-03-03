@@ -70,10 +70,17 @@ process_batch_change <- function(batch, change) {
 
   # Construct file paths with by_halfhour subdirectory
   data_dir <- file.path(base_dir, batch, change, "by_halfhour")
+  activity_file <- file.path(data_dir, paste0(batch, "_", change, "_halfhour_activity.csv"))
   movement_file <- file.path(data_dir, paste0(batch, "_", change, "_halfhour_movement.csv"))
   proximity_file <- file.path(data_dir, paste0(batch, "_", change, "_halfhour_proximity.csv"))
+  entropy_file <- file.path(data_dir, paste0(batch, "_", change, "_halfhour_entropy.csv"))
 
   # Check if files exist
+  if (!dir.exists(activity_file)) {
+    cat(sprintf("  Warning: Data directory not found: %s\n", data_dir))
+    return(NULL)
+  }
+
   if (!file.exists(movement_file)) {
     cat(sprintf("  Warning: Movement file not found: %s\n", movement_file))
     return(NULL)
@@ -83,9 +90,15 @@ process_batch_change <- function(batch, change) {
     return(NULL)
   }
 
+  if (!file.exists(entropy_file)) {
+    cat(sprintf("  Warning: Entropy file not found: %s\n", entropy_file))
+    return(NULL)
+  }
+
   # Read data
   movement_df <- read_csv(movement_file, show_col_types = FALSE)
   proximity_df <- read_csv(proximity_file, show_col_types = FALSE)
+  entropy_df <- read_csv(entropy_file, show_col_types = FALSE)
 
   # Get sex for this batch
   sex <- batch_sex_map[batch]
@@ -117,11 +130,22 @@ process_batch_change <- function(batch, change) {
       HalfHourElapsed = calc_halfhour_elapsed(HalfHour)
     )
 
+  # Process entropy data
+  entropy_long <- entropy_df %>%
+    pivot_longer(
+      cols = -HalfHour,
+      names_to = "AnimalNum",
+      values_to = "Entropy"
+    ) %>%
+    mutate(
+      HalfHourElapsed = calc_halfhour_elapsed(HalfHour)
+    )
+
   # Merge movement and proximity
   combined_df <- movement_long %>%
     left_join(
-      proximity_long %>% select(HalfHour, AnimalNum, Proximity),
-      by = c("HalfHour", "AnimalNum")
+      proximity_long %>% select(HalfHour, AnimalNum, Proximity, Entropy),
+      by = c("HalfHour", "AnimalNum", "Entropy")
     )
 
   # Add metadata and calculate derived variables
@@ -136,7 +160,7 @@ process_batch_change <- function(batch, change) {
     select(
       Batch, Change, Sex, Phase, Group, AnimalNum,
       HalfHour, HalfHourElapsed, TH,
-      Movement, Proximity
+      Movement, Proximity, Entropy
     ) %>%
     arrange(AnimalNum, HalfHourElapsed)
 
@@ -201,7 +225,8 @@ if (length(all_data) > 0) {
   missing_summary <- data_filtered_agg %>%
     summarise(
       Movement_NA = sum(is.na(Movement)),
-      Proximity_NA = sum(is.na(Proximity))
+      Proximity_NA = sum(is.na(Proximity)),
+      Entropy_NA = sum(is.na(Entropy))
     )
   print(missing_summary)
 
