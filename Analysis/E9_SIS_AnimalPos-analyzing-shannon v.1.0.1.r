@@ -1,29 +1,30 @@
 #' @title Analysis of Shannon Entropy in Animal Positioning
 #'
 #' @description
-#' This script conducts a comprehensive analysis of Shannon entropy to
-#' evaluate the distribution and diversity of animal positions within a
-#' specified environment, analyzing both by phase and by half-hour periods.
+#' This script performs a structured analysis of Shannon entropy to
+#' quantify spatial distribution and diversity of animal positions within
+#' the environment, using both phase-based and half-hour–resolved measures.
 #'
 #' @details
-#' This script can either process raw data or load previously processed results.
+#' The pipeline supports both raw data processing and loading of precomputed results.
 #' Set load_existing_data = TRUE to skip processing and load existing CSVs.
 #'
 #' @date October 2025
 #' @authors Tobias Pohl, Anja Magister
 
 # ===================================================================
-# LOAD REQUIRED PACKAGES
+# Load required packages
 # ===================================================================
 if (!requireNamespace("pacman", quietly = TRUE)) {
   install.packages("pacman")
 }
 pacman::p_load(readr, dplyr, lubridate, tibble, purrr, ggplot2, reshape2,
-               scales, stringr, gridExtra, lme4, emmeans, ggpubr, tidyr, GGally,
-               igraph, ggraph, jsonlite)
+               scales, stringr, gridExtra, lmerTest, mgcv, emmeans, ggpubr, tidyr, GGally,
+               igraph, ggraph, jsonlite, patchwork, broom, broom.mixed, rstatix, knitr,
+               kableExtra)
 
 # ===================================================================
-# RUN MODE CONFIGURATION
+# Runtime configuration
 # ===================================================================
 load_existing_data <- TRUE
 show_plots <- FALSE
@@ -32,12 +33,16 @@ save_tables <- TRUE
 exclude_homecage <- TRUE
 analyze_by_halfhour <- TRUE
 
+# Autocorrelation parameter for GAMM residuals.
+# rho = 0 disables AR1 correction; set >0 only after residual ACF diagnostics.
+gamm_rho <- 0
+
 filter_cc4_late_phases <- TRUE
 cc4_max_active_phase <- 2
 cc4_max_inactive_phase <- 2
 
 # ===================================================================
-# PATHS WITH OPTIMIZED FOLDER STRUCTURE
+# Directory structure
 # ===================================================================
 working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
 saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/new_structure"
@@ -77,6 +82,345 @@ dir.create(batch_cage_plots_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(misc_plots_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(transition_networks_dir, recursive = TRUE, showWarnings = FALSE)
 
+# ===================================================================
+# Structured output directories
+# ===================================================================
+pub_dir <- file.path(saving_directory, "publication_ready")
+pub_tables_dir <- file.path(pub_dir, "tables")
+pub_figures_dir <- file.path(pub_dir, "figures")
+pub_figure_panels_dir <- file.path(pub_figures_dir, "single_panels")
+pub_multipanel_dir <- file.path(pub_figures_dir, "multi_panel")
+pub_supplement_dir <- file.path(pub_dir, "supplementary")
+
+for (dir_path in c(pub_dir, pub_tables_dir, pub_figures_dir,
+                  pub_figure_panels_dir, pub_multipanel_dir,
+                  pub_supplement_dir)) {
+  dir.create(dir_path, recursive = TRUE, showWarnings = FALSE)
+}
+
+# ===================================================================
+# Analysis-ready output structure
+# ===================================================================
+analysis_dir <- file.path(saving_directory, "analysis_ready")
+analysis_raw_loaded_dir <- file.path(analysis_dir, "01_raw_loaded")
+analysis_intermediate_phase_dir <- file.path(analysis_dir, "02_intermediate", "phase_based")
+analysis_intermediate_halfhour_dir <- file.path(analysis_dir, "02_intermediate", "halfhour_based")
+analysis_derived_phase_dir <- file.path(analysis_dir, "03_derived_metrics", "phase_based")
+analysis_derived_halfhour_dir <- file.path(analysis_dir, "03_derived_metrics", "halfhour_based")
+analysis_model_lmm_dir <- file.path(analysis_dir, "04_model_outputs", "lmm")
+analysis_model_gamm_dir <- file.path(analysis_dir, "04_model_outputs", "gamm")
+analysis_model_emm_dir <- file.path(analysis_dir, "04_model_outputs", "estimated_marginal_means")
+analysis_figures_exploratory_dir <- file.path(analysis_dir, "05_figures", "exploratory")
+analysis_figures_model_dir <- file.path(analysis_dir, "05_figures", "model_based")
+analysis_figures_multipanel_dir <- file.path(analysis_dir, "05_figures", "multi_panel")
+analysis_logs_dir <- file.path(analysis_dir, "06_logs")
+
+for (dir_path in c(
+  analysis_raw_loaded_dir,
+  analysis_intermediate_phase_dir,
+  analysis_intermediate_halfhour_dir,
+  analysis_derived_phase_dir,
+  analysis_derived_halfhour_dir,
+  analysis_model_lmm_dir,
+  analysis_model_gamm_dir,
+  analysis_model_emm_dir,
+  analysis_figures_exploratory_dir,
+  analysis_figures_model_dir,
+  analysis_figures_multipanel_dir,
+  analysis_logs_dir
+)) {
+  dir.create(dir_path, recursive = TRUE, showWarnings = FALSE)
+}
+
+# ===================================================================
+# Plotting and formatting utilities
+# ===================================================================
+group_cols <- c(
+  con = "#457B9D",
+  res = "#BFBFBF",
+  sus = "#E63946"
+)
+
+sex_cols <- c(
+  male = "#6F6F91",
+  female = "#C9B27C"
+)
+
+sem <- function(x) {
+  stats::sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+}
+
+save_pub_plot <- function(plot, filename, width = 85, height = 70, units = "mm") {
+  ggplot2::ggsave(
+    filename = file.path(pub_figure_panels_dir, filename),
+    plot = plot,
+    width = width,
+    height = height,
+    units = units,
+    dpi = 600,
+    bg = "white"
+  )
+}
+
+save_pub_multipanel <- function(plot, filename, width = 180, height = 120, units = "mm") {
+  ggplot2::ggsave(
+    filename = file.path(pub_multipanel_dir, filename),
+    plot = plot,
+    width = width,
+    height = height,
+    units = units,
+    dpi = 600,
+    bg = "white"
+  )
+}
+
+theme_publication <- function(base_size = 7, base_family = "Arial") {
+  ggplot2::theme_classic(base_size = base_size, base_family = base_family) +
+    ggplot2::theme(
+      axis.line = ggplot2::element_line(linewidth = 0.28, colour = "black"),
+      axis.ticks = ggplot2::element_line(linewidth = 0.28, colour = "black"),
+      axis.ticks.length = grid::unit(1.4, "mm"),
+      axis.text = ggplot2::element_text(size = base_size, colour = "black"),
+      axis.title = ggplot2::element_text(size = base_size + 1, colour = "black"),
+      strip.background = ggplot2::element_blank(),
+      strip.text = ggplot2::element_text(size = base_size + 1, colour = "black"),
+      plot.title = ggplot2::element_text(size = base_size + 2, face = "plain", hjust = 0),
+      plot.subtitle = ggplot2::element_text(size = base_size, hjust = 0),
+      legend.title = ggplot2::element_text(size = base_size),
+      legend.text = ggplot2::element_text(size = base_size),
+      legend.key.size = grid::unit(3, "mm"),
+      panel.grid = ggplot2::element_blank(),
+      plot.margin = grid::unit(c(2, 2, 2, 2), "mm")
+    )
+}
+
+# -------------------------------------------------------------------
+# Analysis file naming and output helpers
+# -------------------------------------------------------------------
+sanitize_filename <- function(x) {
+  x %>%
+    as.character() %>%
+    stringr::str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    stringr::str_replace_all("_+", "_") %>%
+    stringr::str_replace_all("^_|_$", "") %>%
+    stringr::str_to_lower()
+}
+
+analysis_file <- function(prefix, descriptor, level = NULL, ext = "csv") {
+  parts <- c(prefix, descriptor, level)
+  parts <- parts[!is.na(parts) & nzchar(parts)]
+  paste0(paste(sanitize_filename(parts), collapse = "__"), ".", ext)
+}
+
+write_analysis_csv <- function(data, directory, prefix, descriptor, level = NULL) {
+  readr::write_csv(
+    data,
+    file.path(directory, analysis_file(prefix, descriptor, level, ext = "csv"))
+  )
+}
+
+save_analysis_figure <- function(plot, directory, prefix, descriptor, level = NULL,
+                               width = 90, height = 75, units = "mm", ext = "svg") {
+  filename <- analysis_file(prefix, descriptor, level, ext = ext)
+  ggplot2::ggsave(
+    filename = file.path(directory, filename),
+    plot = plot,
+    width = width,
+    height = height,
+    units = units,
+    dpi = 600,
+    bg = "white"
+  )
+  invisible(filename)
+}
+
+make_entropy_summary_table <- function(data, entropy_col, grouping_vars) {
+  data %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(grouping_vars))) %>%
+    dplyr::summarise(
+      n = sum(!is.na(.data[[entropy_col]])),
+      mean = mean(.data[[entropy_col]], na.rm = TRUE),
+      sd = stats::sd(.data[[entropy_col]], na.rm = TRUE),
+      sem = sem(.data[[entropy_col]]),
+      median = stats::median(.data[[entropy_col]], na.rm = TRUE),
+      q25 = stats::quantile(.data[[entropy_col]], 0.25, na.rm = TRUE),
+      q75 = stats::quantile(.data[[entropy_col]], 0.75, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      mean_sem = sprintf("%.3f ± %.3f", mean, sem),
+      median_iqr = sprintf("%.3f [%.3f, %.3f]", median, q25, q75)
+    )
+}
+
+# -------------------------------------------------------------------
+# Model helper functions for standardized outputs
+# -------------------------------------------------------------------
+standardize_group_levels <- function(data) {
+  data %>%
+    dplyr::mutate(
+      Group = stringr::str_to_lower(stringr::str_trim(as.character(Group))),
+      Sex = stringr::str_to_lower(stringr::str_trim(as.character(Sex))),
+      Phase = stringr::str_to_lower(stringr::str_trim(as.character(Phase))),
+      CageChange = stringr::str_to_upper(stringr::str_trim(as.character(CageChange))),
+      Group = factor(Group, levels = c("con", "res", "sus")),
+      Sex = factor(Sex, levels = c("male", "female")),
+      Phase = factor(Phase, levels = c("active", "inactive")),
+      CageChange = factor(CageChange, levels = c("CC1", "CC2", "CC3", "CC4"))
+    )
+}
+
+standardize_cage_levels <- function(data) {
+  data %>%
+    dplyr::mutate(
+      Sex = stringr::str_to_lower(stringr::str_trim(as.character(Sex))),
+      Phase = stringr::str_to_lower(stringr::str_trim(as.character(Phase))),
+      CageChange = stringr::str_to_upper(stringr::str_trim(as.character(CageChange))),
+      Sex = factor(Sex, levels = c("male", "female")),
+      Phase = factor(Phase, levels = c("active", "inactive")),
+      CageChange = factor(CageChange, levels = c("CC1", "CC2", "CC3", "CC4"))
+    )
+}
+
+format_lmm_fixed_effects <- function(model, model_name) {
+  broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE) %>%
+    dplyr::mutate(
+      model = model_name,
+      dplyr::across(where(is.numeric), ~ round(.x, 5))
+    ) %>%
+    dplyr::select(model, dplyr::everything())
+}
+
+format_type3_anova <- function(model, model_name) {
+  as.data.frame(anova(model, type = 3)) %>%
+    tibble::rownames_to_column("term") %>%
+    dplyr::mutate(
+      model = model_name,
+      dplyr::across(where(is.numeric), ~ round(.x, 5))
+    ) %>%
+    dplyr::select(model, dplyr::everything())
+}
+
+format_emmeans_table <- function(emm_object, table_name) {
+  as.data.frame(emm_object) %>%
+    dplyr::mutate(
+      table = table_name,
+      dplyr::across(where(is.numeric), ~ round(.x, 5))
+    ) %>%
+    dplyr::select(table, dplyr::everything())
+}
+
+format_gamm_parametric <- function(model, model_name) {
+  as.data.frame(summary(model)$p.table) %>%
+    tibble::rownames_to_column("term") %>%
+    dplyr::rename(
+      estimate = Estimate,
+      std_error = `Std. Error`,
+      statistic = `t value`,
+      p_value = `Pr(>|t|)`
+    ) %>%
+    dplyr::mutate(
+      model = model_name,
+      dplyr::across(where(is.numeric), ~ round(.x, 5))
+    ) %>%
+    dplyr::select(model, dplyr::everything())
+}
+
+format_gamm_smooths <- function(model, model_name) {
+  as.data.frame(summary(model)$s.table) %>%
+    tibble::rownames_to_column("smooth_term") %>%
+    dplyr::mutate(
+      model = model_name,
+      dplyr::across(where(is.numeric), ~ round(.x, 5))
+    ) %>%
+    dplyr::select(model, dplyr::everything())
+}
+
+# -------------------------------------------------------------------
+# Sex-stratified model fitting functions
+# -------------------------------------------------------------------
+fit_sex_specific_animal_lmm <- function(data, sex_value) {
+  data_sex <- data %>% dplyr::filter(Sex == sex_value)
+
+  if (nrow(data_sex) == 0) {
+    message("Skipping animal entropy LMM for ", sex_value, ": no rows after filtering.")
+    return(NULL)
+  }
+
+  if (dplyr::n_distinct(data_sex$Group) < 2) {
+    message("Skipping animal entropy LMM for ", sex_value, ": fewer than two groups.")
+    return(NULL)
+  }
+
+  lmerTest::lmer(
+    animalEntropy ~ Group * Phase + CageChange + (1 | AnimalID) + (1 | System),
+    data = data_sex
+  )
+}
+
+fit_sex_specific_cage_lmm <- function(data, sex_value) {
+  data_sex <- data %>% dplyr::filter(Sex == sex_value)
+
+  if (nrow(data_sex) == 0) {
+    message("Skipping cage entropy LMM for ", sex_value, ": no rows after filtering.")
+    return(NULL)
+  }
+
+  if (dplyr::n_distinct(data_sex$Phase) < 2) {
+    message("Skipping cage entropy LMM for ", sex_value, ": fewer than two phases.")
+    return(NULL)
+  }
+
+  lmerTest::lmer(
+    CageEntropy ~ Phase + CageChange + (1 | System),
+    data = data_sex
+  )
+}
+
+fit_sex_specific_animal_gamm <- function(data, sex_value, rho = gamm_rho) {
+  data_sex <- data %>%
+    dplyr::filter(Sex == sex_value) %>%
+    dplyr::arrange(System, AnimalID, CageChange, Phase, ConsecHalfHour) %>%
+    dplyr::mutate(
+      AnimalID = factor(AnimalID),
+      System = factor(System),
+      GroupPhase = interaction(Group, Phase, drop = TRUE),
+      AR_start = dplyr::row_number() == 1L |
+        AnimalID != dplyr::lag(AnimalID) |
+        System != dplyr::lag(System) |
+        CageChange != dplyr::lag(CageChange) |
+        Phase != dplyr::lag(Phase),
+      ConsecHalfHour_z = as.numeric(scale(ConsecHalfHour))
+    )
+
+  if (nrow(data_sex) == 0) {
+    message("Skipping animal entropy GAMM for ", sex_value, ": no rows after filtering.")
+    return(NULL)
+  }
+
+  if (dplyr::n_distinct(data_sex$Group) < 2) {
+    message("Skipping animal entropy GAMM for ", sex_value, ": fewer than two groups.")
+    return(NULL)
+  }
+
+  if (dplyr::n_distinct(data_sex$GroupPhase) < 2) {
+    message("Skipping animal entropy GAMM for ", sex_value, ": fewer than two group-phase combinations.")
+    return(NULL)
+  }
+
+  mgcv::bam(
+    animalEntropy ~ Group * Phase + CageChange +
+      s(ConsecHalfHour_z, by = GroupPhase, k = 8) +
+      s(AnimalID, bs = "re") +
+      s(System, bs = "re"),
+    data = data_sex,
+    method = "fREML",
+    discrete = TRUE,
+    rho = rho,
+    AR.start = data_sex$AR_start
+  )
+}
+
 create_batch_cage_folders <- function(batches, cageChanges) {
   for (batch in batches) {
     for (cageChange in cageChanges) {
@@ -99,7 +443,7 @@ cageChanges <- c("CC1", "CC2", "CC3", "CC4")
 create_batch_cage_folders(batches, cageChanges)
 
 # ===================================================================
-# INITIALIZE LOGGING
+# Initialize logging
 # ===================================================================
 processing_start_time <- Sys.time()
 log_file <- file.path(logs_dir, "processing_log.txt")
@@ -115,7 +459,7 @@ log_message <- function(message_text, batch = NULL, cageChange = NULL, phase = N
 log_message("Starting Shannon entropy analysis pipeline")
 
 # ===================================================================
-# LOAD CUSTOM FUNCTIONS AND ANIMAL LISTS
+# Load custom functions and animal group definitions
 # ===================================================================
 source(file.path(working_directory, "E9_SIS_AnimalPos-functions.R"))
 
@@ -123,7 +467,7 @@ sus_animals <- readLines(file.path(raw_data_dir, "sus_animals.csv"))
 con_animals <- readLines(file.path(raw_data_dir, "con_animals.csv"))
 
 # ===================================================================
-# OPTION 1: LOAD EXISTING PROCESSED DATA
+# Option 1: Load preprocessed data
 # ===================================================================
 if (load_existing_data) {
   message("=======================================================================")
@@ -178,7 +522,7 @@ if (load_existing_data) {
 }
 
 # ===================================================================
-# OPTION 2: PROCESS DATA FROM SCRATCH
+# Option 2: Process raw data
 # ===================================================================
 if (!load_existing_data) {
   message("=======================================================================")
@@ -326,7 +670,7 @@ if (!load_existing_data) {
       inactive_phases <- inactive_phases[inactive_phases <= cc4_max_inactive_phase]
     }
     
-    # Loop: Phase-based entropy and probability calculations
+    # Phase-based entropy and occupancy probability calculation
     for (system_id in unique_systems) {
       system_data <- data_preprocessed %>% filter(System == system_id) %>% as_tibble()
       animal_ids <- unique(system_data$AnimalID)
@@ -438,7 +782,7 @@ if (!load_existing_data) {
     }
     
     # -------------------------------------------------------------------
-    # Half-hour processing (FIXED: CC4 filtering applied BEFORE loop)
+    # Half-hour processing (CC4 filtering applied prior to iteration)
     # -------------------------------------------------------------------
     if (analyze_by_halfhour) {
       for (system_id in unique_systems) {
@@ -456,8 +800,8 @@ if (!load_existing_data) {
         if (cageChange == "CC4") {
           valid_halfhours <- system_data %>%
             filter(
-              ConsecActive <= cc4_max_active_phase |
-              ConsecInactive <= cc4_max_inactive_phase
+              (ConsecActive > 0 & ConsecActive <= cc4_max_active_phase) |
+                (ConsecInactive > 0 & ConsecInactive <= cc4_max_inactive_phase)
             ) %>%
             pull(HalfHoursElapsed) %>%
             unique()
@@ -567,7 +911,7 @@ if (!load_existing_data) {
       }
     }
     
-    # Assign Group columns
+    # Assign experimental group labels
     animalPosEntropy <- animalPosEntropy %>%
       mutate(Group = ifelse(AnimalID %in% sus_animals, "sus",
                             ifelse(AnimalID %in% con_animals, "con", "res")))
@@ -577,7 +921,7 @@ if (!load_existing_data) {
                               ifelse(AnimalID %in% con_animals, "con", "res")))
     }
     
-    # Plot phase-based entropy per system and phase
+    # Generate phase-based entropy plots per system
 for (system_id in unique_systems) {
   for (phase in phases) {
     # Insert diagnostics here:
@@ -612,7 +956,7 @@ for (system_id in unique_systems) {
   }
 }
 
-    # Plot half-hour entropy per system and halfhour period
+    # Generate half-hour entropy plots per system
 # -------------------------------------------------------------------
 # Plot half-hour animal entropy (FIXED: uses half-hour data)
 # -------------------------------------------------------------------
@@ -680,7 +1024,7 @@ if (analyze_by_halfhour) {
 }
 
 
-    # Append this batch/cageChange results to global combined tibbles
+    # Append batch-level results to combined datasets
     all_cagePosProb <- bind_rows(all_cagePosProb, cagePosProb)
     all_cagePosEntropy <- bind_rows(all_cagePosEntropy, cagePosEntropy)
     all_animalPosEntropy <- bind_rows(all_animalPosEntropy, animalPosEntropy)
@@ -689,7 +1033,7 @@ if (analyze_by_halfhour) {
       all_animalPosEntropy_halfhour <- bind_rows(all_animalPosEntropy_halfhour, animalPosEntropy_halfhour)
     }
 
-    # Save per-batch CSVs
+    # Save batch-level tables
     write.csv(cagePosProb, file=file.path(current_tables_dir_phase, paste0(batch, "_", cageChange, "_cagePosProb.csv")), row.names=FALSE)
     write.csv(cagePosEntropy, file=file.path(current_tables_dir_phase, paste0(batch, "_", cageChange, "_cagePosEntropy.csv")), row.names=FALSE)
     write.csv(animalPosEntropy, file=file.path(current_tables_dir_phase, paste0(batch, "_", cageChange, "_animalPosEntropy.csv")), row.names=FALSE)
@@ -732,7 +1076,7 @@ if (analyze_by_halfhour) {
 }
 
 # ===================================================================
-# CONSECUTIVE ENTROPY PROCESSING (PHASE-BASED)
+# Consecutive entropy processing (phase-based)
 # ===================================================================
 message("=======================================================================")
 message("PREPROCESSING CONSECUTIVE ENTROPY DATA (PHASE-BASED)")
@@ -767,6 +1111,9 @@ for (i in seq_along(entropy_tibble_names)) {
                             ifelse(AnimalID %in% con_animals, "con", "res")))
   }
   
+  max_consecAct <- 0
+  max_consecInact <- 0
+
   for (change in c("CC1", "CC2", "CC3", "CC4")) {
     if (change != "CC1") {
       entropy_list <- entropy_list %>%
@@ -787,7 +1134,7 @@ for (i in seq_along(entropy_tibble_names)) {
 }
 
 # ===================================================================
-# CONSECUTIVE ENTROPY PROCESSING (HALF-HOUR) - include phase counts
+# Consecutive entropy processing (half-hour resolution with phase alignment)
 # ===================================================================
 if (analyze_by_halfhour) {
   message("=======================================================================")
@@ -808,7 +1155,12 @@ if (analyze_by_halfhour) {
         filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
         csvFilePath <- file.path(preprocessed_data_dir, paste0(filename, "_preprocessed.csv"))
         if (file.exists(csvFilePath)) {
-          temp_data <- read_delim(csvFilePath, delim = ",", show_col_types = FALSE) %>% as_tibble()
+          temp_data <- read_delim(csvFilePath, delim = ",", show_col_types = FALSE) %>%
+            as_tibble() %>%
+            mutate(
+              Batch = if ("Batch" %in% colnames(.)) Batch else batch,
+              CageChange = if ("CageChange" %in% colnames(.)) CageChange else cageChange
+            )
           all_preprocessed <- bind_rows(all_preprocessed, temp_data)
         }
       }
@@ -835,8 +1187,8 @@ if (analyze_by_halfhour) {
   }
 
   # Add ConsecHalfHour and (if available) phase counts to entropy tables
-  max_halfhour_offset <- 0
   for (name in c("consec_cage_entropy_halfhour", "consec_animal_entropy_halfhour")) {
+    max_halfhour_offset <- 0
     entropy_tbl <- if (name == "consec_cage_entropy_halfhour") consec_cage_entropy_halfhour else consec_animal_entropy_halfhour
 
     # add Group for animal table
@@ -912,7 +1264,7 @@ if (analyze_by_halfhour) {
 }
 
 # ===================================================================
-# SAVE CONSECUTIVE ENTROPY TABLES
+# Save consecutive entropy tables
 # ===================================================================
 if (save_tables == TRUE) {
   message("Saving consecutive entropy tables...")
@@ -939,14 +1291,59 @@ if (save_tables == TRUE) {
     message("   ✓ Saved: all_batches_all_cageChanges_consec_animal_entropy_halfhour.csv")
   }
   message("    Location: ", combined_tables_dir)
+  
+  # Also save to analysis_ready structure for clean output
+  message("\n  Saving to analysis_ready structure...")
+  write_analysis_csv(
+    consec_animal_entropy,
+    analysis_derived_phase_dir,
+    prefix = "derived",
+    descriptor = "animal_entropy",
+    level = "phase"
+  )
+  message("   ✓ Saved: derived__animal_entropy__phase.csv")
+  
+  write_analysis_csv(
+    consec_cage_entropy,
+    analysis_derived_phase_dir,
+    prefix = "derived",
+    descriptor = "cage_entropy",
+    level = "phase"
+  )
+  message("   ✓ Saved: derived__cage_entropy__phase.csv")
+  
+  if (analyze_by_halfhour) {
+    write_analysis_csv(
+      consec_animal_entropy_halfhour,
+      analysis_derived_halfhour_dir,
+      prefix = "derived",
+      descriptor = "animal_entropy",
+      level = "halfhour"
+    )
+    message("   ✓ Saved: derived__animal_entropy__halfhour.csv")
+    
+    write_analysis_csv(
+      consec_cage_entropy_halfhour,
+      analysis_derived_halfhour_dir,
+      prefix = "derived",
+      descriptor = "cage_entropy",
+      level = "halfhour"
+    )
+    message("   ✓ Saved: derived__cage_entropy__halfhour.csv")
+  }
+  message("    Location: ", analysis_derived_phase_dir, " / ", analysis_derived_halfhour_dir)
 }
 
 # ===================================================================
-# EXPLORATION METRICS CALCULATION
+# Exploration metric computation
 # ===================================================================
 message("=======================================================================")
 message("PROCESSING EXPLORATION METRICS")
 message("=======================================================================")
+
+max_position_entropy <- log2(8)
+low_entropy_cutoff <- max_position_entropy / 3
+moderate_entropy_cutoff <- 2 * max_position_entropy / 3
 
 consec_animal_entropy <- consec_animal_entropy %>%
   mutate(
@@ -955,8 +1352,8 @@ consec_animal_entropy <- consec_animal_entropy %>%
     exploration_category = case_when(
       is.na(animalEntropy) ~ "No exploration",
       animalEntropy == 0 ~ "Minimal (1 position)",
-      animalEntropy < 1.5 ~ "Low diversity",
-      animalEntropy < 2.5 ~ "Moderate diversity",
+      animalEntropy < low_entropy_cutoff ~ "Low diversity",
+      animalEntropy < moderate_entropy_cutoff ~ "Moderate diversity",
       TRUE ~ "High diversity"
     ),
     exploration_category = factor(exploration_category, 
@@ -972,8 +1369,8 @@ if (analyze_by_halfhour) {
       exploration_category = case_when(
         is.na(animalEntropy) ~ "No exploration",
         animalEntropy == 0 ~ "Minimal (1 position)",
-        animalEntropy < 1.5 ~ "Low diversity",
-        animalEntropy < 2.5 ~ "Moderate diversity",
+        animalEntropy < low_entropy_cutoff ~ "Low diversity",
+        animalEntropy < moderate_entropy_cutoff ~ "Moderate diversity",
         TRUE ~ "High diversity"
       ),
       exploration_category = factor(exploration_category, 
@@ -1026,7 +1423,7 @@ animal_exploration_profile <- consec_animal_entropy %>%
   ) %>% arrange(desc(pct_exploration))
 
 # ===================================================================
-# SAVE EXPLORATION METRICS TABLES
+# Save exploration metrics
 # ===================================================================
 if (save_tables == TRUE) {
   message("Saving enhanced exploration datasets...")
@@ -1059,10 +1456,287 @@ if (save_tables == TRUE) {
             file = file.path(exploration_metrics_dir, "animal_exploration_profiles.csv"),
             row.names = FALSE)
   message("   ✓ Saved: animal_exploration_profiles.csv")
+  
+  # Also save to analysis_ready structure
+  message("\n  Saving exploration summaries to analysis_ready structure...")
+  write_analysis_csv(
+    exploration_summary_phase,
+    analysis_derived_phase_dir,
+    prefix = "summary",
+    descriptor = "animal_exploration_descriptive_statistics",
+    level = "phase"
+  )
+  message("   ✓ Saved: summary__animal_exploration_descriptive_statistics__phase.csv")
+  
+  if(analyze_by_halfhour) {
+    write_analysis_csv(
+      exploration_summary_halfhour,
+      analysis_derived_halfhour_dir,
+      prefix = "summary",
+      descriptor = "animal_exploration_descriptive_statistics",
+      level = "halfhour"
+    )
+    message("   ✓ Saved: summary__animal_exploration_descriptive_statistics__halfhour.csv")
+  }
 }
 
 # ===================================================================
-# GENERATE PLOTS
+# Summary tables
+# ===================================================================
+message("Generating publication-ready summary tables...")
+
+pub_animal_entropy_phase <- make_entropy_summary_table(
+  consec_animal_entropy,
+  entropy_col = "animalEntropy",
+  grouping_vars = c("Group", "Sex", "Phase", "CageChange")
+)
+
+pub_cage_entropy_phase <- make_entropy_summary_table(
+  consec_cage_entropy,
+  entropy_col = "CageEntropy",
+  grouping_vars = c("Sex", "Phase", "CageChange")
+)
+
+pub_exploration_frequency <- consec_animal_entropy %>%
+  dplyr::group_by(Group, Sex, Phase, CageChange) %>%
+  dplyr::summarise(
+    n_observations = dplyr::n(),
+    n_explored = sum(explored, na.rm = TRUE),
+    pct_explored = 100 * n_explored / n_observations,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(pct_explored = round(pct_explored, 2))
+
+if (analyze_by_halfhour) {
+  pub_animal_entropy_halfhour <- make_entropy_summary_table(
+    consec_animal_entropy_halfhour,
+    entropy_col = "animalEntropy",
+    grouping_vars = c("Group", "Sex", "Phase", "CageChange", "ConsecHalfHour")
+  )
+
+  pub_cage_entropy_halfhour <- make_entropy_summary_table(
+    consec_cage_entropy_halfhour,
+    entropy_col = "CageEntropy",
+    grouping_vars = c("Sex", "Phase", "CageChange", "ConsecHalfHour")
+  )
+}
+
+if (save_tables) {
+  readr::write_csv(pub_animal_entropy_phase,
+                   file.path(pub_tables_dir, "Table_1_animal_entropy_phase_summary.csv"))
+  readr::write_csv(pub_cage_entropy_phase,
+                   file.path(pub_tables_dir, "Table_2_cage_entropy_phase_summary.csv"))
+  readr::write_csv(pub_exploration_frequency,
+                   file.path(pub_tables_dir, "Table_3_exploration_frequency_summary.csv"))
+
+
+  if (analyze_by_halfhour) {
+    readr::write_csv(pub_animal_entropy_halfhour,
+                     file.path(pub_tables_dir, "Table_S1_animal_entropy_halfhour_summary.csv"))
+    readr::write_csv(pub_cage_entropy_halfhour,
+                     file.path(pub_tables_dir, "Table_S2_cage_entropy_halfhour_summary.csv"))
+  }
+}
+
+# ===================================================================
+# Model output tables
+# ===================================================================
+message("Generating publication-ready sex-specific model tables...")
+
+animal_model_data <- consec_animal_entropy %>%
+  dplyr::filter(!is.na(animalEntropy), !is.na(Group), !is.na(Sex), !is.na(Phase), !is.na(CageChange)) %>%
+  standardize_group_levels()
+
+cage_model_data <- consec_cage_entropy %>%
+  dplyr::filter(!is.na(CageEntropy), !is.na(Sex), !is.na(Phase), !is.na(CageChange)) %>%
+  standardize_cage_levels()
+
+publication_model_tables <- list()
+publication_emmeans_tables <- list()
+publication_gamm_tables <- list()
+
+for (sex_value in c("male", "female")) {
+
+  animal_entropy_lmm <- fit_sex_specific_animal_lmm(animal_model_data, sex_value)
+  if (!is.null(animal_entropy_lmm)) {
+    animal_entropy_emm <- emmeans::emmeans(animal_entropy_lmm, ~ Group | Phase)
+    animal_entropy_group_contrasts <- emmeans::contrast(
+      animal_entropy_emm, method = "pairwise", adjust = "holm"
+    )
+
+    emm_df <- as.data.frame(animal_entropy_emm) %>%
+      dplyr::mutate(Sex = sex_value, dplyr::across(where(is.numeric), ~ round(.x, 5)))
+
+    eff_df <- as.data.frame(animal_entropy_group_contrasts, infer = TRUE) %>%
+      dplyr::mutate(
+        Sex = sex_value,
+        contrast = stringr::str_replace_all(contrast, " ", ""),
+        dplyr::across(where(is.numeric), ~ round(.x, 5))
+      )
+
+    publication_model_tables[[paste0("animal_entropy_lmm_fixed_", sex_value)]] <-
+      format_lmm_fixed_effects(animal_entropy_lmm, paste0("animal_entropy_lmm_", sex_value))
+
+    publication_model_tables[[paste0("animal_entropy_lmm_anova_", sex_value)]] <-
+      format_type3_anova(animal_entropy_lmm, paste0("animal_entropy_lmm_", sex_value))
+
+    publication_emmeans_tables[[paste0("animal_entropy_emmeans_", sex_value)]] <- emm_df
+    publication_emmeans_tables[[paste0("animal_entropy_contrasts_", sex_value)]] <- eff_df
+  }
+
+  cage_entropy_lmm <- fit_sex_specific_cage_lmm(cage_model_data, sex_value)
+  if (!is.null(cage_entropy_lmm)) {
+    cage_entropy_emm <- emmeans::emmeans(cage_entropy_lmm, ~ Phase)
+    cage_entropy_contrasts <- emmeans::contrast(
+      cage_entropy_emm, method = "pairwise", adjust = "holm"
+    )
+
+    publication_model_tables[[paste0("cage_entropy_lmm_fixed_", sex_value)]] <-
+      format_lmm_fixed_effects(cage_entropy_lmm, paste0("cage_entropy_lmm_", sex_value))
+
+    publication_model_tables[[paste0("cage_entropy_lmm_anova_", sex_value)]] <-
+      format_type3_anova(cage_entropy_lmm, paste0("cage_entropy_lmm_", sex_value))
+
+    publication_emmeans_tables[[paste0("cage_entropy_emmeans_", sex_value)]] <-
+      format_emmeans_table(cage_entropy_emm, paste0("cage_entropy_emmeans_", sex_value))
+
+    publication_emmeans_tables[[paste0("cage_entropy_contrasts_", sex_value)]] <-
+      format_emmeans_table(cage_entropy_contrasts, paste0("cage_entropy_contrasts_", sex_value))
+  }
+
+  if (analyze_by_halfhour) {
+    animal_gamm_data <- consec_animal_entropy_halfhour %>%
+      dplyr::filter(!is.na(animalEntropy), !is.na(Group), !is.na(Sex), !is.na(Phase), !is.na(ConsecHalfHour)) %>%
+      standardize_group_levels()
+
+    gamm_fit <- fit_sex_specific_animal_gamm(animal_gamm_data, sex_value)
+    if (!is.null(gamm_fit)) {
+      publication_gamm_tables[[paste0("animal_entropy_gamm_param_", sex_value)]] <-
+        format_gamm_parametric(gamm_fit, paste0("animal_entropy_gamm_", sex_value))
+
+      publication_gamm_tables[[paste0("animal_entropy_gamm_smooth_", sex_value)]] <-
+        format_gamm_smooths(gamm_fit, paste0("animal_entropy_gamm_", sex_value))
+    }
+  }
+}
+
+# Combine EMM tables for plotting
+animal_entropy_emm_df <- purrr::map_dfr(
+  publication_emmeans_tables[stringr::str_detect(names(publication_emmeans_tables), "animal_entropy_emmeans_")],
+  dplyr::bind_rows
+)
+
+animal_entropy_effects <- purrr::map_dfr(
+  publication_emmeans_tables[stringr::str_detect(names(publication_emmeans_tables), "animal_entropy_contrasts_")],
+  dplyr::bind_rows
+)
+
+# Save model/EMM/GAMM tables for publication if requested
+if (save_tables) {
+  purrr::iwalk(publication_model_tables, ~ readr::write_csv(
+    .x,
+    file.path(pub_tables_dir, paste0("Model_", .y, ".csv"))
+  ))
+
+  purrr::iwalk(publication_emmeans_tables, ~ readr::write_csv(
+    .x,
+    file.path(pub_tables_dir, paste0("EMM_", .y, ".csv"))
+  ))
+
+  purrr::iwalk(publication_gamm_tables, ~ readr::write_csv(
+    .x,
+    file.path(pub_tables_dir, paste0("GAMM_", .y, ".csv"))
+  ))
+  
+  # Also save to analysis_ready structure with consistent naming
+  message("\nSaving model outputs to analysis_ready structure...")
+  purrr::iwalk(publication_model_tables, ~ write_analysis_csv(
+    .x,
+    analysis_model_lmm_dir,
+    prefix = "model",
+    descriptor = .y
+  ))
+  message("   ✓ Saved LMM model tables")
+  
+  purrr::iwalk(publication_emmeans_tables, ~ write_analysis_csv(
+    .x,
+    analysis_model_emm_dir,
+    prefix = "emm",
+    descriptor = .y
+  ))
+  message("   ✓ Saved estimated marginal means tables")
+  
+  purrr::iwalk(publication_gamm_tables, ~ write_analysis_csv(
+    .x,
+    analysis_model_gamm_dir,
+    prefix = "gamm",
+    descriptor = .y
+  ))
+  message("   ✓ Saved GAMM model tables")
+}
+
+# ===================================================================
+# Run manifest
+# ===================================================================
+run_manifest <- tibble::tibble(
+  field = c(
+    "script",
+    "run_time",
+    "load_existing_data",
+    "exclude_homecage",
+    "analyze_by_halfhour",
+    "gamm_rho",
+    "max_position_entropy",
+    "low_entropy_cutoff",
+    "moderate_entropy_cutoff",
+    "filter_cc4_late_phases",
+    "cc4_max_active_phase",
+    "cc4_max_inactive_phase",
+    "n_animal_phase_rows",
+    "n_cage_phase_rows",
+    "n_animal_halfhour_rows",
+    "n_cage_halfhour_rows",
+    "working_directory",
+    "saving_directory"
+  ),
+  value = c(
+    "E9_SIS_AnimalPos-analyzing-shannon v.1.0.1.r",
+    as.character(Sys.time()),
+    as.character(load_existing_data),
+    as.character(exclude_homecage),
+    as.character(analyze_by_halfhour),
+    as.character(gamm_rho),
+    as.character(max_position_entropy),
+    as.character(low_entropy_cutoff),
+    as.character(moderate_entropy_cutoff),
+    as.character(filter_cc4_late_phases),
+    as.character(cc4_max_active_phase),
+    as.character(cc4_max_inactive_phase),
+    as.character(nrow(consec_animal_entropy)),
+    as.character(nrow(consec_cage_entropy)),
+    ifelse(analyze_by_halfhour, as.character(nrow(consec_animal_entropy_halfhour)), NA_character_),
+    ifelse(analyze_by_halfhour, as.character(nrow(consec_cage_entropy_halfhour)), NA_character_),
+    working_directory,
+    saving_directory
+  )
+)
+
+if (save_tables) {
+  readr::write_csv(run_manifest, file.path(pub_tables_dir, "Run_manifest.csv"))
+  
+  # Also save to analysis_ready structure
+  write_analysis_csv(
+    run_manifest,
+    analysis_logs_dir,
+    prefix = "manifest",
+    descriptor = "run_settings_and_counts"
+  )
+}
+
+# ===================================================================
+# Generate exploratory plots
+# These plots are retained for data inspection. Publication figures are
+# generated separately using model-based estimates.
 # ===================================================================
 if (save_plots == TRUE || show_plots == TRUE) {
   message("=======================================================================")
@@ -1346,7 +2020,7 @@ plots <- list()
 }
 
 # ===================================================================
-# ADDITIONAL EXPLORATION & ADVANCED PLOTS
+# Additional exploratory and multivariate visualizations
 # ===================================================================
 message("Generating additional exploration and multivariate plots...")
 
@@ -1420,6 +2094,161 @@ exploration_category_plot <- ggplot(exploration_cat_dist, aes(x = Group, y = pct
 if (save_plots) {
   ggsave(filename = file.path(exploration_metrics_dir, "exploration_category_distribution.svg"),
          exploration_category_plot, width = 12, height = 8, dpi = 300)
+}
+
+# ===================================================================
+# PUBLICATION-READY FIGURES
+# ===================================================================
+message("Generating publication-ready figures...")
+
+animal_entropy_panel <- animal_model_data %>%
+  ggplot2::ggplot(ggplot2::aes(x = Group, y = animalEntropy, colour = Group)) +
+  ggplot2::geom_point(
+    position = ggplot2::position_jitter(width = 0.12, height = 0),
+    size = 0.65,
+    alpha = 0.28
+  ) +
+  ggplot2::geom_pointrange(
+    data = animal_entropy_emm_df,
+    ggplot2::aes(x = Group, y = emmean, ymin = lower.CL, ymax = upper.CL),
+    inherit.aes = FALSE,
+    colour = "black",
+    linewidth = 0.28,
+    size = 0.35
+  ) +
+  ggplot2::facet_grid(Phase ~ Sex) +
+  ggplot2::scale_colour_manual(values = group_cols, breaks = c("con", "res", "sus")) +
+  ggplot2::labs(x = NULL, y = "Individual entropy", title = "Individual spatial entropy") +
+  theme_publication() +
+  ggplot2::theme(legend.position = "none")
+
+cage_entropy_panel <- consec_cage_entropy %>%
+  dplyr::filter(!is.na(CageEntropy), !is.na(Sex), !is.na(Phase)) %>%
+  ggplot2::ggplot(ggplot2::aes(x = CageChange, y = CageEntropy, group = System, colour = System)) +
+  ggplot2::geom_line(linewidth = 0.25, alpha = 0.45) +
+  ggplot2::geom_point(size = 0.8, alpha = 0.55) +
+  ggplot2::stat_summary(ggplot2::aes(group = 1), fun = mean, geom = "line",
+                        colour = "black", linewidth = 0.55) +
+  ggplot2::facet_grid(Phase ~ Sex) +
+  ggplot2::labs(x = NULL, y = "Cage entropy", title = "Group spatial dispersion") +
+  theme_publication() +
+  ggplot2::theme(legend.position = "none")
+
+exploration_frequency_panel <- pub_exploration_frequency %>%
+  ggplot2::ggplot(ggplot2::aes(x = CageChange, y = pct_explored,
+                               colour = Group, group = Group)) +
+  ggplot2::geom_line(linewidth = 0.45) +
+  ggplot2::geom_point(size = 1.1) +
+  ggplot2::facet_grid(Phase ~ Sex) +
+  ggplot2::scale_colour_manual(values = group_cols, breaks = c("con", "res", "sus")) +
+  ggplot2::labs(x = NULL, y = "Exploration (%)", title = "Exploration frequency") +
+  theme_publication() +
+  ggplot2::theme(legend.position = "top")
+
+if (analyze_by_halfhour) {
+  animal_entropy_time_panel <- consec_animal_entropy_halfhour %>%
+    dplyr::filter(!is.na(animalEntropy), !is.na(Group), !is.na(ConsecHalfHour)) %>%
+    dplyr::group_by(Group, Sex, ConsecHalfHour) %>%
+    dplyr::summarise(
+      mean_entropy = mean(animalEntropy, na.rm = TRUE),
+      sem_entropy = sem(animalEntropy),
+      .groups = "drop"
+    ) %>%
+    ggplot2::ggplot(ggplot2::aes(x = ConsecHalfHour, y = mean_entropy,
+                                 colour = Group, fill = Group)) +
+    ggplot2::geom_ribbon(ggplot2::aes(ymin = mean_entropy - sem_entropy,
+                                      ymax = mean_entropy + sem_entropy),
+                         alpha = 0.16, colour = NA) +
+    ggplot2::geom_line(linewidth = 0.45) +
+    ggplot2::facet_grid(Sex ~ .) +
+    ggplot2::scale_colour_manual(values = group_cols, breaks = c("con", "res", "sus")) +
+    ggplot2::scale_fill_manual(values = group_cols, breaks = c("con", "res", "sus")) +
+    ggplot2::labs(x = "Consecutive half-hour", y = "Individual entropy",
+                  title = "Individual entropy over time") +
+    theme_publication() +
+    ggplot2::theme(legend.position = "top")
+}
+
+if (save_plots) {
+  save_pub_plot(animal_entropy_panel, "Fig1A_individual_entropy_phase.svg", width = 90, height = 75)
+  save_pub_plot(cage_entropy_panel, "Fig1B_cage_entropy_phase.svg", width = 90, height = 75)
+  save_pub_plot(exploration_frequency_panel, "Fig1C_exploration_frequency.svg", width = 90, height = 75)
+
+  if (analyze_by_halfhour) {
+    save_pub_plot(animal_entropy_time_panel, "Fig2A_individual_entropy_timecourse.svg", width = 180, height = 80)
+  }
+
+  figure_1 <- (animal_entropy_panel | cage_entropy_panel | exploration_frequency_panel) +
+    patchwork::plot_annotation(tag_levels = "A")
+
+  save_pub_multipanel(figure_1, "Figure_1_entropy_exploration_overview.svg", width = 180, height = 80)
+
+  if (analyze_by_halfhour) {
+    figure_2 <- animal_entropy_time_panel +
+      patchwork::plot_annotation(tag_levels = "A")
+
+    save_pub_multipanel(figure_2, "Figure_2_entropy_timecourse.svg", width = 180, height = 80)
+  }
+  
+  # Also save to analysis_ready structure
+  message("\nSaving figures to analysis_ready structure...")
+  save_analysis_figure(
+    animal_entropy_panel,
+    analysis_figures_model_dir,
+    prefix = "figure",
+    descriptor = "fig1a_individual_entropy_phase",
+    width = 90, height = 75
+  )
+  message("   ✓ Saved: figure__fig1a_individual_entropy_phase.svg")
+  
+  save_analysis_figure(
+    cage_entropy_panel,
+    analysis_figures_model_dir,
+    prefix = "figure",
+    descriptor = "fig1b_cage_entropy_phase",
+    width = 90, height = 75
+  )
+  message("   ✓ Saved: figure__fig1b_cage_entropy_phase.svg")
+  
+  save_analysis_figure(
+    exploration_frequency_panel,
+    analysis_figures_model_dir,
+    prefix = "figure",
+    descriptor = "fig1c_exploration_frequency",
+    width = 90, height = 75
+  )
+  message("   ✓ Saved: figure__fig1c_exploration_frequency.svg")
+  
+  if (analyze_by_halfhour) {
+    save_analysis_figure(
+      animal_entropy_time_panel,
+      analysis_figures_model_dir,
+      prefix = "figure",
+      descriptor = "fig2a_individual_entropy_timecourse",
+      width = 180, height = 80
+    )
+    message("   ✓ Saved: figure__fig2a_individual_entropy_timecourse.svg")
+  }
+  
+  save_analysis_figure(
+    figure_1,
+    analysis_figures_multipanel_dir,
+    prefix = "figure",
+    descriptor = "figure_1_entropy_exploration_overview",
+    width = 180, height = 80
+  )
+  message("   ✓ Saved: figure__figure_1_entropy_exploration_overview.svg")
+  
+  if (analyze_by_halfhour) {
+    save_analysis_figure(
+      figure_2,
+      analysis_figures_multipanel_dir,
+      prefix = "figure",
+      descriptor = "figure_2_entropy_timecourse",
+      width = 180, height = 80
+    )
+    message("   ✓ Saved: figure__figure_2_entropy_timecourse.svg")
+  }
 }
 
 # ===================================================================
@@ -2632,3 +3461,9 @@ log_message("Saved metadata and session info.")
 message("=======================================================================")
 message(" ENTIRE ENTROPY ANALYSIS PIPELINE COMPLETE! ")
 message("=======================================================================")
+message("=======================================================================")
+message("PUBLICATION-READY OUTPUT COMPLETE")
+message("=======================================================================")
+message("Publication tables: ", pub_tables_dir)
+message("Single-panel figures: ", pub_figure_panels_dir)
+message("Multi-panel figures: ", pub_multipanel_dir)
