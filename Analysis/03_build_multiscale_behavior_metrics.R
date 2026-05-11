@@ -3,8 +3,8 @@
 # MMMSociability
 # ================================================================
 # Goal:
-#   Produce the missing canonical all_behavior_metrics.csv files used by
-#   downstream behavioral dynamics scripts.
+#   Produce canonical all_behavior_metrics.csv files used by downstream
+#   behavioral dynamics scripts.
 #
 # Input:
 #   preprocessed_data/*_preprocessed.csv
@@ -14,23 +14,15 @@
 #   analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv
 #   analysis_ready/03_derived_metrics/qc/multiscale_behavior_metrics_qc.csv
 #
-# Metrics:
-#   Movement:
-#     Number of RFID position transitions per animal and bin.
-#   MovementDistance:
-#     Manhattan grid distance moved across RFID positions per animal and bin.
-#   Entropy:
-#     Shannon entropy of position occupancy within bin, based on occupancy seconds.
-#   Proximity:
-#     Mean same-position dyadic contact fraction for each focal animal within bin.
-#   AdjacentProximity:
-#     Mean adjacent-position dyadic fraction for each focal animal within bin.
-#   MeanGridDistanceToOthers:
-#     Duration-weighted mean grid distance from focal animal to cage mates.
-#
-# Interpretation caveat:
-#   RFID position bins are coarse. Proximity means co-occupancy/contact proxy,
-#   not direct physical interaction.
+# Key definitions:
+#   Movement                  = number of RFID position transitions per animal/bin
+#   MovementDistance          = summed Manhattan grid distance moved per animal/bin
+#   Entropy                   = Shannon entropy of position occupancy seconds
+#   ProximitySeconds          = summed same-position dyadic contact seconds
+#   ProximityFraction         = ProximitySeconds / dyadic_observation_seconds
+#   Proximity                 = backward-compatible alias for ProximityFraction
+#   AdjacentProximitySeconds  = summed adjacent-position dyadic seconds
+#   AdjacentProximityFraction = AdjacentProximitySeconds / dyadic_observation_seconds
 # ================================================================
 
 suppressPackageStartupMessages({
@@ -52,7 +44,6 @@ source("Functions/behavioral_dynamics_helpers.R")
 input_dir <- "preprocessed_data"
 output_root <- "analysis_ready/03_derived_metrics"
 
-# Additional scales can be added here without changing downstream logic.
 bin_specs <- tibble::tribble(
   ~bin_label, ~bin_size_sec,
   "10sec",    10,
@@ -62,11 +53,7 @@ bin_specs <- tibble::tribble(
   "30min",    1800
 )
 
-# Optional metadata file with AnimalID/AnimalNum plus Group/Sex columns.
-# Leave NULL if Group and Sex are already present or unavailable.
 metadata_file <- NULL
-
-# Long gaps are retained but flagged in QC. They can be excluded downstream.
 long_gap_threshold_sec <- 3600
 
 ensure_dir(output_root)
@@ -102,13 +89,16 @@ calc_entropy <- function(seconds_by_position) {
   -sum(p * log2(p))
 }
 
+safe_divide <- function(num, den) {
+  ifelse(is.finite(den) & den > 0, num / den, NA_real_)
+}
+
 # ------------------------------------------------
 # LOAD PREPROCESSED POSITION DATA
 # ------------------------------------------------
 
 read_preprocessed_position_file <- function(path) {
   dat <- readr::read_csv(path, show_col_types = FALSE)
-
   required <- c("DateTime", "AnimalID", "System", "PositionID")
   missing <- setdiff(required, names(dat))
   if (length(missing) > 0) {
@@ -140,14 +130,11 @@ read_preprocessed_position_file <- function(path) {
 }
 
 files <- list.files(input_dir, pattern = "_preprocessed\\.csv$", full.names = TRUE)
-if (length(files) == 0) {
-  stop("No preprocessed files found in ", input_dir, call. = FALSE)
-}
+if (length(files) == 0) stop("No preprocessed files found in ", input_dir, call. = FALSE)
 
 message("Found ", length(files), " preprocessed files.")
 all_pos <- map_dfr(files, read_preprocessed_position_file)
 
-# Optional metadata merge.
 if (!is.null(metadata_file) && file.exists(metadata_file)) {
   meta <- read_behavior_table(metadata_file)
   meta_animal_col <- first_existing_col(meta, c("AnimalID", "AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID"), TRUE, "metadata animal column")
@@ -164,22 +151,33 @@ if (!is.null(metadata_file) && file.exists(metadata_file)) {
 
   all_pos <- all_pos %>%
     left_join(meta_small, by = "AnimalID") %>%
-    mutate(
-      Group = coalesce(Group, MetaGroup),
-      Sex = coalesce(Sex, MetaSex)
-    ) %>%
+    mutate(Group = coalesce(Group, MetaGroup), Sex = coalesce(Sex, MetaSex)) %>%
     select(-MetaGroup, -MetaSex)
 }
 
 # ------------------------------------------------
-# INTERVAL-LEVEL OCCUPANCY AND DYADIC PROXIMITY
+# INTERVAL RECONSTRUCTION
 # ------------------------------------------------
+
+last_meta_before <- function(dat_sys, t0) {
+  dat_sys %>%
+    filter(DateTime <= t0) %>%
+    slice_tail(n = 1) %>%
+    transmute(
+      SourceFile = first(SourceFile),
+      Batch = first(Batch),
+      CageChange = first(CageChange),
+      System = first(System),
+      Phase = first(Phase),
+      ConsecActive = first(ConsecActive),
+      ConsecInactive = first(ConsecInactive)
+    )
+}
 
 make_occupancy_intervals_one_system <- function(dat_sys) {
   dat_sys <- dat_sys %>% arrange(DateTime, AnimalID)
   animals <- sort(unique(dat_sys$AnimalID))
   event_times <- sort(unique(dat_sys$DateTime))
-
   if (length(animals) == 0 || length(event_times) < 2) return(tibble())
 
   out <- vector("list", length(event_times) - 1)
@@ -203,32 +201,22 @@ make_occupancy_intervals_one_system <- function(dat_sys) {
       }
     }
 
-    interval_meta <- dat_sys %>%
-      filter(DateTime <= t0) %>%
-      slice_tail(n = 1) %>%
-      transmute(
-        SourceFile = first(SourceFile),
-        Batch = first(Batch),
-        CageChange = first(CageChange),
-        System = first(System),
-        Phase = first(Phase),
-        ConsecActive = first(ConsecActive),
-        ConsecInactive = first(ConsecInactive)
-      )
+    valid <- is.finite(current_pos) & current_pos > 0
+    if (!any(valid)) next
 
+    interval_meta <- last_meta_before(dat_sys, t0)
     out[[i]] <- tibble(
-      AnimalNum = names(current_pos),
-      AnimalID = names(current_pos),
-      PositionID = as.integer(current_pos),
-      Group = current_group[names(current_pos)],
-      Sex = current_sex[names(current_pos)],
+      AnimalNum = names(current_pos)[valid],
+      AnimalID = names(current_pos)[valid],
+      PositionID = as.integer(current_pos[valid]),
+      Group = current_group[names(current_pos)[valid]],
+      Sex = current_sex[names(current_pos)[valid]],
       IntervalStart = t0,
       IntervalEnd = t1,
       DurationSec = duration_sec,
       LongGap = duration_sec > long_gap_threshold_sec
     ) %>%
-      filter(is.finite(PositionID), PositionID > 0) %>%
-      bind_cols(interval_meta[rep(1, sum(is.finite(current_pos) & current_pos > 0)), ])
+      bind_cols(interval_meta[rep(1, sum(valid)), ])
   }
 
   bind_rows(out)
@@ -263,10 +251,8 @@ make_movement_events <- function(pos_tbl) {
 make_dyadic_intervals_one_system <- function(dat_sys) {
   dat_sys <- dat_sys %>% arrange(DateTime, AnimalID)
   animals <- sort(unique(dat_sys$AnimalID))
-  if (length(animals) < 2) return(tibble())
-
   event_times <- sort(unique(dat_sys$DateTime))
-  if (length(event_times) < 2) return(tibble())
+  if (length(animals) < 2 || length(event_times) < 2) return(tibble())
 
   animal_pairs <- combn(animals, 2, simplify = FALSE)
   out <- vector("list", length(event_times) - 1)
@@ -285,28 +271,15 @@ make_dyadic_intervals_one_system <- function(dat_sys) {
       }
     }
 
-    interval_meta <- dat_sys %>%
-      filter(DateTime <= t0) %>%
-      slice_tail(n = 1) %>%
-      transmute(
-        SourceFile = first(SourceFile),
-        Batch = first(Batch),
-        CageChange = first(CageChange),
-        System = first(System),
-        Phase = first(Phase),
-        ConsecActive = first(ConsecActive),
-        ConsecInactive = first(ConsecInactive)
-      )
-
     pair_tbl <- map_dfr(animal_pairs, function(p) {
       pos_a <- current_pos[p[1]]
       pos_b <- current_pos[p[2]]
       if (!is.finite(pos_a) || !is.finite(pos_b)) return(tibble())
       tibble(Focal = p[1], Partner = p[2], PositionID_A = as.integer(pos_a), PositionID_B = as.integer(pos_b))
     })
-
     if (nrow(pair_tbl) == 0) next
 
+    interval_meta <- last_meta_before(dat_sys, t0)
     out[[i]] <- pair_tbl %>%
       mutate(
         IntervalStart = t0,
@@ -343,8 +316,11 @@ dyadic_intervals <- all_pos %>%
 add_time_bin <- function(dat, time_col, bin_size_sec) {
   dat %>%
     mutate(
-      BinStart = as.POSIXct(floor(as.numeric(.data[[time_col]]) / bin_size_sec) * bin_size_sec,
-                            origin = "1970-01-01", tz = "UTC")
+      BinStart = as.POSIXct(
+        floor(as.numeric(.data[[time_col]]) / bin_size_sec) * bin_size_sec,
+        origin = "1970-01-01",
+        tz = "UTC"
+      )
     )
 }
 
@@ -374,7 +350,6 @@ summarise_occupancy_by_bin <- function(bin_size_sec) {
 
 summarise_movement_by_bin <- function(bin_size_sec) {
   if (nrow(movement_events) == 0) return(tibble())
-
   movement_events %>%
     add_time_bin("EventTime", bin_size_sec) %>%
     mutate(BinSizeSec = bin_size_sec) %>%
@@ -415,13 +390,33 @@ summarise_proximity_by_bin <- function(bin_size_sec) {
     group_by(SourceFile, Batch, CageChange, System, Phase, BinSizeSec, BinStart, AnimalNum = Focal) %>%
     summarise(
       dyadic_observation_seconds = sum(DurationSec, na.rm = TRUE),
-      same_position_seconds = sum(same_position_seconds, na.rm = TRUE),
-      adjacent_seconds = sum(adjacent_seconds, na.rm = TRUE),
-      Proximity = same_position_seconds / dyadic_observation_seconds,
-      AdjacentProximity = adjacent_seconds / dyadic_observation_seconds,
-      MeanGridDistanceToOthers = sum(weighted_grid_distance, na.rm = TRUE) / dyadic_observation_seconds,
+      ProximitySeconds = sum(same_position_seconds, na.rm = TRUE),
+      AdjacentProximitySeconds = sum(adjacent_seconds, na.rm = TRUE),
+      ProximityFraction = safe_divide(ProximitySeconds, dyadic_observation_seconds),
+      AdjacentProximityFraction = safe_divide(AdjacentProximitySeconds, dyadic_observation_seconds),
+      Proximity = ProximityFraction,
+      AdjacentProximity = AdjacentProximityFraction,
+      MeanGridDistanceToOthers = safe_divide(sum(weighted_grid_distance, na.rm = TRUE), dyadic_observation_seconds),
       n_dyadic_intervals = n(),
       .groups = "drop"
+    )
+}
+
+standardize_metric_output <- function(out, bin_label) {
+  out %>%
+    mutate(
+      Movement = replace_na(Movement, 0),
+      MovementDistance = replace_na(MovementDistance, 0),
+      ProximitySeconds = replace_na(ProximitySeconds, NA_real_),
+      ProximityFraction = replace_na(ProximityFraction, NA_real_),
+      AdjacentProximitySeconds = replace_na(AdjacentProximitySeconds, NA_real_),
+      AdjacentProximityFraction = replace_na(AdjacentProximityFraction, NA_real_),
+      Proximity = ProximityFraction,
+      AdjacentProximity = AdjacentProximityFraction,
+      MeanGridDistanceToOthers = replace_na(MeanGridDistanceToOthers, NA_real_),
+      Group = if_else(is.na(Group) | Group == "", "All", Group),
+      Sex = if_else(is.na(Sex) | Sex == "", "All", Sex),
+      BinLabel = bin_label
     )
 }
 
@@ -435,23 +430,17 @@ build_bin_metrics <- function(bin_label, bin_size_sec) {
   out <- occ %>%
     left_join(mov, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "BinSizeSec", "BinStart", "AnimalNum", "AnimalID")) %>%
     left_join(prox, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "BinSizeSec", "BinStart", "AnimalNum")) %>%
-    mutate(
-      Movement = replace_na(Movement, 0),
-      MovementDistance = replace_na(MovementDistance, 0),
-      Proximity = replace_na(Proximity, NA_real_),
-      AdjacentProximity = replace_na(AdjacentProximity, NA_real_),
-      MeanGridDistanceToOthers = replace_na(MeanGridDistanceToOthers, NA_real_),
-      Group = if_else(is.na(Group) | Group == "", "All", Group),
-      Sex = if_else(is.na(Sex) | Sex == "", "All", Sex),
-      BinLabel = bin_label
-    ) %>%
+    standardize_metric_output(bin_label) %>%
     select(
       AnimalNum, AnimalID, Batch, CageChange, System, Group, Sex, Phase,
       BinLabel, BinSizeSec, BinStart, TimeIndex,
-      Movement, MovementDistance, Proximity, AdjacentProximity,
-      MeanGridDistanceToOthers, Entropy, DominantPosition, n_positions_visited,
-      observation_seconds, dyadic_observation_seconds, same_position_seconds,
-      adjacent_seconds, n_dyadic_intervals, SourceFile
+      Movement, MovementDistance,
+      Proximity, ProximitySeconds, ProximityFraction,
+      AdjacentProximity, AdjacentProximitySeconds, AdjacentProximityFraction,
+      MeanGridDistanceToOthers,
+      Entropy, DominantPosition, n_positions_visited,
+      observation_seconds, dyadic_observation_seconds, n_dyadic_intervals,
+      SourceFile
     ) %>%
     arrange(Batch, CageChange, System, AnimalNum, BinStart)
 
@@ -465,13 +454,7 @@ build_phase_metrics <- function() {
   message("Aggregating animal-level metrics by phase...")
 
   occ <- occupancy_intervals %>%
-    mutate(
-      PhaseNumber = case_when(
-        Phase == "Active" ~ ConsecActive,
-        Phase == "Inactive" ~ ConsecInactive,
-        TRUE ~ NA_integer_
-      )
-    ) %>%
+    mutate(PhaseNumber = case_when(Phase == "Active" ~ ConsecActive, Phase == "Inactive" ~ ConsecInactive, TRUE ~ NA_integer_)) %>%
     group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, AnimalNum, AnimalID, Group, Sex, PositionID) %>%
     summarise(PositionSeconds = sum(DurationSec, na.rm = TRUE), .groups = "drop") %>%
     group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, AnimalNum, AnimalID, Group, Sex) %>%
@@ -484,27 +467,13 @@ build_phase_metrics <- function() {
     )
 
   mov <- movement_events %>%
-    mutate(
-      PhaseNumber = case_when(
-        Phase == "Active" ~ ConsecActive,
-        Phase == "Inactive" ~ ConsecInactive,
-        TRUE ~ NA_integer_
-      )
-    ) %>%
+    mutate(PhaseNumber = case_when(Phase == "Active" ~ ConsecActive, Phase == "Inactive" ~ ConsecInactive, TRUE ~ NA_integer_)) %>%
     group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, AnimalNum, AnimalID) %>%
-    summarise(
-      Movement = sum(MovementEvent, na.rm = TRUE),
-      MovementDistance = sum(MovementDistanceEvent, na.rm = TRUE),
-      .groups = "drop"
-    )
+    summarise(Movement = sum(MovementEvent, na.rm = TRUE), MovementDistance = sum(MovementDistanceEvent, na.rm = TRUE), .groups = "drop")
 
   prox <- dyadic_intervals %>%
     mutate(
-      PhaseNumber = case_when(
-        Phase == "Active" ~ ConsecActive,
-        Phase == "Inactive" ~ ConsecInactive,
-        TRUE ~ NA_integer_
-      ),
+      PhaseNumber = case_when(Phase == "Active" ~ ConsecActive, Phase == "Inactive" ~ ConsecInactive, TRUE ~ NA_integer_),
       same_position_seconds = if_else(same_position, DurationSec, 0),
       adjacent_seconds = if_else(adjacent_position, DurationSec, 0),
       weighted_grid_distance = grid_distance * DurationSec
@@ -514,11 +483,7 @@ build_phase_metrics <- function() {
     bind_rows(
       dyadic_intervals %>%
         mutate(
-          PhaseNumber = case_when(
-            Phase == "Active" ~ ConsecActive,
-            Phase == "Inactive" ~ ConsecInactive,
-            TRUE ~ NA_integer_
-          ),
+          PhaseNumber = case_when(Phase == "Active" ~ ConsecActive, Phase == "Inactive" ~ ConsecInactive, TRUE ~ NA_integer_),
           same_position_seconds = if_else(same_position, DurationSec, 0),
           adjacent_seconds = if_else(adjacent_position, DurationSec, 0),
           weighted_grid_distance = grid_distance * DurationSec
@@ -530,11 +495,13 @@ build_phase_metrics <- function() {
     group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, AnimalNum = Focal) %>%
     summarise(
       dyadic_observation_seconds = sum(DurationSec, na.rm = TRUE),
-      same_position_seconds = sum(same_position_seconds, na.rm = TRUE),
-      adjacent_seconds = sum(adjacent_seconds, na.rm = TRUE),
-      Proximity = same_position_seconds / dyadic_observation_seconds,
-      AdjacentProximity = adjacent_seconds / dyadic_observation_seconds,
-      MeanGridDistanceToOthers = sum(weighted_grid_distance, na.rm = TRUE) / dyadic_observation_seconds,
+      ProximitySeconds = sum(same_position_seconds, na.rm = TRUE),
+      AdjacentProximitySeconds = sum(adjacent_seconds, na.rm = TRUE),
+      ProximityFraction = safe_divide(ProximitySeconds, dyadic_observation_seconds),
+      AdjacentProximityFraction = safe_divide(AdjacentProximitySeconds, dyadic_observation_seconds),
+      Proximity = ProximityFraction,
+      AdjacentProximity = AdjacentProximityFraction,
+      MeanGridDistanceToOthers = safe_divide(sum(weighted_grid_distance, na.rm = TRUE), dyadic_observation_seconds),
       n_dyadic_intervals = n(),
       .groups = "drop"
     )
@@ -546,22 +513,18 @@ build_phase_metrics <- function() {
     arrange(Phase, PhaseNumber, .by_group = TRUE) %>%
     mutate(TimeIndex = row_number() - 1L) %>%
     ungroup() %>%
-    mutate(
-      Movement = replace_na(Movement, 0),
-      MovementDistance = replace_na(MovementDistance, 0),
-      Group = if_else(is.na(Group) | Group == "", "All", Group),
-      Sex = if_else(is.na(Sex) | Sex == "", "All", Sex),
-      BinLabel = "phase",
-      BinSizeSec = NA_real_,
-      BinStart = as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
-    ) %>%
+    mutate(BinSizeSec = NA_real_, BinStart = as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")) %>%
+    standardize_metric_output("phase") %>%
     select(
       AnimalNum, AnimalID, Batch, CageChange, System, Group, Sex, Phase,
       PhaseNumber, BinLabel, BinSizeSec, BinStart, TimeIndex,
-      Movement, MovementDistance, Proximity, AdjacentProximity,
-      MeanGridDistanceToOthers, Entropy, DominantPosition, n_positions_visited,
-      observation_seconds, dyadic_observation_seconds, same_position_seconds,
-      adjacent_seconds, n_dyadic_intervals, SourceFile
+      Movement, MovementDistance,
+      Proximity, ProximitySeconds, ProximityFraction,
+      AdjacentProximity, AdjacentProximitySeconds, AdjacentProximityFraction,
+      MeanGridDistanceToOthers,
+      Entropy, DominantPosition, n_positions_visited,
+      observation_seconds, dyadic_observation_seconds, n_dyadic_intervals,
+      SourceFile
     ) %>%
     arrange(Batch, CageChange, System, AnimalNum, TimeIndex)
 
@@ -575,11 +538,7 @@ build_phase_metrics <- function() {
 # WRITE OUTPUTS
 # ------------------------------------------------
 
-all_bin_outputs <- pmap(
-  list(bin_specs$bin_label, bin_specs$bin_size_sec),
-  build_bin_metrics
-)
-
+all_bin_outputs <- pmap(list(bin_specs$bin_label, bin_specs$bin_size_sec), build_bin_metrics)
 phase_output <- build_phase_metrics()
 
 qc_tbl <- bind_rows(
@@ -592,7 +551,8 @@ qc_tbl <- bind_rows(
       n_cage_changes = n_distinct(dat$CageChange),
       n_systems = n_distinct(dat$System),
       total_observation_hours = sum(dat$observation_seconds, na.rm = TRUE) / 3600,
-      missing_proximity_fraction = mean(is.na(dat$Proximity))
+      missing_proximity_fraction = mean(is.na(dat$ProximityFraction)),
+      missing_proximity_seconds = mean(is.na(dat$ProximitySeconds))
     )
   }),
   tibble(
@@ -603,7 +563,8 @@ qc_tbl <- bind_rows(
     n_cage_changes = n_distinct(phase_output$CageChange),
     n_systems = n_distinct(phase_output$System),
     total_observation_hours = sum(phase_output$observation_seconds, na.rm = TRUE) / 3600,
-    missing_proximity_fraction = mean(is.na(phase_output$Proximity))
+    missing_proximity_fraction = mean(is.na(phase_output$ProximityFraction)),
+    missing_proximity_seconds = mean(is.na(phase_output$ProximitySeconds))
   )
 )
 
