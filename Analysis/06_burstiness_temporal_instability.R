@@ -6,16 +6,11 @@
 #   Quantify whether stress changes the temporal structure of
 #   movement / entropy / proximity beyond mean-level effects.
 #
-# Key outputs:
-#   - RMSSD
-#   - coefficient of variation
-#   - Fano factor
-#   - lag-1 autocorrelation
-#   - burst-amplitude metrics
+# Input expectation:
+#   Run Analysis/03_build_multiscale_behavior_metrics.R first.
 #
-# Recommended interpretation:
-#   Higher RMSSD/Fano/CV with lower ACF1 may indicate more
-#   fragmented or unstable behavior.
+# Recommended scale:
+#   1–5 min bins. Phase-level data are too coarse for RMSSD/ACF/burstiness.
 # ================================================================
 
 suppressPackageStartupMessages({
@@ -24,6 +19,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(purrr)
   library(readr)
+  library(zoo)
 })
 
 source("Functions/behavioral_dynamics_helpers.R")
@@ -32,15 +28,22 @@ source("Functions/behavioral_dynamics_helpers.R")
 # USER INPUT
 # ------------------------------------------------
 
-input_file <- "analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv"
-output_dir <- "analysis_ready/06_behavioral_dynamics/burstiness"
+bin_level <- "5min_based"
+input_file <- file.path("analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
+output_dir <- file.path("analysis_ready/06_behavioral_dynamics/burstiness", bin_level)
+
+# Prefer normalized proximity for temporal instability because raw contact
+# seconds scale with bin size. Falls back to Proximity if ProximityFraction is absent.
+proximity_col <- "ProximityFraction"
 
 # ------------------------------------------------
 # LOAD + STANDARDIZE
 # ------------------------------------------------
 
 raw_dat <- read_behavior_table(input_file)
-behav <- standardize_behavior_columns(raw_dat)
+if (!proximity_col %in% names(raw_dat)) proximity_col <- "Proximity"
+
+behav <- standardize_behavior_columns(raw_dat, proximity_col = proximity_col)
 
 ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
@@ -64,19 +67,17 @@ long_dat <- behav %>%
 instability_tbl <- long_dat %>%
   group_by(Group, Sex, Phase, CageChange, AnimalNum, Metric) %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
-  summarise(calc_instability_metrics(Value), .groups = "drop")
+  summarise(calc_instability_metrics(Value), .groups = "drop") %>%
+  mutate(BinLevel = bin_level, ProximityInput = proximity_col)
 
-write_table(
-  instability_tbl,
-  file.path(output_dir, "tables", "burstiness_metrics_per_animal.csv")
-)
+write_table(instability_tbl, file.path(output_dir, "tables", "burstiness_metrics_per_animal.csv"))
 
 # ------------------------------------------------
 # GROUP SUMMARY
 # ------------------------------------------------
 
 group_summary <- instability_tbl %>%
-  group_by(Group, Sex, Phase, CageChange, Metric) %>%
+  group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, Metric) %>%
   summarise(
     across(
       c(mean, cv, fano, rmssd, acf1),
@@ -88,10 +89,7 @@ group_summary <- instability_tbl %>%
     .groups = "drop"
   )
 
-write_table(
-  group_summary,
-  file.path(output_dir, "tables", "burstiness_group_summary.csv")
-)
+write_table(group_summary, file.path(output_dir, "tables", "burstiness_group_summary.csv"))
 
 # ------------------------------------------------
 # PLOTS
@@ -100,7 +98,6 @@ write_table(
 plot_metrics <- c("rmssd", "cv", "fano", "acf1")
 
 for (metric_name in plot_metrics) {
-
   p <- instability_tbl %>%
     ggplot(aes(x = Group, y = .data[[metric_name]], fill = Group)) +
     geom_violin(alpha = 0.5, linewidth = 0.2, trim = FALSE) +
@@ -108,6 +105,7 @@ for (metric_name in plot_metrics) {
     facet_grid(Metric ~ Phase, scales = "free_y") +
     labs(
       title = paste0(toupper(metric_name), " behavioral instability"),
+      subtitle = paste0("Bin level: ", bin_level, "; proximity input: ", proximity_col),
       y = metric_name,
       x = NULL
     ) +
@@ -129,22 +127,13 @@ rolling_tbl <- long_dat %>%
   group_by(Group, Sex, Phase, CageChange, AnimalNum, Metric) %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   mutate(
-    rolling_sd = zoo::rollapply(Value, width = 3, FUN = sd,
-                                align = "right", fill = NA, na.rm = TRUE),
-    rolling_rmssd = zoo::rollapply(
-      Value,
-      width = 4,
-      FUN = function(x) calc_rmssd(x),
-      align = "right",
-      fill = NA
-    )
+    rolling_sd = zoo::rollapply(Value, width = 3, FUN = sd, align = "right", fill = NA, na.rm = TRUE),
+    rolling_rmssd = zoo::rollapply(Value, width = 4, FUN = calc_rmssd, align = "right", fill = NA)
   ) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(BinLevel = bin_level, ProximityInput = proximity_col)
 
-write_table(
-  rolling_tbl,
-  file.path(output_dir, "tables", "rolling_instability_metrics.csv")
-)
+write_table(rolling_tbl, file.path(output_dir, "tables", "rolling_instability_metrics.csv"))
 
 p_roll <- rolling_tbl %>%
   group_by(Group, Metric, Phase, TimeIndex) %>%
@@ -155,23 +144,16 @@ p_roll <- rolling_tbl %>%
   ) %>%
   ggplot(aes(TimeIndex, mean_rmssd, colour = Group, fill = Group)) +
   geom_line(linewidth = 0.5) +
-  geom_ribbon(aes(ymin = mean_rmssd - sem_rmssd,
-                  ymax = mean_rmssd + sem_rmssd),
-              alpha = 0.2,
-              linewidth = 0) +
+  geom_ribbon(aes(ymin = mean_rmssd - sem_rmssd, ymax = mean_rmssd + sem_rmssd), alpha = 0.2, linewidth = 0) +
   facet_grid(Metric ~ Phase, scales = "free_y") +
   labs(
     title = "Temporal evolution of behavioral instability",
+    subtitle = paste0("Bin level: ", bin_level),
     y = "Rolling RMSSD",
-    x = "Time"
+    x = "Time bin"
   ) +
   make_nature_theme()
 
-save_plot_svg_pdf(
-  p_roll,
-  file.path(output_dir, "figures", "rolling_rmssd_timecourse"),
-  width = 180,
-  height = 140
-)
+save_plot_svg_pdf(p_roll, file.path(output_dir, "figures", "rolling_rmssd_timecourse"), width = 180, height = 140)
 
 message("Burstiness analysis complete.")
