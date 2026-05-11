@@ -6,13 +6,12 @@
 #   Test whether early movement / entropy / proximity dynamics predict
 #   later stress burden or phenotype labels.
 #
-# Main use cases:
-#   1) continuous endpoint: stress_z, corticosterone_delta, sucrose_preference
-#   2) binary endpoint: SUS vs RES, high vs low stress burden
+# Input expectation:
+#   Run Analysis/03_build_multiscale_behavior_metrics.R first.
 #
-# Evidence level:
-#   This script is intended for exploratory and cross-validated prediction.
-#   It avoids claiming prediction from raw correlations alone.
+# Recommended scale:
+#   10 min default. This balances temporal resolution with noise.
+#   Use 5min_based as sensitivity analysis.
 # ================================================================
 
 suppressPackageStartupMessages({
@@ -31,8 +30,9 @@ source("Functions/behavioral_dynamics_helpers.R")
 # USER INPUT
 # ------------------------------------------------
 
-input_file <- "analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv"
-output_dir <- "analysis_ready/06_behavioral_dynamics/early_prediction"
+bin_level <- "10min_based"
+input_file <- file.path("analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
+output_dir <- file.path("analysis_ready/06_behavioral_dynamics/early_prediction", bin_level)
 
 # Optional endpoint file. If NULL or missing, the script will try to use endpoints
 # already present in input_file.
@@ -41,12 +41,11 @@ endpoint_file <- NULL
 # Endpoint column to predict. Change this to your real stress score column.
 outcome_col <- "stress_z_score"
 
-# Early window definition. The default keeps the first available active-phase window
-# per animal/cage-change if a phase variable exists.
+# Early window definition. Default: first active-phase bins per animal/cage-change.
 early_phase_pattern <- "active|dark|night"
 max_early_bins_per_animal <- 4
 
-# Optional manual overrides. Leave NULL for auto-detection.
+# Use normalized proximity when available.
 animal_col <- NULL
 time_col <- NULL
 group_col <- NULL
@@ -55,13 +54,15 @@ phase_col <- NULL
 cage_col <- NULL
 movement_col <- NULL
 entropy_col <- NULL
-proximity_col <- NULL
+proximity_col <- "ProximityFraction"
 
 # ------------------------------------------------
 # LOAD + STANDARDIZE
 # ------------------------------------------------
 
 raw_dat <- read_behavior_table(input_file)
+if (!proximity_col %in% names(raw_dat)) proximity_col <- "Proximity"
+
 behav <- standardize_behavior_columns(
   raw_dat,
   animal_col = animal_col,
@@ -85,11 +86,10 @@ ensure_dir(file.path(output_dir, "figures"))
 
 has_active_phase <- any(str_detect(str_to_lower(as.character(behav$Phase)), early_phase_pattern))
 
-if (has_active_phase) {
-  early_dat <- behav %>%
-    filter(str_detect(str_to_lower(as.character(Phase)), early_phase_pattern))
+early_dat <- if (has_active_phase) {
+  behav %>% filter(str_detect(str_to_lower(as.character(Phase)), early_phase_pattern))
 } else {
-  early_dat <- behav
+  behav
 }
 
 early_dat <- early_dat %>%
@@ -97,23 +97,17 @@ early_dat <- early_dat %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   mutate(early_rank = row_number()) %>%
   filter(early_rank <= max_early_bins_per_animal) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(BinLevel = bin_level, ProximityInput = proximity_col)
 
-write_table(
-  early_dat,
-  file.path(output_dir, "tables", "early_window_rows_used.csv")
-)
+write_table(early_dat, file.path(output_dir, "tables", "early_window_rows_used.csv"))
 
 # ------------------------------------------------
 # FEATURE EXTRACTION
 # ------------------------------------------------
 
 metric_long <- early_dat %>%
-  pivot_longer(
-    cols = c(Movement, Entropy, Proximity),
-    names_to = "Metric",
-    values_to = "Value"
-  )
+  pivot_longer(cols = c(Movement, Entropy, Proximity), names_to = "Metric", values_to = "Value")
 
 feature_long <- metric_long %>%
   group_by(AnimalNum, Group, Sex, Metric) %>%
@@ -128,15 +122,14 @@ feature_wide <- feature_long %>%
     names_glue = "{Metric}_{.value}"
   ) %>%
   mutate(
+    BinLevel = bin_level,
+    ProximityInput = proximity_col,
     SocialWithdrawal_mean = -scale(Proximity_mean)[, 1] + scale(Movement_mean)[, 1],
     PassiveIsolation_mean = -scale(Proximity_mean)[, 1] - scale(Movement_mean)[, 1],
     SocialEngagement_mean = scale(Proximity_mean)[, 1] + scale(Movement_mean)[, 1]
   )
 
-write_table(
-  feature_wide,
-  file.path(output_dir, "tables", "early_behavior_features.csv")
-)
+write_table(feature_wide, file.path(output_dir, "tables", "early_behavior_features.csv"))
 
 # ------------------------------------------------
 # ENDPOINT HANDLING
@@ -148,14 +141,10 @@ if (!is.null(endpoint_file) && file.exists(endpoint_file)) {
   endpoint_raw <- read_behavior_table(endpoint_file)
   endpoint_animal_col <- first_existing_col(endpoint_raw, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "endpoint animal column")
   endpoint_dat <- endpoint_raw %>%
-    transmute(
-      AnimalNum = .data[[endpoint_animal_col]],
-      outcome = suppressWarnings(as.numeric(.data[[outcome_col]]))
-    )
+    transmute(AnimalNum = .data[[endpoint_animal_col]], outcome = suppressWarnings(as.numeric(.data[[outcome_col]])))
 } else if (outcome_col %in% names(raw_dat)) {
-  endpoint_raw <- raw_dat
-  endpoint_animal_col <- first_existing_col(endpoint_raw, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "endpoint animal column")
-  endpoint_dat <- endpoint_raw %>%
+  endpoint_animal_col <- first_existing_col(raw_dat, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "endpoint animal column")
+  endpoint_dat <- raw_dat %>%
     group_by(AnimalNum = .data[[endpoint_animal_col]]) %>%
     summarise(outcome = first(na.omit(suppressWarnings(as.numeric(.data[[outcome_col]])))), .groups = "drop")
 }
@@ -170,10 +159,7 @@ model_dat <- feature_wide %>%
   left_join(endpoint_dat, by = "AnimalNum") %>%
   filter(is.finite(outcome))
 
-write_table(
-  model_dat,
-  file.path(output_dir, "tables", "early_prediction_model_input.csv")
-)
+write_table(model_dat, file.path(output_dir, "tables", "early_prediction_model_input.csv"))
 
 if (nrow(model_dat) < 8) {
   warning("Fewer than 8 animals with outcome data. Modeling skipped; feature and input tables were written.")
@@ -197,26 +183,22 @@ association_tbl <- map_dfr(feature_cols, function(fc) {
     n = sum(is.finite(model_dat[[fc]]) & is.finite(model_dat$outcome))
   )
 }) %>%
-  arrange(desc(abs(spearman_rho)))
+  arrange(desc(abs(spearman_rho))) %>%
+  mutate(BinLevel = bin_level, ProximityInput = proximity_col)
 
-write_table(
-  association_tbl,
-  file.path(output_dir, "tables", "early_feature_outcome_associations.csv")
-)
+write_table(association_tbl, file.path(output_dir, "tables", "early_feature_outcome_associations.csv"))
 
 # ------------------------------------------------
 # LEAVE-ONE-ANIMAL-OUT RIDGE/ELASTIC-NET IF glmnet AVAILABLE
 # ------------------------------------------------
 
 if (requireNamespace("glmnet", quietly = TRUE)) {
-
   x <- model_dat %>%
     select(all_of(feature_cols)) %>%
     mutate(across(everything(), ~replace_na(.x, median(.x, na.rm = TRUE)))) %>%
     as.matrix()
 
   y <- model_dat$outcome
-
   loo_pred <- rep(NA_real_, length(y))
 
   set.seed(123)
@@ -233,16 +215,11 @@ if (requireNamespace("glmnet", quietly = TRUE)) {
   }
 
   pred_tbl <- model_dat %>%
-    transmute(
-      AnimalNum,
-      Group,
-      Sex,
-      observed = outcome,
-      predicted = loo_pred,
-      residual = observed - predicted
-    )
+    transmute(AnimalNum, Group, Sex, BinLevel, ProximityInput, observed = outcome, predicted = loo_pred, residual = observed - predicted)
 
   perf_tbl <- tibble(
+    BinLevel = bin_level,
+    ProximityInput = proximity_col,
     n = nrow(pred_tbl),
     loo_pearson_r = safe_cor(pred_tbl$observed, pred_tbl$predicted, "pearson"),
     loo_spearman_rho = safe_cor(pred_tbl$observed, pred_tbl$predicted, "spearman"),
@@ -260,19 +237,13 @@ if (requireNamespace("glmnet", quietly = TRUE)) {
     geom_smooth(method = "lm", se = TRUE, linewidth = 0.5) +
     labs(
       title = "Early behavior predicts later endpoint",
-      subtitle = "Leave-one-animal-out elastic-net prediction",
+      subtitle = paste0("LOO elastic-net; bin level: ", bin_level),
       x = paste0("Observed ", outcome_col),
       y = paste0("Predicted ", outcome_col)
     ) +
     make_nature_theme()
 
-  save_plot_svg_pdf(
-    p_pred,
-    file.path(output_dir, "figures", "early_prediction_observed_vs_predicted"),
-    width = 85,
-    height = 75
-  )
-
+  save_plot_svg_pdf(p_pred, file.path(output_dir, "figures", "early_prediction_observed_vs_predicted"), width = 85, height = 75)
 } else {
   message("Package glmnet not installed. Wrote feature associations, but skipped cross-validated elastic-net modeling.")
 }
@@ -280,10 +251,6 @@ if (requireNamespace("glmnet", quietly = TRUE)) {
 # ------------------------------------------------
 # TOP ASSOCIATION PLOT
 # ------------------------------------------------
-
-top_features <- association_tbl %>%
-  slice_head(n = 12) %>%
-  pull(feature)
 
 p_assoc <- association_tbl %>%
   slice_head(n = 12) %>%
@@ -293,16 +260,12 @@ p_assoc <- association_tbl %>%
   coord_flip() +
   labs(
     title = "Top early behavioral correlates",
+    subtitle = paste0("Bin level: ", bin_level),
     y = "Spearman rho with endpoint",
     x = NULL
   ) +
   make_nature_theme()
 
-save_plot_svg_pdf(
-  p_assoc,
-  file.path(output_dir, "figures", "top_early_feature_associations"),
-  width = 90,
-  height = 80
-)
+save_plot_svg_pdf(p_assoc, file.path(output_dir, "figures", "top_early_feature_associations"), width = 90, height = 80)
 
 message("Early prediction analysis complete.")
