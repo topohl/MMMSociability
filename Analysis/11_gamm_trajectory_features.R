@@ -1,3 +1,19 @@
+# ================================================================
+# GAMM trajectory-feature extraction
+# MMMSociability
+# ================================================================
+# Goal:
+#   Fit smooth behavioral trajectories and extract animal-level features:
+#   AUC, mean predicted value, peak, trough, dynamic range, time-to-peak,
+#   RMSSD of prediction, and ACF1 of prediction.
+#
+# Input expectation:
+#   Run Analysis/03_build_multiscale_behavior_metrics.R first.
+#
+# Recommended scale:
+#   10–30 min bins. Default is 30min_based for smooth trajectory summaries.
+# ================================================================
+
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
@@ -9,21 +25,30 @@ suppressPackageStartupMessages({
 
 source("Functions/behavioral_dynamics_helpers.R")
 
-input_file <- "analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv"
-output_dir <- "analysis_ready/06_behavioral_dynamics/gamm_features"
+# ------------------------------------------------
+# USER INPUT
+# ------------------------------------------------
+
+bin_level <- "30min_based"
+input_file <- file.path("analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
+output_dir <- file.path("analysis_ready/06_behavioral_dynamics/gamm_features", bin_level)
+
+# Use normalized proximity for GAMM trajectories. Raw contact seconds scale with bin size.
+proximity_col <- "ProximityFraction"
 
 ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "figures"))
 
 raw_dat <- read_behavior_table(input_file)
-behav <- standardize_behavior_columns(raw_dat)
+if (!proximity_col %in% names(raw_dat)) proximity_col <- "Proximity"
+behav <- standardize_behavior_columns(raw_dat, proximity_col = proximity_col)
 
 metric_names <- c("Movement", "Entropy", "Proximity")
 all_features <- list()
+model_qc <- list()
 
 for (metric in metric_names) {
-
   dat <- behav %>%
     transmute(
       AnimalNum,
@@ -34,14 +59,26 @@ for (metric in metric_names) {
       TimeIndex,
       Value = .data[[metric]]
     ) %>%
-    filter(is.finite(Value))
+    filter(is.finite(Value), is.finite(TimeIndex))
 
-  if (nrow(dat) < 20) next
+  if (nrow(dat) < 20 || n_distinct(dat$TimeIndex) < 5 || n_distinct(dat$AnimalNum) < 3) {
+    model_qc[[metric]] <- tibble(
+      Metric = metric,
+      BinLevel = bin_level,
+      ProximityInput = proximity_col,
+      status = "skipped",
+      reason = "Too few rows, time points, or animals",
+      n_rows = nrow(dat),
+      n_animals = n_distinct(dat$AnimalNum),
+      n_timepoints = n_distinct(dat$TimeIndex)
+    )
+    next
+  }
 
   dat <- dat %>% mutate(TimeScaled = as.numeric(scale(TimeIndex)))
 
   fit <- mgcv::bam(
-    Value ~ Group + s(TimeScaled, by = Group, k = 6, bs = 'tp') + s(AnimalNum, bs = 're'),
+    Value ~ Group + s(TimeScaled, by = Group, k = min(6, max(3, n_distinct(dat$TimeIndex) - 1)), bs = 'tp') + s(AnimalNum, bs = 're'),
     data = dat,
     discrete = TRUE,
     method = "fREML"
@@ -54,6 +91,8 @@ for (metric in metric_names) {
     arrange(TimeIndex, .by_group = TRUE) %>%
     summarise(
       Metric = metric,
+      BinLevel = bin_level,
+      ProximityInput = proximity_col,
       auc = pracma::trapz(TimeIndex, Pred),
       mean_pred = mean(Pred, na.rm = TRUE),
       peak = max(Pred, na.rm = TRUE),
@@ -62,15 +101,29 @@ for (metric in metric_names) {
       time_to_peak = TimeIndex[which.max(Pred)][1],
       rmssd_pred = calc_rmssd(Pred),
       acf1_pred = calc_acf1(Pred),
+      n_bins = n(),
       .groups = "drop"
     )
 
   all_features[[metric]] <- feature_tbl
-
   write_table(feature_tbl, file.path(output_dir, "tables", paste0(safe_name(metric), "_gamm_features.csv")))
+
+  model_qc[[metric]] <- tibble(
+    Metric = metric,
+    BinLevel = bin_level,
+    ProximityInput = proximity_col,
+    status = "fit",
+    reason = NA_character_,
+    n_rows = nrow(dat),
+    n_animals = n_distinct(dat$AnimalNum),
+    n_timepoints = n_distinct(dat$TimeIndex),
+    edf_total = sum(summary(fit)$s.table[, "edf"], na.rm = TRUE),
+    deviance_explained = summary(fit)$dev.expl
+  )
 }
 
 combined_features <- bind_rows(all_features)
 write_table(combined_features, file.path(output_dir, "tables", "combined_gamm_features.csv"))
+write_table(bind_rows(model_qc), file.path(output_dir, "tables", "gamm_model_qc.csv"))
 
 message("GAMM trajectory-feature extraction complete.")
