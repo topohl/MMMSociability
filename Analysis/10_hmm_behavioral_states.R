@@ -9,7 +9,12 @@
 #   - explicitly models temporal persistence
 #   - estimates transition probabilities
 #   - estimates dwell times
-#   - more biologically interpretable dynamics
+#
+# Input expectation:
+#   Run Analysis/03_build_multiscale_behavior_metrics.R first.
+#
+# Recommended scale:
+#   5–10 min bins. Phase-level data are too coarse for HMMs.
 #
 # Requires:
 #   depmixS4
@@ -24,9 +29,17 @@ suppressPackageStartupMessages({
 
 source("Functions/behavioral_dynamics_helpers.R")
 
-input_file <- "analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv"
-output_dir <- "analysis_ready/06_behavioral_dynamics/hmm_states"
+# ------------------------------------------------
+# USER INPUT
+# ------------------------------------------------
+
+bin_level <- "10min_based"
+input_file <- file.path("analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
+output_dir <- file.path("analysis_ready/06_behavioral_dynamics/hmm_states", bin_level)
 n_states <- 4
+
+# Use normalized proximity because raw contact seconds scale with bin size.
+proximity_col <- "ProximityFraction"
 
 ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
@@ -37,15 +50,23 @@ if (!requireNamespace("depmixS4", quietly = TRUE)) {
 }
 
 raw_dat <- read_behavior_table(input_file)
-behav <- standardize_behavior_columns(raw_dat)
+if (!proximity_col %in% names(raw_dat)) proximity_col <- "Proximity"
+behav <- standardize_behavior_columns(raw_dat, proximity_col = proximity_col)
 
 hmm_dat <- behav %>%
   mutate(
     Movement_z = z_within_metric(Movement),
     Entropy_z = z_within_metric(Entropy),
-    Proximity_z = z_within_metric(Proximity)
+    Proximity_z = z_within_metric(Proximity),
+    BinLevel = bin_level,
+    ProximityInput = proximity_col
   ) %>%
-  arrange(AnimalNum, TimeIndex)
+  filter(is.finite(Movement_z), is.finite(Entropy_z), is.finite(Proximity_z)) %>%
+  arrange(AnimalNum, CageChange, Phase, TimeIndex)
+
+if (nrow(hmm_dat) < n_states * 10) {
+  stop("Too few usable rows for HMM. Use a finer bin level or fewer states.", call. = FALSE)
+}
 
 mod <- depmixS4::depmix(
   list(
@@ -59,13 +80,11 @@ mod <- depmixS4::depmix(
 )
 
 fit_mod <- depmixS4::fit(mod, verbose = FALSE)
-
 post <- depmixS4::posterior(fit_mod)
-
 hmm_dat$State <- factor(post$state)
 
 state_summary <- hmm_dat %>%
-  group_by(State) %>%
+  group_by(BinLevel, ProximityInput, State) %>%
   summarise(
     Movement_z = mean(Movement_z, na.rm = TRUE),
     Entropy_z = mean(Entropy_z, na.rm = TRUE),
@@ -77,17 +96,17 @@ state_summary <- hmm_dat %>%
 write_table(state_summary, file.path(output_dir, "tables", "hmm_state_summary.csv"))
 
 transition_tbl <- hmm_dat %>%
-  group_by(Group, Sex, Phase, CageChange, AnimalNum) %>%
+  group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, AnimalNum) %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   mutate(NextState = lead(State)) %>%
   filter(!is.na(NextState)) %>%
-  count(State, NextState, Group, Phase, name = "Transitions")
+  count(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, AnimalNum, State, NextState, name = "Transitions")
 
 write_table(transition_tbl, file.path(output_dir, "tables", "hmm_transition_counts.csv"))
 
 occupancy_tbl <- hmm_dat %>%
-  count(Group, Sex, Phase, CageChange, AnimalNum, State) %>%
-  group_by(Group, Sex, Phase, CageChange, AnimalNum) %>%
+  count(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, AnimalNum, State) %>%
+  group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, AnimalNum) %>%
   mutate(frac_time = n / sum(n)) %>%
   ungroup()
 
@@ -100,6 +119,7 @@ p_occ <- occupancy_tbl %>%
   facet_grid(Phase ~ State, scales = "free_y") +
   labs(
     title = "Hidden Markov behavioral state occupancy",
+    subtitle = paste0("Bin level: ", bin_level, "; proximity input: ", proximity_col),
     y = "Fraction of time",
     x = NULL
   ) +
