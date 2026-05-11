@@ -3,23 +3,16 @@
 # MMMSociability
 # ================================================================
 # Purpose:
-#   Preflight-check an input table before running:
+#   Preflight-check a multiscale all_behavior_metrics.csv table before running:
 #     Analysis/06_burstiness_temporal_instability.R
 #     Analysis/07_behavioral_state_space.R
+#     Analysis/08_early_prediction_models.R
+#     Analysis/09_dynamic_social_networks.R
+#     Analysis/10_hmm_behavioral_states.R
+#     Analysis/11_gamm_trajectory_features.R
 #
-# Checks:
-#   - file can be read
-#   - required columns can be detected
-#   - movement / entropy / proximity are numeric or coercible
-#   - one animal ID and one time column exist
-#   - duplicate animal-time rows are flagged
-#   - enough bins per animal exist for RMSSD/autocorrelation/state analyses
-#   - phase / cage-change / group / sex columns are reported if available
-#
-# Output:
-#   analysis_ready/00_structure_checks/behavioral_dynamics_structure_report.csv
-#   analysis_ready/00_structure_checks/behavioral_dynamics_column_mapping.csv
-#   analysis_ready/00_structure_checks/behavioral_dynamics_bins_per_animal.csv
+# Input expectation:
+#   Run Analysis/03_build_multiscale_behavior_metrics.R first.
 # ================================================================
 
 suppressPackageStartupMessages({
@@ -37,10 +30,11 @@ source("Functions/behavioral_dynamics_helpers.R")
 # USER INPUT
 # ------------------------------------------------
 
-input_file <- "analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv"
-output_dir <- "analysis_ready/00_structure_checks"
+bin_level <- "5min_based"
+input_file <- file.path("analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
+output_dir <- file.path("analysis_ready/00_structure_checks", bin_level)
 
-# Optional manual overrides. Leave NULL for auto-detection.
+# Prefer normalized proximity for temporal dynamics checks.
 animal_col <- NULL
 time_col <- NULL
 group_col <- NULL
@@ -49,7 +43,7 @@ phase_col <- NULL
 cage_col <- NULL
 movement_col <- NULL
 entropy_col <- NULL
-proximity_col <- NULL
+proximity_col <- "ProximityFraction"
 
 # ------------------------------------------------
 # HELPERS
@@ -90,27 +84,22 @@ numeric_quality <- function(x) {
 # ------------------------------------------------
 
 ensure_dir(output_dir)
-
 report <- list()
 
 if (!file.exists(input_file)) {
-  report <- list(status_row(
-    "input_file_exists",
-    "FAIL",
-    paste0("File not found: ", input_file),
-    "error"
-  ))
+  report <- list(status_row("input_file_exists", "FAIL", paste0("File not found: ", input_file), "error"))
   final_report <- bind_rows(report)
   write_table(final_report, file.path(output_dir, "behavioral_dynamics_structure_report.csv"))
   stop("Input file not found. Report written to: ", output_dir, call. = FALSE)
 }
 
 raw_dat <- read_behavior_table(input_file)
+if (!proximity_col %in% names(raw_dat)) proximity_col <- NULL
 
 report <- append(report, list(status_row(
   "input_file_readable",
   "PASS",
-  paste0("Rows: ", nrow(raw_dat), "; columns: ", ncol(raw_dat)),
+  paste0("Rows: ", nrow(raw_dat), "; columns: ", ncol(raw_dat), "; bin_level: ", bin_level),
   "info"
 )))
 
@@ -119,62 +108,41 @@ report <- append(report, list(status_row(
 # ------------------------------------------------
 
 mapping <- tibble(
-  role = c("animal", "time", "group", "sex", "phase", "cage_change", "movement", "entropy", "proximity"),
+  role = c("animal", "time", "group", "sex", "phase", "cage_change", "movement", "entropy", "proximity", "bin_label", "bin_size_sec", "proximity_seconds", "proximity_fraction"),
   detected_column = c(
-    animal_col %||% soft_find_col(raw_dat, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id")),
-    time_col %||% soft_find_col(raw_dat, c("HalfHourElapsed", "HalfHourWithinCC0", "HalfHour", "Time", "TimeBin", "ZeitgeberTime", "ZT", "datetime", "DateTime")),
+    animal_col %||% soft_find_col(raw_dat, c("AnimalNum", "AnimalID", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id")),
+    time_col %||% soft_find_col(raw_dat, c("TimeIndex", "HalfHoursElapsed", "HalfHourElapsed", "HalfHourWithinCC0", "HalfHour", "Time", "TimeBin", "BinStart", "DateTime")),
     group_col %||% soft_find_col(raw_dat, c("Group", "Phenotype", "Condition", "Treatment", "StressGroup")),
     sex_col %||% soft_find_col(raw_dat, c("Sex", "sex")),
     phase_col %||% soft_find_col(raw_dat, c("Phase", "phase", "LightDark", "DayNight", "CircadianPhase")),
     cage_col %||% soft_find_col(raw_dat, c("CageChange", "CC", "CageChangeNum", "Regrouping", "Batch", "Cage")),
     movement_col %||% soft_find_col(raw_dat, c("Movement", "movement", "Distance", "distance", "Activity", "activity")),
     entropy_col %||% soft_find_col(raw_dat, c("Entropy", "entropy", "ShannonEntropy", "shannon_entropy", "PositionEntropy")),
-    proximity_col %||% soft_find_col(raw_dat, c("Proximity", "proximity", "MeanProximity", "SocialProximity", "CloseProximity"))
+    proximity_col %||% soft_find_col(raw_dat, c("ProximityFraction", "Proximity", "proximity", "MeanProximity", "SocialProximity", "CloseProximity")),
+    soft_find_col(raw_dat, c("BinLabel", "bin_label")),
+    soft_find_col(raw_dat, c("BinSizeSec", "bin_size_sec")),
+    soft_find_col(raw_dat, c("ProximitySeconds", "same_position_seconds", "Proximity")),
+    soft_find_col(raw_dat, c("ProximityFraction", "Proximity"))
   ),
-  required_for_dynamics = c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, TRUE)
+  required_for_dynamics = c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, FALSE)
 )
 
 write_table(mapping, file.path(output_dir, "behavioral_dynamics_column_mapping.csv"))
 
-missing_required <- mapping %>%
-  filter(required_for_dynamics, is.na(detected_column))
-
+missing_required <- mapping %>% filter(required_for_dynamics, is.na(detected_column))
 if (nrow(missing_required) > 0) {
-  report <- append(report, list(status_row(
-    "required_columns_detected",
-    "FAIL",
-    paste0("Missing required roles: ", paste(missing_required$role, collapse = ", ")),
-    "error"
-  )))
+  report <- append(report, list(status_row("required_columns_detected", "FAIL", paste0("Missing required roles: ", paste(missing_required$role, collapse = ", ")), "error")))
 } else {
-  report <- append(report, list(status_row(
-    "required_columns_detected",
-    "PASS",
-    paste0("Detected: ", paste(mapping$role[!is.na(mapping$detected_column)], mapping$detected_column[!is.na(mapping$detected_column)], sep = "=", collapse = "; ")),
-    "info"
-  )))
+  report <- append(report, list(status_row("required_columns_detected", "PASS", paste0("Detected: ", paste(mapping$role[!is.na(mapping$detected_column)], mapping$detected_column[!is.na(mapping$detected_column)], sep = "=", collapse = "; ")), "info")))
 }
 
-optional_missing <- mapping %>%
-  filter(!required_for_dynamics, is.na(detected_column))
-
+optional_missing <- mapping %>% filter(!required_for_dynamics, is.na(detected_column))
 if (nrow(optional_missing) > 0) {
-  report <- append(report, list(status_row(
-    "optional_columns_detected",
-    "WARN",
-    paste0("Optional roles not found: ", paste(optional_missing$role, collapse = ", "), ". The analyses will use 'All' for missing stratifiers."),
-    "warning"
-  )))
+  report <- append(report, list(status_row("optional_columns_detected", "WARN", paste0("Optional roles not found: ", paste(optional_missing$role, collapse = ", ")), "warning")))
 } else {
-  report <- append(report, list(status_row(
-    "optional_columns_detected",
-    "PASS",
-    "Group/sex/phase/cage-change stratifiers detected.",
-    "info"
-  )))
+  report <- append(report, list(status_row("optional_columns_detected", "PASS", "All optional stratifier/bin/proximity columns detected.", "info")))
 }
 
-# Stop only after writing useful mapping.
 if (nrow(missing_required) > 0) {
   final_report <- bind_rows(report)
   write_table(final_report, file.path(output_dir, "behavioral_dynamics_structure_report.csv"))
@@ -201,29 +169,45 @@ behav <- standardize_behavior_columns(
 metric_quality <- bind_rows(
   numeric_quality(behav$Movement) %>% mutate(metric = "Movement"),
   numeric_quality(behav$Entropy) %>% mutate(metric = "Entropy"),
-  numeric_quality(behav$Proximity) %>% mutate(metric = "Proximity")
-) %>%
-  relocate(metric)
+  numeric_quality(behav$Proximity) %>% mutate(metric = paste0("Proximity_from_", mapping$detected_column[mapping$role == "proximity"]))
+) %>% relocate(metric)
 
 write_table(metric_quality, file.path(output_dir, "behavioral_dynamics_numeric_quality.csv"))
 
-bad_numeric <- metric_quality %>%
-  filter(is.na(coercion_success_fraction) | coercion_success_fraction < 0.95)
-
+bad_numeric <- metric_quality %>% filter(is.na(coercion_success_fraction) | coercion_success_fraction < 0.95)
 if (nrow(bad_numeric) > 0) {
-  report <- append(report, list(status_row(
-    "metric_numeric_quality",
-    "WARN",
-    paste0("Potential numeric coercion problem for: ", paste(bad_numeric$metric, collapse = ", ")),
-    "warning"
-  )))
+  report <- append(report, list(status_row("metric_numeric_quality", "WARN", paste0("Potential numeric coercion problem for: ", paste(bad_numeric$metric, collapse = ", ")), "warning")))
 } else {
-  report <- append(report, list(status_row(
-    "metric_numeric_quality",
-    "PASS",
-    "Movement, Entropy, and Proximity are numeric/coercible for >=95% of non-missing values.",
-    "info"
-  )))
+  report <- append(report, list(status_row("metric_numeric_quality", "PASS", "Movement, Entropy, and selected Proximity are numeric/coercible for >=95% of non-missing values.", "info")))
+}
+
+# ------------------------------------------------
+# BIN METADATA CHECK
+# ------------------------------------------------
+
+bin_meta <- raw_dat %>%
+  summarise(
+    input_file = input_file,
+    requested_bin_level = bin_level,
+    detected_bin_labels = if ("BinLabel" %in% names(raw_dat)) paste(sort(unique(as.character(BinLabel))), collapse = "; ") else NA_character_,
+    detected_bin_sizes_sec = if ("BinSizeSec" %in% names(raw_dat)) paste(sort(unique(as.character(BinSizeSec))), collapse = "; ") else NA_character_,
+    has_proximity_seconds = "ProximitySeconds" %in% names(raw_dat) || "same_position_seconds" %in% names(raw_dat),
+    has_proximity_fraction = "ProximityFraction" %in% names(raw_dat),
+    selected_proximity_column = mapping$detected_column[mapping$role == "proximity"]
+  )
+
+write_table(bin_meta, file.path(output_dir, "behavioral_dynamics_bin_metadata.csv"))
+
+if (!is.na(bin_meta$detected_bin_labels) && !str_detect(bin_meta$detected_bin_labels, str_remove(bin_level, "_based"))) {
+  report <- append(report, list(status_row("bin_label_matches_input", "WARN", paste0("Requested ", bin_level, " but detected BinLabel(s): ", bin_meta$detected_bin_labels), "warning")))
+} else {
+  report <- append(report, list(status_row("bin_label_matches_input", "PASS", "Bin label appears compatible with requested input.", "info")))
+}
+
+if (identical(mapping$detected_column[mapping$role == "proximity"], "Proximity") && "ProximityFraction" %in% names(raw_dat)) {
+  report <- append(report, list(status_row("proximity_column_choice", "WARN", "Selected Proximity although ProximityFraction exists. Prefer ProximityFraction for temporal analyses.", "warning")))
+} else {
+  report <- append(report, list(status_row("proximity_column_choice", "INFO", paste0("Selected proximity column: ", mapping$detected_column[mapping$role == "proximity"]), "info")))
 }
 
 # ------------------------------------------------
@@ -233,23 +217,12 @@ if (nrow(bad_numeric) > 0) {
 dup_tbl <- behav %>%
   count(AnimalNum, CageChange, Phase, TimeIndex, name = "n") %>%
   filter(n > 1)
-
 write_table(dup_tbl, file.path(output_dir, "behavioral_dynamics_duplicate_animal_time_rows.csv"))
 
 if (nrow(dup_tbl) > 0) {
-  report <- append(report, list(status_row(
-    "duplicate_animal_time_rows",
-    "WARN",
-    paste0(nrow(dup_tbl), " duplicated AnimalNum x CageChange x Phase x TimeIndex combinations detected."),
-    "warning"
-  )))
+  report <- append(report, list(status_row("duplicate_animal_time_rows", "WARN", paste0(nrow(dup_tbl), " duplicated AnimalNum x CageChange x Phase x TimeIndex combinations detected."), "warning")))
 } else {
-  report <- append(report, list(status_row(
-    "duplicate_animal_time_rows",
-    "PASS",
-    "No duplicate AnimalNum x CageChange x Phase x TimeIndex combinations detected.",
-    "info"
-  )))
+  report <- append(report, list(status_row("duplicate_animal_time_rows", "PASS", "No duplicate AnimalNum x CageChange x Phase x TimeIndex combinations detected.", "info")))
 }
 
 # ------------------------------------------------
@@ -267,26 +240,13 @@ bins_per_animal <- behav %>%
     time_max = suppressWarnings(max(TimeIndex, na.rm = TRUE)),
     .groups = "drop"
   )
-
 write_table(bins_per_animal, file.path(output_dir, "behavioral_dynamics_bins_per_animal.csv"))
 
-low_bins <- bins_per_animal %>%
-  filter(n_bins < 4 | n_movement < 4 | n_entropy < 4 | n_proximity < 4)
-
+low_bins <- bins_per_animal %>% filter(n_bins < 4 | n_movement < 4 | n_entropy < 4 | n_proximity < 4)
 if (nrow(low_bins) > 0) {
-  report <- append(report, list(status_row(
-    "minimum_bins_for_temporal_metrics",
-    "WARN",
-    paste0(nrow(low_bins), " animal-periods have <4 usable bins. RMSSD/ACF/state switching may be unstable there."),
-    "warning"
-  )))
+  report <- append(report, list(status_row("minimum_bins_for_temporal_metrics", "WARN", paste0(nrow(low_bins), " animal-periods have <4 usable bins. RMSSD/ACF/state switching may be unstable there."), "warning")))
 } else {
-  report <- append(report, list(status_row(
-    "minimum_bins_for_temporal_metrics",
-    "PASS",
-    "All animal-periods have >=4 bins for temporal metrics.",
-    "info"
-  )))
+  report <- append(report, list(status_row("minimum_bins_for_temporal_metrics", "PASS", "All animal-periods have >=4 bins for temporal metrics.", "info")))
 }
 
 # ------------------------------------------------
@@ -305,19 +265,12 @@ level_summary <- behav %>%
     n_cage_changes = n_distinct(CageChange),
     cage_changes = paste(sort(unique(as.character(CageChange))), collapse = "; ")
   )
-
 write_table(level_summary, file.path(output_dir, "behavioral_dynamics_level_summary.csv"))
 
 report <- append(report, list(status_row(
   "level_summary",
   "INFO",
-  paste0(
-    "Animals=", level_summary$n_animals,
-    "; Groups=", level_summary$groups,
-    "; Sexes=", level_summary$sexes,
-    "; Phases=", level_summary$phases,
-    "; Cage changes=", level_summary$cage_changes
-  ),
+  paste0("Animals=", level_summary$n_animals, "; Groups=", level_summary$groups, "; Sexes=", level_summary$sexes, "; Phases=", level_summary$phases, "; Cage changes=", level_summary$cage_changes),
   "info"
 )))
 
@@ -327,7 +280,6 @@ report <- append(report, list(status_row(
 
 final_report <- bind_rows(report)
 write_table(final_report, file.path(output_dir, "behavioral_dynamics_structure_report.csv"))
-
 print(final_report)
 
 if (any(final_report$status == "FAIL")) {
