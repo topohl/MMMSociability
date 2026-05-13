@@ -36,16 +36,17 @@ suppressPackageStartupMessages({
   library(purrr)
   library(tibble)
   library(lubridate)
+  library(parallel)
 })
 
-source("Functions/behavioral_dynamics_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
 # ------------------------------------------------
 
-input_dir <- "preprocessed_data"
-output_dir <- "analysis_ready/06_behavioral_dynamics/dyadic_contacts"
+input_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/preprocessed_data"
+output_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/analysis_ready/06_behavioral_dynamics/dyadic_contacts"
 
 # The aggregation bin determines the temporal resolution of the dyadic table.
 # 1800 sec = 30 min, matching the current main analysis scale.
@@ -55,6 +56,25 @@ bin_size_sec <- 1800
 # A dyad is considered direct contact when both animals occupy the same RFID
 # PositionID. Adjacent contact is computed separately using the 2 x 4 cage grid.
 contact_definition <- "same_position"
+
+# Long gaps are retained in the interval-level export, but excluded from the
+# network-ready bin aggregation by default.
+long_gap_threshold_sec <- 3600
+exclude_long_gaps_from_aggregation <- TRUE
+
+# Parallelize file reading and per-system interval reconstruction. Set
+# use_multicore <- FALSE for easier debugging or very small datasets.
+use_multicore <- TRUE
+n_cores <- max(1L, parallel::detectCores(logical = TRUE) - 1L)
+
+if (use_multicore && requireNamespace("furrr", quietly = TRUE) && requireNamespace("future", quietly = TRUE)) {
+  future::plan(future::multisession, workers = n_cores)
+  map_dfr_parallel <- furrr::future_map_dfr
+  message("Parallel processing enabled with ", n_cores, " workers.")
+} else {
+  map_dfr_parallel <- purrr::map_dfr
+  message("Parallel processing disabled; using sequential purrr.")
+}
 
 # Optional metadata file with AnimalID/AnimalNum plus Group/Sex columns.
 # Leave NULL if Group and Sex are unavailable at this stage.
@@ -163,7 +183,7 @@ make_interval_dyads_one_system <- function(dat_sys) {
 
     # Guard against long gaps caused by acquisition breaks. These intervals are
     # kept but flagged so they can be excluded later if needed.
-    long_gap <- duration_sec > max(3600, bin_size_sec * 2)
+    long_gap <- duration_sec > long_gap_threshold_sec
 
     interval_meta <- updates %>%
       slice_tail(n = 1) %>%
@@ -222,18 +242,75 @@ make_interval_dyads_one_system <- function(dat_sys) {
   bind_rows(out)
 }
 
+filter_aggregation_intervals <- function(dat) {
+  if (exclude_long_gaps_from_aggregation && "LongGap" %in% names(dat)) {
+    dat <- dat %>% filter(!LongGap)
+  }
+  dat
+}
+
+split_intervals_to_bins <- function(dat) {
+  dat <- dat %>%
+    filter_aggregation_intervals() %>%
+    filter(
+      !is.na(IntervalStart),
+      !is.na(IntervalEnd),
+      is.finite(DurationSec),
+      DurationSec > 0
+    )
+
+  if (nrow(dat) == 0) {
+    return(dat %>%
+             mutate(
+               BinStart = as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+             ) %>%
+             slice(0))
+  }
+
+  interval_start_num <- as.numeric(dat$IntervalStart)
+  interval_end_num <- as.numeric(dat$IntervalEnd)
+  bin_start_num <- floor(interval_start_num / bin_size_sec) * bin_size_sec
+  bin_end_num <- floor((interval_end_num - 1e-7) / bin_size_sec) * bin_size_sec
+  n_bins <- pmax(0L, as.integer((bin_end_num - bin_start_num) / bin_size_sec) + 1L)
+
+  keep <- n_bins > 0
+  if (!all(keep)) {
+    dat <- dat[keep, , drop = FALSE]
+    interval_start_num <- interval_start_num[keep]
+    interval_end_num <- interval_end_num[keep]
+    bin_start_num <- bin_start_num[keep]
+    n_bins <- n_bins[keep]
+  }
+
+  row_idx <- rep(seq_len(nrow(dat)), n_bins)
+  bin_offsets <- sequence(n_bins) - 1L
+  split_bin_start_num <- rep(bin_start_num, n_bins) + bin_offsets * bin_size_sec
+  split_start_num <- pmax(rep(interval_start_num, n_bins), split_bin_start_num)
+  split_end_num <- pmin(rep(interval_end_num, n_bins), split_bin_start_num + bin_size_sec)
+  split_duration_sec <- split_end_num - split_start_num
+
+  out <- dat[row_idx, , drop = FALSE]
+  out$IntervalStart <- as.POSIXct(split_start_num, origin = "1970-01-01", tz = "UTC")
+  out$IntervalEnd <- as.POSIXct(split_end_num, origin = "1970-01-01", tz = "UTC")
+  out$DurationSec <- split_duration_sec
+  out$BinStart <- as.POSIXct(split_bin_start_num, origin = "1970-01-01", tz = "UTC")
+
+  out %>% filter(is.finite(DurationSec), DurationSec > 0)
+}
+
 aggregate_dyads_by_bin <- function(interval_tbl) {
   if (nrow(interval_tbl) == 0) return(tibble())
 
   interval_tbl %>%
+    split_intervals_to_bins() %>%
     mutate(
-      BinStart = as.POSIXct(floor(as.numeric(IntervalStart) / bin_size_sec) * bin_size_sec,
-                            origin = "1970-01-01", tz = "UTC"),
-      TimeIndex = as.numeric(difftime(BinStart, min(BinStart, na.rm = TRUE), units = "secs")) / bin_size_sec,
       same_position_seconds = if_else(same_position, DurationSec, 0),
       adjacent_seconds = if_else(adjacent_position, DurationSec, 0),
       weighted_grid_distance = grid_distance * DurationSec
     ) %>%
+    group_by(SourceFile, Batch, CageChange, System) %>%
+    mutate(TimeIndex = as.numeric(difftime(BinStart, min(BinStart, na.rm = TRUE), units = "secs")) / bin_size_sec) %>%
+    ungroup() %>%
     group_by(SourceFile, Batch, CageChange, System, Phase, BinStart, TimeIndex, Focal, Partner) %>%
     summarise(
       observation_seconds = sum(DurationSec, na.rm = TRUE),
@@ -272,7 +349,7 @@ if (length(files) == 0) {
 
 message("Found ", length(files), " preprocessed files.")
 
-all_pos <- map_dfr(files, read_preprocessed_position_file)
+all_pos <- map_dfr_parallel(files, read_preprocessed_position_file)
 
 # Optional metadata merge
 if (!is.null(metadata_file) && file.exists(metadata_file)) {
@@ -321,7 +398,12 @@ message("Building interval-level dyads...")
 interval_tbl <- all_pos %>%
   group_by(SourceFile, Batch, CageChange, System) %>%
   group_split() %>%
-  map_dfr(make_interval_dyads_one_system)
+  map_dfr_parallel(make_interval_dyads_one_system)
+
+if (use_multicore && requireNamespace("future", quietly = TRUE)) {
+  future::plan(future::sequential)
+  message("Parallel interval reconstruction complete; aggregating bins sequentially.")
+}
 
 if (nrow(interval_tbl) == 0) {
   stop("No dyadic intervals could be derived. Check AnimalID/System/PositionID structure.", call. = FALSE)
