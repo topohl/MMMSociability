@@ -13,6 +13,9 @@
 #   analysis_ready/03_derived_metrics/{10sec,1min,5min,10min,30min}_based/all_behavior_metrics.csv
 #   analysis_ready/03_derived_metrics/phase_based/all_behavior_metrics.csv
 #   analysis_ready/03_derived_metrics/qc/multiscale_behavior_metrics_qc.csv
+#   analysis_ready/03_derived_metrics/qc/animal_group_sex_assignment_qc.csv
+#   analysis_ready/03_derived_metrics/qc/reference_ids_not_found_in_preprocessed_data.csv
+#   analysis_ready/03_derived_metrics/qc/group_sex_assignment_summary.csv
 #
 # Key definitions:
 #   Movement                  = number of RFID position transitions per animal/bin
@@ -43,6 +46,17 @@ source("Functions/behavioral_dynamics_helpers.R")
 
 input_dir <- "preprocessed_data"
 output_root <- "analysis_ready/03_derived_metrics"
+
+# Optional animal reference lists. These are one-ID-per-line CSV/text files.
+# Matching is done after robust character normalization, so mixed numeric/string
+# IDs such as 4, 303, OQ754, OR111 are handled consistently.
+sus_animals_file <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/sus_animals.csv"
+con_animals_file <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/con_animals.csv"
+
+# If TRUE, animals not listed as CON or SUS are assigned RES. This is appropriate
+# only when all remaining animals in the preprocessed files are stress-exposed
+# resilient animals.
+assign_unlisted_animals_as_res <- TRUE
 
 bin_specs <- tibble::tribble(
   ~bin_label, ~bin_size_sec,
@@ -91,6 +105,35 @@ calc_entropy <- function(seconds_by_position) {
 
 safe_divide <- function(num, den) {
   ifelse(is.finite(den) & den > 0, num / den, NA_real_)
+}
+
+normalize_animal_id <- function(x) {
+  x %>%
+    as.character() %>%
+    stringr::str_trim() %>%
+    stringr::str_replace_all("\\s+", "") %>%
+    toupper()
+}
+
+read_animal_id_list <- function(path, label) {
+  if (is.null(path) || !file.exists(path)) {
+    warning("Animal reference file not found for ", label, ": ", path, call. = FALSE)
+    return(character())
+  }
+
+  readr::read_lines(path, progress = FALSE) %>%
+    normalize_animal_id() %>%
+    purrr::discard(~ is.na(.x) || .x == "") %>%
+    unique()
+}
+
+assign_batch_sex <- function(batch) {
+  batch_norm <- toupper(stringr::str_trim(as.character(batch)))
+  dplyr::case_when(
+    batch_norm %in% c("B1", "B2", "B5") ~ "Male",
+    batch_norm %in% c("B3", "B4", "B6") ~ "Female",
+    TRUE ~ NA_character_
+  )
 }
 
 # ------------------------------------------------
@@ -153,6 +196,81 @@ if (!is.null(metadata_file) && file.exists(metadata_file)) {
     left_join(meta_small, by = "AnimalID") %>%
     mutate(Group = coalesce(Group, MetaGroup), Sex = coalesce(Sex, MetaSex)) %>%
     select(-MetaGroup, -MetaSex)
+}
+
+# ------------------------------------------------
+# ASSIGN GROUP AND SEX METADATA
+# ------------------------------------------------
+
+sus_animals <- read_animal_id_list(sus_animals_file, "SUS")
+con_animals <- read_animal_id_list(con_animals_file, "CON")
+
+reference_overlap <- intersect(sus_animals, con_animals)
+if (length(reference_overlap) > 0) {
+  stop(
+    "The following normalized AnimalIDs occur in both SUS and CON reference files: ",
+    paste(reference_overlap, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+all_pos <- all_pos %>%
+  mutate(
+    AnimalID_raw = AnimalID,
+    AnimalID_norm = normalize_animal_id(AnimalID),
+    Batch_norm = toupper(str_trim(Batch)),
+    ReferenceGroup = case_when(
+      AnimalID_norm %in% sus_animals ~ "SUS",
+      AnimalID_norm %in% con_animals ~ "CON",
+      assign_unlisted_animals_as_res ~ "RES",
+      TRUE ~ NA_character_
+    ),
+    ReferenceSex = assign_batch_sex(Batch),
+    Group = coalesce(ReferenceGroup, Group),
+    Sex = coalesce(ReferenceSex, Sex)
+  )
+
+animal_group_sex_qc <- all_pos %>%
+  distinct(AnimalID_raw, AnimalID_norm, Batch, Batch_norm, Sex, Group, ReferenceGroup, ReferenceSex) %>%
+  arrange(Batch_norm, Group, AnimalID_norm)
+
+write_table(
+  animal_group_sex_qc,
+  file.path(output_root, "qc", "animal_group_sex_assignment_qc.csv")
+)
+
+reference_ids_not_found <- tibble(
+  AnimalID_norm = c(sus_animals, con_animals),
+  ReferenceGroup = c(rep("SUS", length(sus_animals)), rep("CON", length(con_animals)))
+) %>%
+  distinct() %>%
+  anti_join(all_pos %>% distinct(AnimalID_norm), by = "AnimalID_norm") %>%
+  arrange(ReferenceGroup, AnimalID_norm)
+
+write_table(
+  reference_ids_not_found,
+  file.path(output_root, "qc", "reference_ids_not_found_in_preprocessed_data.csv")
+)
+
+group_sex_assignment_summary <- animal_group_sex_qc %>%
+  count(Batch_norm, Sex, Group, name = "n_animals") %>%
+  arrange(Batch_norm, Sex, Group)
+
+write_table(
+  group_sex_assignment_summary,
+  file.path(output_root, "qc", "group_sex_assignment_summary.csv")
+)
+
+if (nrow(reference_ids_not_found) > 0) {
+  warning(
+    nrow(reference_ids_not_found),
+    " reference AnimalIDs were not found in the preprocessed data. Check qc/reference_ids_not_found_in_preprocessed_data.csv",
+    call. = FALSE
+  )
+}
+
+if (any(is.na(animal_group_sex_qc$Sex))) {
+  warning("Some animals could not be assigned Sex from Batch. Check qc/animal_group_sex_assignment_qc.csv", call. = FALSE)
 }
 
 # ------------------------------------------------
