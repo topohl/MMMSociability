@@ -63,12 +63,13 @@ make_dynamics_group_summary <- function(dat,
   value_cols <- intersect(value_cols, names(dat))
   group_cols <- intersect(group_cols, names(dat))
   if (length(value_cols) == 0) return(tibble())
+  has_animal_col <- animal_col %in% names(dat)
 
   dat %>%
     pivot_longer(cols = all_of(value_cols), names_to = "Outcome", values_to = "Value") %>%
     group_by(across(all_of(group_cols)), Outcome) %>%
     summarise(
-      n_animals = if (animal_col %in% names(cur_data())) n_distinct(.data[[animal_col]]) else n(),
+      n_animals = if (has_animal_col) n_distinct(.data[[animal_col]]) else n(),
       n_obs = sum(is.finite(Value)),
       mean = mean(Value, na.rm = TRUE),
       sd = sd(Value, na.rm = TRUE),
@@ -151,7 +152,7 @@ make_dynamics_group_contrasts <- function(dat,
         p.adjust_bh_family < 0.001 ~ "***",
         p.adjust_bh_family < 0.01 ~ "**",
         p.adjust_bh_family < 0.05 ~ "*",
-        p.adjust_bh_family < 0.10 ~ "†",
+        p.adjust_bh_family < 0.10 ~ "trend",
         TRUE ~ "ns"
       ),
       p.sign_primary = case_when(
@@ -159,7 +160,7 @@ make_dynamics_group_contrasts <- function(dat,
         p.adjust_bh_primary < 0.001 ~ "***",
         p.adjust_bh_primary < 0.01 ~ "**",
         p.adjust_bh_primary < 0.05 ~ "*",
-        p.adjust_bh_primary < 0.10 ~ "†",
+        p.adjust_bh_primary < 0.10 ~ "trend",
         TRUE ~ "ns"
       )
     ) %>%
