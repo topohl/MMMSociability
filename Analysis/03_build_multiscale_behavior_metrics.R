@@ -36,6 +36,9 @@ suppressPackageStartupMessages({
   library(purrr)
   library(tibble)
   library(lubridate)
+  library(parallel)
+  library(future)
+  library(furrr)
 })
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
@@ -69,6 +72,23 @@ bin_specs <- tibble::tribble(
 
 metadata_file <- NULL
 long_gap_threshold_sec <- 3600
+exclude_long_gaps_from_metrics <- TRUE
+
+use_multicore <- TRUE
+n_cores <- max(1L, parallel::detectCores(logical = TRUE) - 1L)
+
+if (use_multicore && requireNamespace("furrr", quietly = TRUE) && requireNamespace("future", quietly = TRUE)) {
+  future::plan(future::multisession, workers = n_cores)
+  map_dfr_parallel <- furrr::future_map_dfr
+  map_parallel <- furrr::future_map
+  pmap_parallel <- furrr::future_pmap
+  message("Parallel processing enabled with ", n_cores, " workers.")
+} else {
+  map_dfr_parallel <- purrr::map_dfr
+  map_parallel <- purrr::map
+  pmap_parallel <- purrr::pmap
+  message("Parallel processing disabled; using sequential purrr.")
+}
 
 ensure_dir(output_root)
 ensure_dir(file.path(output_root, "qc"))
@@ -176,7 +196,7 @@ files <- list.files(input_dir, pattern = "_preprocessed\\.csv$", full.names = TR
 if (length(files) == 0) stop("No preprocessed files found in ", input_dir, call. = FALSE)
 
 message("Found ", length(files), " preprocessed files.")
-all_pos <- map_dfr(files, read_preprocessed_position_file)
+all_pos <- map_dfr_parallel(files, read_preprocessed_position_file, .progress = TRUE)
 
 if (!is.null(metadata_file) && file.exists(metadata_file)) {
   meta <- read_behavior_table(metadata_file)
@@ -345,8 +365,13 @@ make_movement_events <- function(pos_tbl) {
     arrange(SourceFile, Batch, CageChange, System, AnimalID, DateTime) %>%
     group_by(SourceFile, Batch, CageChange, System, AnimalID) %>%
     mutate(
+      PrevDateTime = lag(DateTime),
       PrevPositionID = lag(PositionID),
-      PositionChanged = is.finite(PrevPositionID) & PositionID != PrevPositionID
+      TimeSincePrevSec = as.numeric(difftime(DateTime, PrevDateTime, units = "secs")),
+      PositionChanged = is.finite(PrevPositionID) &
+        PositionID != PrevPositionID &
+        is.finite(TimeSincePrevSec) &
+        TimeSincePrevSec <= long_gap_threshold_sec
     ) %>%
     ungroup() %>%
     filter(PositionChanged) %>%
@@ -416,16 +441,23 @@ message("Building occupancy intervals...")
 occupancy_intervals <- all_pos %>%
   group_by(SourceFile, Batch, CageChange, System) %>%
   group_split() %>%
-  map_dfr(make_occupancy_intervals_one_system)
+  map_dfr_parallel(make_occupancy_intervals_one_system, .progress = TRUE)
 
-message("Building movement events...")
+message("\nBuilding movement events...")
 movement_events <- make_movement_events(all_pos)
 
 message("Building dyadic proximity intervals...")
 dyadic_intervals <- all_pos %>%
   group_by(SourceFile, Batch, CageChange, System) %>%
   group_split() %>%
-  map_dfr(make_dyadic_intervals_one_system)
+  map_dfr_parallel(make_dyadic_intervals_one_system, .progress = TRUE)
+
+# The bin-level aggregations below reuse the full interval/event tables. Running
+# them through furrr would export those large objects to every worker.
+if (use_multicore && requireNamespace("future", quietly = TRUE)) {
+  future::plan(future::sequential)
+  message("\nParallel interval reconstruction complete; aggregating scales sequentially to avoid exporting large interval tables.")
+}
 
 # ------------------------------------------------
 # AGGREGATION HELPERS
@@ -442,6 +474,83 @@ add_time_bin <- function(dat, time_col, bin_size_sec) {
     )
 }
 
+filter_metric_intervals <- function(dat) {
+  if (exclude_long_gaps_from_metrics && "LongGap" %in% names(dat)) {
+    dat <- dat %>% filter(!LongGap)
+  }
+  dat
+}
+
+add_phase_number <- function(dat) {
+  dat %>%
+    mutate(
+      PhaseNumber = case_when(
+        Phase == "Active" ~ ConsecActive,
+        Phase == "Inactive" ~ ConsecInactive,
+        TRUE ~ NA_integer_
+      )
+    )
+}
+
+crop_after_second_cc4_phase <- function(dat) {
+  dat %>%
+    filter(!(toupper(CageChange) == "CC4" &
+               tolower(Phase) %in% c("active", "inactive") &
+               !is.na(PhaseNumber) &
+               PhaseNumber > 2L))
+}
+
+split_intervals_to_bins <- function(dat, bin_size_sec) {
+  dat <- dat %>%
+    filter_metric_intervals() %>%
+    filter(
+      !is.na(IntervalStart),
+      !is.na(IntervalEnd),
+      is.finite(DurationSec),
+      DurationSec > 0
+    )
+
+  if (nrow(dat) == 0) {
+    return(dat %>%
+             mutate(
+               BinSizeSec = bin_size_sec,
+               BinStart = as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+             ) %>%
+             slice(0))
+  }
+
+  interval_start_num <- as.numeric(dat$IntervalStart)
+  interval_end_num <- as.numeric(dat$IntervalEnd)
+  bin_start_num <- floor(interval_start_num / bin_size_sec) * bin_size_sec
+  bin_end_num <- floor((interval_end_num - 1e-7) / bin_size_sec) * bin_size_sec
+  n_bins <- pmax(0L, as.integer((bin_end_num - bin_start_num) / bin_size_sec) + 1L)
+
+  keep <- n_bins > 0
+  if (!all(keep)) {
+    dat <- dat[keep, , drop = FALSE]
+    interval_start_num <- interval_start_num[keep]
+    interval_end_num <- interval_end_num[keep]
+    bin_start_num <- bin_start_num[keep]
+    n_bins <- n_bins[keep]
+  }
+
+  row_idx <- rep(seq_len(nrow(dat)), n_bins)
+  bin_offsets <- sequence(n_bins) - 1L
+  split_bin_start_num <- rep(bin_start_num, n_bins) + bin_offsets * bin_size_sec
+  split_start_num <- pmax(rep(interval_start_num, n_bins), split_bin_start_num)
+  split_end_num <- pmin(rep(interval_end_num, n_bins), split_bin_start_num + bin_size_sec)
+  split_duration_sec <- split_end_num - split_start_num
+
+  out <- dat[row_idx, , drop = FALSE]
+  out$IntervalStart <- as.POSIXct(split_start_num, origin = "1970-01-01", tz = "UTC")
+  out$IntervalEnd <- as.POSIXct(split_end_num, origin = "1970-01-01", tz = "UTC")
+  out$DurationSec <- split_duration_sec
+  out$BinSizeSec <- bin_size_sec
+  out$BinStart <- as.POSIXct(split_bin_start_num, origin = "1970-01-01", tz = "UTC")
+
+  out %>% filter(is.finite(DurationSec), DurationSec > 0)
+}
+
 make_time_index <- function(dat) {
   dat %>%
     group_by(SourceFile, Batch, CageChange, System) %>%
@@ -451,11 +560,11 @@ make_time_index <- function(dat) {
 
 summarise_occupancy_by_bin <- function(bin_size_sec) {
   occupancy_intervals %>%
-    add_time_bin("IntervalStart", bin_size_sec) %>%
-    mutate(BinSizeSec = bin_size_sec) %>%
-    group_by(SourceFile, Batch, CageChange, System, Phase, BinSizeSec, BinStart, AnimalNum, AnimalID, Group, Sex, PositionID) %>%
+    split_intervals_to_bins(bin_size_sec) %>%
+    add_phase_number() %>%
+    group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, BinSizeSec, BinStart, AnimalNum, AnimalID, Group, Sex, PositionID) %>%
     summarise(PositionSeconds = sum(DurationSec, na.rm = TRUE), .groups = "drop") %>%
-    group_by(SourceFile, Batch, CageChange, System, Phase, BinSizeSec, BinStart, AnimalNum, AnimalID, Group, Sex) %>%
+    group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, BinSizeSec, BinStart, AnimalNum, AnimalID, Group, Sex) %>%
     summarise(
       observation_seconds = sum(PositionSeconds, na.rm = TRUE),
       Entropy = calc_entropy(PositionSeconds),
@@ -470,8 +579,9 @@ summarise_movement_by_bin <- function(bin_size_sec) {
   if (nrow(movement_events) == 0) return(tibble())
   movement_events %>%
     add_time_bin("EventTime", bin_size_sec) %>%
+    add_phase_number() %>%
     mutate(BinSizeSec = bin_size_sec) %>%
-    group_by(SourceFile, Batch, CageChange, System, Phase, BinSizeSec, BinStart, AnimalNum, AnimalID) %>%
+    group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, BinSizeSec, BinStart, AnimalNum, AnimalID) %>%
     summarise(
       Movement = sum(MovementEvent, na.rm = TRUE),
       MovementDistance = sum(MovementDistanceEvent, na.rm = TRUE),
@@ -482,30 +592,32 @@ summarise_movement_by_bin <- function(bin_size_sec) {
 summarise_proximity_by_bin <- function(bin_size_sec) {
   if (nrow(dyadic_intervals) == 0) return(tibble())
 
-  dyad_long <- dyadic_intervals %>%
+  dyad_split <- dyadic_intervals %>% split_intervals_to_bins(bin_size_sec)
+
+  dyad_long <- dyad_split %>%
+    add_phase_number() %>%
     mutate(
       same_position_seconds = if_else(same_position, DurationSec, 0),
       adjacent_seconds = if_else(adjacent_position, DurationSec, 0),
       weighted_grid_distance = grid_distance * DurationSec
     ) %>%
-    select(SourceFile, Batch, CageChange, System, Phase, IntervalStart, DurationSec,
+    select(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, BinSizeSec, BinStart, DurationSec,
            same_position_seconds, adjacent_seconds, weighted_grid_distance, Focal, Partner) %>%
     bind_rows(
-      dyadic_intervals %>%
+      dyad_split %>%
+        add_phase_number() %>%
         mutate(
           same_position_seconds = if_else(same_position, DurationSec, 0),
           adjacent_seconds = if_else(adjacent_position, DurationSec, 0),
           weighted_grid_distance = grid_distance * DurationSec
         ) %>%
-        transmute(SourceFile, Batch, CageChange, System, Phase, IntervalStart, DurationSec,
+        transmute(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, BinSizeSec, BinStart, DurationSec,
                   same_position_seconds, adjacent_seconds, weighted_grid_distance,
                   Focal = Partner, Partner = Focal)
     )
 
   dyad_long %>%
-    add_time_bin("IntervalStart", bin_size_sec) %>%
-    mutate(BinSizeSec = bin_size_sec) %>%
-    group_by(SourceFile, Batch, CageChange, System, Phase, BinSizeSec, BinStart, AnimalNum = Focal) %>%
+    group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, BinSizeSec, BinStart, AnimalNum = Focal) %>%
     summarise(
       dyadic_observation_seconds = sum(DurationSec, na.rm = TRUE),
       ProximitySeconds = sum(same_position_seconds, na.rm = TRUE),
@@ -520,8 +632,29 @@ summarise_proximity_by_bin <- function(bin_size_sec) {
     )
 }
 
+ensure_metric_columns <- function(out) {
+  defaults <- list(
+    Movement = NA_real_,
+    MovementDistance = NA_real_,
+    ProximitySeconds = NA_real_,
+    ProximityFraction = NA_real_,
+    AdjacentProximitySeconds = NA_real_,
+    AdjacentProximityFraction = NA_real_,
+    MeanGridDistanceToOthers = NA_real_,
+    dyadic_observation_seconds = NA_real_,
+    n_dyadic_intervals = NA_integer_
+  )
+
+  for (nm in names(defaults)) {
+    if (!nm %in% names(out)) out[[nm]] <- defaults[[nm]]
+  }
+
+  out
+}
+
 standardize_metric_output <- function(out, bin_label) {
   out %>%
+    ensure_metric_columns() %>%
     mutate(
       Movement = replace_na(Movement, 0),
       MovementDistance = replace_na(MovementDistance, 0),
@@ -546,8 +679,9 @@ build_bin_metrics <- function(bin_label, bin_size_sec) {
   prox <- summarise_proximity_by_bin(bin_size_sec)
 
   out <- occ %>%
-    left_join(mov, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "BinSizeSec", "BinStart", "AnimalNum", "AnimalID")) %>%
-    left_join(prox, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "BinSizeSec", "BinStart", "AnimalNum")) %>%
+    left_join(mov, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "PhaseNumber", "BinSizeSec", "BinStart", "AnimalNum", "AnimalID")) %>%
+    left_join(prox, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "PhaseNumber", "BinSizeSec", "BinStart", "AnimalNum")) %>%
+    crop_after_second_cc4_phase() %>%
     standardize_metric_output(bin_label) %>%
     select(
       AnimalNum, AnimalID, Batch, CageChange, System, Group, Sex, Phase,
@@ -572,6 +706,7 @@ build_phase_metrics <- function() {
   message("Aggregating animal-level metrics by phase...")
 
   occ <- occupancy_intervals %>%
+    filter_metric_intervals() %>%
     mutate(PhaseNumber = case_when(Phase == "Active" ~ ConsecActive, Phase == "Inactive" ~ ConsecInactive, TRUE ~ NA_integer_)) %>%
     group_by(SourceFile, Batch, CageChange, System, Phase, PhaseNumber, AnimalNum, AnimalID, Group, Sex, PositionID) %>%
     summarise(PositionSeconds = sum(DurationSec, na.rm = TRUE), .groups = "drop") %>%
@@ -590,6 +725,7 @@ build_phase_metrics <- function() {
     summarise(Movement = sum(MovementEvent, na.rm = TRUE), MovementDistance = sum(MovementDistanceEvent, na.rm = TRUE), .groups = "drop")
 
   prox <- dyadic_intervals %>%
+    filter_metric_intervals() %>%
     mutate(
       PhaseNumber = case_when(Phase == "Active" ~ ConsecActive, Phase == "Inactive" ~ ConsecInactive, TRUE ~ NA_integer_),
       same_position_seconds = if_else(same_position, DurationSec, 0),
@@ -627,6 +763,7 @@ build_phase_metrics <- function() {
   out <- occ %>%
     left_join(mov, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "PhaseNumber", "AnimalNum", "AnimalID")) %>%
     left_join(prox, by = c("SourceFile", "Batch", "CageChange", "System", "Phase", "PhaseNumber", "AnimalNum")) %>%
+    crop_after_second_cc4_phase() %>%
     group_by(SourceFile, Batch, CageChange, System, AnimalNum) %>%
     arrange(Phase, PhaseNumber, .by_group = TRUE) %>%
     mutate(TimeIndex = row_number() - 1L) %>%
@@ -656,7 +793,10 @@ build_phase_metrics <- function() {
 # WRITE OUTPUTS
 # ------------------------------------------------
 
-all_bin_outputs <- pmap(list(bin_specs$bin_label, bin_specs$bin_size_sec), build_bin_metrics)
+all_bin_outputs <- purrr::pmap(
+  list(bin_specs$bin_label, bin_specs$bin_size_sec),
+  build_bin_metrics
+)
 phase_output <- build_phase_metrics()
 
 qc_tbl <- bind_rows(
@@ -669,6 +809,9 @@ qc_tbl <- bind_rows(
       n_cage_changes = n_distinct(dat$CageChange),
       n_systems = n_distinct(dat$System),
       total_observation_hours = sum(dat$observation_seconds, na.rm = TRUE) / 3600,
+      max_observation_seconds = max(dat$observation_seconds, na.rm = TRUE),
+      n_rows_observation_seconds_gt_bin = sum(dat$observation_seconds > dat$BinSizeSec + 1e-6, na.rm = TRUE),
+      max_dyadic_observation_seconds = max(dat$dyadic_observation_seconds, na.rm = TRUE),
       missing_proximity_fraction = mean(is.na(dat$ProximityFraction)),
       missing_proximity_seconds = mean(is.na(dat$ProximitySeconds))
     )
@@ -681,12 +824,26 @@ qc_tbl <- bind_rows(
     n_cage_changes = n_distinct(phase_output$CageChange),
     n_systems = n_distinct(phase_output$System),
     total_observation_hours = sum(phase_output$observation_seconds, na.rm = TRUE) / 3600,
+    max_observation_seconds = max(phase_output$observation_seconds, na.rm = TRUE),
+    n_rows_observation_seconds_gt_bin = NA_integer_,
+    max_dyadic_observation_seconds = max(phase_output$dyadic_observation_seconds, na.rm = TRUE),
     missing_proximity_fraction = mean(is.na(phase_output$ProximityFraction)),
     missing_proximity_seconds = mean(is.na(phase_output$ProximitySeconds))
   )
 )
 
 write_table(qc_tbl, file.path(output_root, "qc", "multiscale_behavior_metrics_qc.csv"))
+
+bad_bin_qc <- qc_tbl %>%
+  filter(output != "phase_based", n_rows_observation_seconds_gt_bin > 0)
+
+if (nrow(bad_bin_qc) > 0) {
+  warning(
+    "Some fixed-width outputs still have observation_seconds greater than BinSizeSec. ",
+    "Check qc/multiscale_behavior_metrics_qc.csv",
+    call. = FALSE
+  )
+}
 
 message("Multiscale behavior metric export complete.")
 message("Primary downstream file pattern: ", file.path(output_root, "<scale>_based", "all_behavior_metrics.csv"))
