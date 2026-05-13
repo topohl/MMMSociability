@@ -21,7 +21,8 @@
 
 # Load necessary libraries
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(readr, ggplot2, tibble, dplyr, reshape2, lubridate, stringr, tidyr, lme4, lmerTest, emmeans, pheatmap)
+pacman::p_load(readr, ggplot2, tibble, dplyr, reshape2, lubridate,
+               stringr, tidyr, lme4, lmerTest, emmeans, pheatmap)
 
 # Define paths
 working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
@@ -67,153 +68,178 @@ for (batch in batches) {
     #special treatment for b3 1545...
     #if(batch=="B3"&&cageChange=="CC3"){
     #  mouse_which_system_tibble[4,2] <- "1545"
-      
+
    #   total_closeness_table <- total_closeness_table%>%
    #     rename('1545' = OR1545)
    # }
-    
+
     # Special treatment for every CC4 after A2 (grid in cage) -> not usable for social analysis
     # Use only A1, I2, A2 for the computation of the rank from CC4
     if (cageChange == "CC4") {
       total_closeness_table <- total_closeness_table %>%
-      filter(Phase %in% c("A1", "I2", "A2"))
+        filter(Phase %in% c("A1", "I2", "A2"))
     }
-    
+
     # Iterate over each system in the mouse_which_system_tibble
     for (system in colnames(mouse_which_system_tibble)) {
       print(system)
-      
+
       # Create a character vector of mice in the current system
       mice_of_system <- mouse_which_system_tibble %>%
-      select(all_of(system)) %>%
-      pull()
-      
+        select(all_of(system)) %>%
+        pull()
+
       # Skip the system if it is incomplete
       if (NA %in% mice_of_system) {
-      cat("Skipping ", system, " in ", cageChange, " in ", batch, "\n")
-      next
+        cat("Skipping ", system, " in ", cageChange, " in ", batch, "\n")
+        next
       }
-      
+
       # Initialize vectors for determining rank
       social_hours_act_system_vec <- c()   # Max social hours (active phase) of a mouse in a system
       social_hours_inact_system_vec <- c() # Max social hours (inactive phase) of a mouse in a system
       social_hours_total_system_vec <- c() # Max social hours of a mouse in a system
-      
+
       # Iterate over each mouse in the current system
       for (mouse in mice_of_system) {
-      # Determine group and sex of the mouse
-      group <- ifelse(mouse %in% sus_animals, "sus", ifelse(mouse %in% con_animals, "con", "res"))
-      sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
-      
-      # Calculate social hours for active and inactive phases
-      social_h_act <- total_closeness_table %>%
-        filter(Phase %in% c("A1", "A2", "A3", "A4")) %>%
-        select(all_of(mouse)) %>%
-        sum()
-      cat("Sum of active: ", social_h_act, "\n")
-      
-      social_h_inact <- total_closeness_table %>%
-        filter(Phase %in% c("I2", "I3", "I4")) %>%
-        select(all_of(mouse)) %>%
-        sum()
-      
-      social_h_total <- sum(social_h_act, social_h_inact)
-      
-      # Calculate average social hours for active and inactive phases
-      avg_social_h_act <- total_closeness_table %>%
-        filter(Phase %in% c("A1", "A2", "A3", "A4")) %>%
-        select(all_of(mouse)) %>%
-        unlist() %>%
-        mean()
-      
-      avg_social_h_inact <- total_closeness_table %>%
-        filter(Phase %in% c("I2", "I3", "I4")) %>%
-        select(all_of(mouse)) %>%
-        unlist() %>%
-        mean()
-      
-      # Add a new row to the rank_tibble
-      rank_tibble <- rank_tibble %>%
-        add_row(CageChange = cageChange,
-            System = system,
-            Animal_ID = mouse,
-            Group = group,
-            Batch = batch,
-            Sex = sex,
-            Social_h_act = social_h_act,
-            Social_h_inact = social_h_inact,
-            Social_h_total = social_h_total,
-            Avg_social_h_act = avg_social_h_act,
-            Avg_social_h_inact = avg_social_h_inact,
-            SystemRank_act = NA,
-            SystemRank_inact = NA,
-            SystemRank_total = NA)
-      
-      # Append social hours to vectors for rank computation
-      social_hours_act_system_vec <- append(social_hours_act_system_vec, social_h_act)
-      social_hours_inact_system_vec <- append(social_hours_inact_system_vec, social_h_inact)
-      social_hours_total_system_vec <- append(social_hours_total_system_vec, social_h_total)
+        # Determine group and sex of the mouse
+        group <- ifelse(mouse %in% sus_animals, "sus",
+                        ifelse(mouse %in% con_animals, "con", "res"))
+        sex <- ifelse(batch %in% c("B3", "B4", "B6"), "female", "male")
+
+        # Calculate social hours for active and inactive phases
+        social_h_act <- total_closeness_table %>%
+          filter(Phase %in% c("A1", "A2", "A3", "A4")) %>%
+          select(all_of(mouse)) %>%
+          sum()
+        cat("Sum of active: ", social_h_act, "\n")
+
+        social_h_inact <- total_closeness_table %>%
+          filter(Phase %in% c("I2", "I3", "I4")) %>%
+          select(all_of(mouse)) %>%
+          sum()
+
+        social_h_total <- sum(social_h_act, social_h_inact)
+
+        # Calculate average social hours for active and inactive phases
+        avg_social_h_act <- total_closeness_table %>%
+          filter(Phase %in% c("A1", "A2", "A3", "A4")) %>%
+          select(all_of(mouse)) %>%
+          unlist() %>%
+          mean()
+
+        avg_social_h_inact <- total_closeness_table %>%
+          filter(Phase %in% c("I2", "I3", "I4")) %>%
+          select(all_of(mouse)) %>%
+          unlist() %>%
+          mean()
+
+        # Add a new row to the rank_tibble
+        rank_tibble <- rank_tibble %>%
+          add_row(CageChange = cageChange,
+                  System = system,
+                  Animal_ID = mouse,
+                  Group = group,
+                  Batch = batch,
+                  Sex = sex,
+                  Social_h_act = social_h_act,
+                  Social_h_inact = social_h_inact,
+                  Social_h_total = social_h_total,
+                  Avg_social_h_act = avg_social_h_act,
+                  Avg_social_h_inact = avg_social_h_inact,
+                  SystemRank_act = NA,
+                  SystemRank_inact = NA,
+                  SystemRank_total = NA)
+
+        # Append social hours to vectors for rank computation
+        social_hours_act_system_vec <- append(social_hours_act_system_vec, social_h_act)
+        social_hours_inact_system_vec <- append(social_hours_inact_system_vec, social_h_inact)
+        social_hours_total_system_vec <- append(social_hours_total_system_vec, social_h_total)
       }
-      
+
       # Compute ranks for the current system
       rank_tibble <- compute_rank(rank_tibble, social_hours_act_system_vec, system, 'Social_h_act', 'SystemRank_act')
       rank_tibble <- compute_rank(rank_tibble, social_hours_inact_system_vec, system, 'Social_h_inact', 'SystemRank_inact')
       rank_tibble <- compute_rank(rank_tibble, social_hours_total_system_vec, system, 'Social_h_total', 'SystemRank_total')
     }
-    }
   }
+}
 
 # delete first row in tibble (NA values)
 rank_tibble <- na.omit(rank_tibble)
 
-#change counted seconds to hours??
-rank_tibble <- rank_tibble%>%
-  mutate(Social_h_total = as.integer(Social_h_total))%>%  ##sum
-  mutate(Social_h_total = ifelse(Social_h_total!=0,Social_h_total/3600,Social_h_total))%>%
-  mutate(Social_h_act = as.integer(Social_h_act))%>%
-  mutate(Social_h_act = ifelse(Social_h_act!=0,Social_h_act/3600,Social_h_act))%>%
-  mutate(Social_h_inact = as.integer(Social_h_inact))%>%
-  mutate(Social_h_inact = ifelse(Social_h_inact!=0,Social_h_inact/3600,Social_h_inact))%>%
-  mutate(Avg_social_h_act = as.integer(Avg_social_h_act))%>%  ##average
-  mutate(Avg_social_h_act = ifelse(Avg_social_h_act!=0,Avg_social_h_act/3600,Avg_social_h_act))%>%
-  mutate(Avg_social_h_inact = as.integer(Avg_social_h_inact))%>%
-  mutate(Avg_social_h_inact = ifelse(Avg_social_h_inact!=0,Avg_social_h_inact/3600,Avg_social_h_inact))
+# change counted seconds to hours
+rank_tibble <- rank_tibble %>%
+  mutate(Social_h_total = as.integer(Social_h_total)) %>%  ##sum
+  mutate(Social_h_total = ifelse(Social_h_total != 0,
+                                 Social_h_total/3600,
+                                 Social_h_total)) %>%
+  mutate(Social_h_act = as.integer(Social_h_act)) %>%
+  mutate(Social_h_act = ifelse(Social_h_act != 0,
+                               Social_h_act/3600,
+                               Social_h_act)) %>%
+  mutate(Social_h_inact = as.integer(Social_h_inact)) %>%
+  mutate(Social_h_inact = ifelse(Social_h_inact != 0,
+                                 Social_h_inact/3600,
+                                 Social_h_inact)) %>%
+  mutate(Avg_social_h_act = as.integer(Avg_social_h_act)) %>%  ##average
+  mutate(Avg_social_h_act = ifelse(Avg_social_h_act != 0,
+                                   Avg_social_h_act/3600,
+                                   Avg_social_h_act)) %>%
+  mutate(Avg_social_h_inact = as.integer(Avg_social_h_inact)) %>%
+  mutate(Avg_social_h_inact = ifelse(Avg_social_h_inact != 0,
+                                     Avg_social_h_inact/3600,
+                                     Avg_social_h_inact))
 
 ################## PLOTS ########################################
 
 ################# SOCIAL PROX IN HOURS #################
 ## ACTIVE VS INACTIVE PHASES ##
 #select needed columns
-phase_rank_tibble <- select(rank_tibble, c(CageChange,Animal_ID, Group, Sex, Social_h_act, Social_h_inact))
-names(phase_rank_tibble) <- c('CageChange', 'Animal_ID', 'Group', 'Sex', 'active', 'inactive')
+phase_rank_tibble <- select(rank_tibble, c(CageChange, Animal_ID,
+                                           Group, Sex, Social_h_act,
+                                           Social_h_inact))
+names(phase_rank_tibble) <- c("CageChange", "Animal_ID", "Group",
+                              "Sex", "active", "inactive")
 
-melt_rank_tibble <- melt(phase_rank_tibble, id=c('CageChange', 'Animal_ID', 'Group', 'Sex'))
-names(melt_rank_tibble) <- c('CageChange', 'Animal_ID', 'Group', 'Sex', 'Phase', 'Hours')
+melt_rank_tibble <- melt(phase_rank_tibble, id = c("CageChange", "Animal_ID",
+                                                   "Group", "Sex"))
+names(melt_rank_tibble) <- c("CageChange", "Animal_ID", "Group",
+                             "Sex", "Phase", "Hours")
 
-## scatterplot 
-total_hours_phase_scatterplot <-  ggplot(data=melt_rank_tibble, aes(x=Group, y=Hours, color=Phase))+
-  geom_jitter(aes(fill=Phase), size=4, alpha=0.7, width=0.2, shape=16)+
+## scatterplot
+total_hours_phase_scatterplot <-  ggplot(data = melt_rank_tibble,
+                                         aes(x = Group,
+                                             y = Hours,
+                                             color = Phase)) +
+  geom_jitter(aes(fill = Phase), size = 4, alpha = 0.7, width = 0.2, shape = 16) +
   #scale_color_manual(values= c("sus"= "tomato", "res" = "lightgreen", "con" = "deepskyblue4"), name = paste("total social hours, ", batch))+
-  scale_y_continuous("social proximity in h")+
+  scale_y_continuous("social proximity in h") +
   stat_summary(
-    fun.min=function(z){quantile(z, 0.25)},
-    fun.max=function(z){quantile(z, 0.75)},
-    fun=median,
-    color="black",
-    size=0.8,
-    shape=16,
-    width=1)+
-  theme_bw()+
-  facet_grid(Phase~.)#for general plot just leave out this line
+    fun.min = function(z){quantile(z, 0.25)},
+    fun.max = function(z){quantile(z, 0.75)},
+    fun = median,
+    color = "black",
+    size = 0.8,
+    shape = 16,
+    width = 1) +
+  theme_bw() +
+  facet_grid(Phase ~ .) #for general plot just leave out this line
 
-## boxplot 
-total_hours_phase_boxplot <-  ggplot(data=melt_rank_tibble, aes(x=Phase, y=Hours, fill=Group))+
-  geom_boxplot()+
-  scale_fill_manual(values= c("sus"= "tomato", "res" = "lightgreen", "con" = "deepskyblue4"), name = "group")+
-  scale_y_continuous("social proximity in h")+
-  labs(title = paste("Social measurement in sum hours Batch 1-5"))+
-  theme_bw()+
-  facet_grid(Sex~CageChange)+
+## boxplot
+total_hours_phase_boxplot <-  ggplot(data = melt_rank_tibble,
+                                     aes(x = Phase,
+                                         y = Hours,
+                                         fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("sus" = "#E63946",
+                               "res" = "grey60",
+                               "con" = "#457B9D"),
+                               name = "group") +
+  scale_y_continuous("social proximity in h") +
+  labs(title = paste("Social measurement in sum hours Batch 1-6")) +
+  theme_bw() +
+  facet_grid(Sex ~ CageChange) +
   theme(title = element_text(size = 20),
         legend.key.size = unit(5, "lines"),
         legend.title = element_text(size = 20),
