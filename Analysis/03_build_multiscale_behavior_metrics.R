@@ -38,14 +38,14 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
-source("Functions/behavioral_dynamics_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
 # ------------------------------------------------
 
-input_dir <- "preprocessed_data"
-output_root <- "analysis_ready/03_derived_metrics"
+input_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability/preprocessed_data"
+output_root <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/analysis_ready/03_derived_metrics"
 
 # Optional animal reference lists. These are one-ID-per-line CSV/text files.
 # Matching is done after robust character normalization, so mixed numeric/string
