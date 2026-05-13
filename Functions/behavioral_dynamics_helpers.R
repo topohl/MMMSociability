@@ -63,7 +63,7 @@ standardize_behavior_columns <- function(dat,
   stopifnot(is.data.frame(dat))
 
   animal_col <- animal_col %||% first_existing_col(dat, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "animal ID column")
-  time_col <- time_col %||% first_existing_col(dat, c("HalfHourElapsed", "HalfHourWithinCC0", "HalfHour", "Time", "TimeBin", "ZeitgeberTime", "ZT", "datetime", "DateTime"), TRUE, "time column")
+  time_col <- time_col %||% first_existing_col(dat, c("TimeIndex", "BinStart", "HalfHourElapsed", "HalfHourWithinCC0", "HalfHour", "Time", "TimeBin", "ZeitgeberTime", "ZT", "datetime", "DateTime"), TRUE, "time column")
   group_col <- group_col %||% first_existing_col(dat, c("Group", "Phenotype", "Condition", "Treatment", "StressGroup"), FALSE, "group column")
   sex_col <- sex_col %||% first_existing_col(dat, c("Sex", "sex"), FALSE, "sex column")
   phase_col <- phase_col %||% first_existing_col(dat, c("Phase", "phase", "LightDark", "DayNight", "CircadianPhase"), FALSE, "phase column")
