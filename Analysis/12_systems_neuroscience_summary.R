@@ -1112,7 +1112,8 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
 
   p_instability <- latent_instability_by_animal %>%
     filter(is.finite(latent_roughness)) %>%
-    ggplot(aes(Group, latent_roughness, colour = Group, fill = Group)) +
+    mutate(log_roughness = log10(latent_roughness + 1)) %>%
+    ggplot(aes(Group, log_roughness, colour = Group, fill = Group)) +
     geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.28, linewidth = 0.28) +
     geom_point(position = position_jitter(width = 0.11, height = 0), size = 1.55, alpha = 0.78, stroke = 0.20) +
     facet_grid(PhaseClass ~ Sex, scales = "free_y") +
@@ -1122,7 +1123,7 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
       title = "Latent trajectory instability",
       subtitle = "Path roughness through temporal state space by animal",
       x = NULL,
-      y = "Trajectory roughness"
+      y = "log10(roughness + 1)"
     ) +
     make_nature_theme(base_size = 6)
 
@@ -1758,20 +1759,49 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
     mutate(Group = factor(Group, levels = group_levels))
   write_table(group_n_panel, file.path(output_dir, "tables/systems_dashboard_group_n_by_sex.csv"))
 
-  p_heat_small <- heat_tbl %>%
-    group_by(Sex, contrast) %>%
-    slice_max(abs(hedges_g), n = 6, with_ties = FALSE) %>%
-    ungroup() %>%
-    mutate(DisplayFeature = dashboard_feature_label(Metric, Statistic, Context, width = 34),
-           DisplayFeature = factor(DisplayFeature, levels = rev(unique(DisplayFeature)))) %>%
-    ggplot(aes(contrast, DisplayFeature, fill = hedges_g)) +
+  module_effect_tbl <- heat_tbl %>%
+    mutate(
+      Module = case_when(
+        str_detect(Metric, "proximity|social") ~ "Social proximity",
+        str_detect(Metric, "movement|locomotor|activity") ~ "Locomotor activity",
+        str_detect(Metric, "entropy") ~ "Spatial entropy",
+        str_detect(Statistic, "rmssd|acf1|sd|dynamic_range|burst|instability") |
+          str_detect(Metric, "switch|transition|roughness|volatility") ~ "Temporal instability",
+        str_detect(Source, "hmm|state") | str_detect(Domain, "behavioral_state|latent_space") ~ "Latent state organization",
+        str_detect(Source, "gamm|trajectory") | str_detect(Domain, "trajectory") ~ "Trajectory dynamics",
+        TRUE ~ "Composite/misc."
+      )
+    ) %>%
+    group_by(Sex, contrast, Module) %>%
+    summarise(
+      n_features = n(),
+      median_g = median(hedges_g, na.rm = TRUE),
+      max_abs_g = hedges_g[which.max(abs(hedges_g))][1],
+      min_q = min(p_fdr, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      module_effect = if_else(is.finite(median_g), median_g, max_abs_g),
+      sig = sig_label(min_q),
+      Module = factor(Module, levels = rev(c(
+        "Locomotor activity", "Spatial entropy", "Social proximity",
+        "Temporal instability", "Latent state organization", "Trajectory dynamics",
+        "Composite/misc."
+      )))
+    ) %>%
+    filter(is.finite(module_effect))
+
+  write_table(module_effect_tbl, file.path(output_dir, "tables/systems_dashboard_module_effect_summary.csv"))
+
+  p_heat_small <- module_effect_tbl %>%
+    ggplot(aes(contrast, Module, fill = module_effect)) +
     geom_tile(colour = "white", linewidth = 0.25) +
     geom_text(aes(label = sig), size = 1.8) +
     facet_grid(Sex ~ ., scales = "free_y", space = "free_y") +
     scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey90") +
     labs(
-      title = "F. Sex-stratified phenotype contrasts",
-      subtitle = "Top Hedges g effects per sex and contrast; exact values in group-contrast table",
+      title = "F. Multiscale phenotype modules",
+      subtitle = "Median Hedges g across feature modules; detailed map exported separately",
       x = NULL,
       y = NULL,
       fill = "g"
@@ -1828,15 +1858,12 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
   dashboard <- ((p_latent_dash | p_nonlinear_dash) / (p_pc1_outcome | p_pred_dash) / (p_instability_dash | p_heat_small)) +
     patchwork::plot_layout(heights = c(1.05, 0.95, 1.20)) +
     patchwork::plot_annotation(
-      title = "Multiscale behavioral signatures of stress susceptibility",
-      subtitle = paste0("Stress phenotypes as temporal dynamics across movement, entropy, proximity and state transitions; lower ", primary_outcome, " = worse endpoint"),
-      caption = paste0(
-        "CON/RES/SUS colours use original palette. RES/SUS are post-paradigm CombZ-derived labels; ",
-        "prediction uses only first-active-window behavioral features. Heatmap symbols denote BH FDR: * q<0.05, ** q<0.01, *** q<0.001."
-      )
+      title = "Behavioral dynamics of stress susceptibility",
+      subtitle = paste0("Temporal state-space trajectories, early prediction and multiscale modules; lower ", primary_outcome, " = worse endpoint"),
+      caption = "RES/SUS are CombZ-derived labels. Prediction uses first-active-window features only. Symbols denote BH FDR."
     )
 
-  save_plot_svg_pdf(dashboard, file.path(output_dir, "figures/Fig_integrated_systems_dashboard"), width = 210, height = 250)
+  save_plot_svg_pdf(dashboard, file.path(output_dir, "figures/Fig_integrated_systems_dashboard"), width = 225, height = 245)
 }
 
 # ------------------------------------------------
