@@ -3,7 +3,7 @@
 # MMMSociability
 # ================================================================
 # Goal:
-#   Fit smooth behavioral trajectories and extract animal-level features:
+#   Fit group-blind smooth behavioral trajectories and extract animal-level features:
 #   AUC, mean predicted value, peak, trough, dynamic range, time-to-peak,
 #   RMSSD of prediction, and ACF1 of prediction.
 #
@@ -12,6 +12,9 @@
 #
 # Recommended scale:
 #   10–30 min bins. Default is 30min_based for smooth trajectory summaries.
+# Design:
+#   Group/Sex are intentionally not used in the GAMM formula. They are used
+#   only after prediction for summaries and downstream descriptive contrasts.
 # ================================================================
 
 suppressPackageStartupMessages({
@@ -23,15 +26,15 @@ suppressPackageStartupMessages({
   library(pracma)
 })
 
-source("Functions/behavioral_dynamics_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
 # ------------------------------------------------
 
 bin_level <- "30min_based"
-input_file <- file.path("analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
-output_dir <- file.path("analysis_ready/06_behavioral_dynamics/gamm_features", bin_level)
+input_file <- file.path("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/analysis_ready/03_derived_metrics", bin_level, "all_behavior_metrics.csv")
+output_dir <- file.path("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/analysis_ready/06_behavioral_dynamics/gamm_features", bin_level)
 
 # Use normalized proximity for GAMM trajectories. Raw contact seconds scale with bin size.
 proximity_col <- "ProximityFraction"
@@ -51,15 +54,21 @@ model_qc <- list()
 for (metric in metric_names) {
   dat <- behav %>%
     transmute(
-      AnimalNum,
-      Group,
-      Sex,
-      Phase,
-      CageChange,
+      AnimalNum = factor(AnimalNum),
+      Group = factor(Group),
+      Sex = factor(Sex),
+      Phase = factor(Phase),
+      CageChange = factor(CageChange),
       TimeIndex,
       Value = .data[[metric]]
     ) %>%
-    filter(is.finite(Value), is.finite(TimeIndex))
+    filter(
+      is.finite(Value),
+      is.finite(TimeIndex),
+      !is.na(AnimalNum),
+      !is.na(Group)
+    ) %>%
+    droplevels()
 
   if (nrow(dat) < 20 || n_distinct(dat$TimeIndex) < 5 || n_distinct(dat$AnimalNum) < 3) {
     model_qc[[metric]] <- tibble(
@@ -76,9 +85,12 @@ for (metric in metric_names) {
   }
 
   dat <- dat %>% mutate(TimeScaled = as.numeric(scale(TimeIndex)))
+  smooth_k <- min(6, max(3, n_distinct(dat$TimeIndex) - 1))
+  animal_smooth_k <- min(4, max(3, n_distinct(dat$TimeIndex) - 1))
 
   fit <- mgcv::bam(
-    Value ~ Group + s(TimeScaled, by = Group, k = min(6, max(3, n_distinct(dat$TimeIndex) - 1)), bs = 'tp') + s(AnimalNum, bs = 're'),
+    Value ~ Phase + CageChange +
+      s(TimeScaled, AnimalNum, bs = "fs", k = animal_smooth_k),
     data = dat,
     discrete = TRUE,
     method = "fREML"
@@ -114,9 +126,16 @@ for (metric in metric_names) {
     ProximityInput = proximity_col,
     status = "fit",
     reason = NA_character_,
+    group_blind = TRUE,
+    model_formula = paste(
+      "Value ~ Phase + CageChange +",
+      "s(TimeScaled, AnimalNum, bs='fs')"
+    ),
     n_rows = nrow(dat),
     n_animals = n_distinct(dat$AnimalNum),
     n_timepoints = n_distinct(dat$TimeIndex),
+    smooth_k = smooth_k,
+    animal_smooth_k = animal_smooth_k,
     edf_total = sum(summary(fit)$s.table[, "edf"], na.rm = TRUE),
     deviance_explained = summary(fit)$dev.expl
   )
