@@ -38,10 +38,18 @@ output_dir <- file.path("S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analy
 
 # Optional endpoint file. If NULL or missing, the script will try to use endpoints
 # already present in input_file.
-endpoint_file <- NULL
+endpoint_file <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/SIS_Analysis/E9_Behavior_Data.xlsx"
+endpoint_sheet <- "zScore"
+endpoint_cols <- c(
+  "CombZ", "stress_z_score", "NOR", "sucrose_pref", "weight_dev", "delta_cort", "adrenal_weight", "spleen_weight",
+  "SucrosePreference", "Corticosterone", "DeltaCorticosterone"
+)
+primary_outcome <- "CombZ"
+primary_outcome_label <- "CombZ (lower = worse depressive-like endpoint; higher = more resilient-like endpoint)"
+primary_outcome_direction <- "lower_worse"
 
-# Endpoint column to predict. Change this to your real stress score column.
-outcome_col <- "stress_z_score"
+# Endpoint column to predict. Uses primary_outcome by default.
+outcome_col <- primary_outcome
 
 # Early window definition. Default: first active-phase bins per animal/cage-change.
 early_phase_pattern <- "active|dark|night"
@@ -462,26 +470,51 @@ if (nrow(feature_group_effect_tbl) > 0) {
 # ------------------------------------------------
 
 endpoint_dat <- NULL
+endpoint_source_col <- NA_character_
 
 if (!is.null(endpoint_file) && file.exists(endpoint_file)) {
-  endpoint_raw <- read_behavior_table(endpoint_file)
+  endpoint_ext <- tolower(tools::file_ext(endpoint_file))
+  endpoint_raw <- if (endpoint_ext %in% c("xlsx", "xls") && !is.null(endpoint_sheet)) {
+    if (!requireNamespace("readxl", quietly = TRUE)) {
+      stop("Install readxl to read endpoint Excel files.", call. = FALSE)
+    }
+    readxl::read_excel(endpoint_file, sheet = endpoint_sheet)
+  } else {
+    read_behavior_table(endpoint_file)
+  }
+
   endpoint_animal_col <- first_existing_col(endpoint_raw, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "endpoint animal column")
+  endpoint_outcome_col <- first_existing_col(endpoint_raw, unique(c(outcome_col, endpoint_cols)), TRUE, "endpoint outcome column")
+  endpoint_source_col <- endpoint_outcome_col
+
   endpoint_dat <- endpoint_raw %>%
-    transmute(AnimalNum = .data[[endpoint_animal_col]], outcome = suppressWarnings(as.numeric(.data[[outcome_col]])))
-} else if (outcome_col %in% names(raw_dat)) {
+    transmute(
+      AnimalNum = as.character(.data[[endpoint_animal_col]]),
+      outcome = suppressWarnings(as.numeric(.data[[endpoint_outcome_col]]))
+    ) %>%
+    group_by(AnimalNum) %>%
+    summarise(outcome = first(na.omit(outcome)), .groups = "drop")
+} else {
   endpoint_animal_col <- first_existing_col(raw_dat, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "endpoint animal column")
-  endpoint_dat <- raw_dat %>%
-    group_by(AnimalNum = .data[[endpoint_animal_col]]) %>%
-    summarise(outcome = first(na.omit(suppressWarnings(as.numeric(.data[[outcome_col]])))), .groups = "drop")
+  endpoint_outcome_col <- first_existing_col(raw_dat, unique(c(outcome_col, endpoint_cols)), FALSE, "endpoint outcome column")
+  if (!is.na(endpoint_outcome_col)) {
+    endpoint_source_col <- endpoint_outcome_col
+    endpoint_dat <- raw_dat %>%
+      group_by(AnimalNum = as.character(.data[[endpoint_animal_col]])) %>%
+      summarise(outcome = first(na.omit(suppressWarnings(as.numeric(.data[[endpoint_outcome_col]])))), .groups = "drop")
+  }
 }
 
 if (is.null(endpoint_dat)) {
   message("No endpoint column found. Feature extraction and group summaries finished, but predictive modeling skipped.")
-  message("Set outcome_col and/or endpoint_file in Analysis/08_early_prediction_models.R.")
+  message("Set endpoint_file/endpoint_sheet/endpoint_cols and/or outcome_col in Analysis/08_early_prediction_models.R.")
   quit(save = "no", status = 0)
 }
 
+message("Endpoint source column used for modeling: ", endpoint_source_col)
+
 model_dat <- feature_wide %>%
+  mutate(AnimalNum = as.character(AnimalNum)) %>%
   left_join(endpoint_dat, by = "AnimalNum") %>%
   filter(is.finite(outcome))
 
@@ -498,6 +531,9 @@ feature_qc_tbl <- make_feature_qc(model_dat, feature_cols) %>%
 endpoint_summary_tbl <- model_dat %>%
   summarise(
     Outcome = outcome_col,
+    OutcomeLabel = primary_outcome_label,
+    OutcomeDirection = primary_outcome_direction,
+    EndpointSourceColumn = endpoint_source_col,
     n_animals = n(),
     n_groups = n_distinct(Group),
     mean = mean(outcome, na.rm = TRUE),
