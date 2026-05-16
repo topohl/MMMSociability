@@ -13,10 +13,12 @@
 #     03_build_multiscale_behavior_metrics.R
 #     06_burstiness_temporal_instability.R
 #     07_behavioral_state_space.R
-#     08_early_prediction_models.R
+#     08b_early_prediction_model_ladder.R
 #     09_dynamic_social_networks.R
 #     10_hmm_behavioral_states.R
 #     11_gamm_trajectory_features.R
+#     13_nonlinear_systems_dynamics.R
+#     14_nextgen_behavioral_phenotyping.R
 #
 # Output:
 #   - animal-level multiscale systems feature matrix
@@ -26,6 +28,7 @@
 #   - systems effect-size heatmaps
 #   - sex-specific feature correlation networks
 #   - early-prediction summary panels if outcome data are available
+#   - module-level prediction ladder with incremental CV-R2
 #   - a compact publication dashboard figure
 #
 # Design principles:
@@ -78,6 +81,8 @@ primary_outcome_direction <- "lower_worse"
 # descriptive, and restrict prediction claims to pre-endpoint behavioral features.
 res_sus_derived_from_outcome <- TRUE
 prospective_prediction_context <- "first_active_12h"
+n_prediction_permutations <- 1000
+n_prediction_bootstrap <- 1000
 
 # Optional proteomics module score file. Same expectation: one row per animal.
 # Useful columns could include RNP_module, Mito_module, Translation_module, etc.
@@ -104,6 +109,7 @@ source_if_exists <- function(path) {
 
 source_if_exists(file.path(repo_root, "Functions/behavioral_dynamics_helpers.R"))
 source_if_exists(file.path(repo_root, "Functions/behavioral_dynamics_stats_helpers.R"))
+source_if_exists(file.path(repo_root, "Functions/duration_normalization_helpers.R"))
 
 if (!exists("ensure_dir")) {
   ensure_dir <- function(path) {
@@ -191,6 +197,29 @@ ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
 ensure_dir(file.path(output_dir, "figures/publication_panels"))
 ensure_dir(file.path(output_dir, "figures/qc"))
+output_dirs <- analysis_output_dirs(output_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "12_systems_neuroscience_summary.R",
+  analysis_name = "integrated systems neuroscience summary",
+  primary_tables = c(
+    "tables/systems_animal_feature_matrix.csv",
+    "tables/systems_feature_dictionary.csv",
+    "tables/systems_module_scorecards.csv",
+    "tables/systems_named_biological_scores.csv",
+    "tables/systems_visualization_guide.csv",
+    "stats_tables/systems_group_contrasts.csv",
+    "tables/duration_sensitivity_audit.csv"
+  ),
+  primary_figures = c(
+    "figures/publication_panels/Fig_systems_state_space_PCA.svg",
+    "figures/publication_panels/Fig_systems_effect_size_heatmap.svg",
+    "figures/publication_panels/Fig_systems_module_scorecard.svg",
+    "figures/publication_panels/Fig_systems_named_biological_scores.svg",
+    "figures/publication_panels/Fig_systems_prediction_ladder.svg"
+  ),
+  notes = c("This is the publication-facing integration layer; use systems_visualization_guide.csv to choose panels.")
+)
 
 read_any_table <- function(path, sheet = NULL) {
   if (is.null(path) || !file.exists(path)) return(NULL)
@@ -358,6 +387,48 @@ parse_system_feature <- function(feature) {
   )
 }
 
+feature_entropy <- function(p) {
+  p <- p[is.finite(p) & p > 0]
+  if (length(p) == 0) return(NA_real_)
+  -sum(p * log(p))
+}
+
+dominant_state_by_profile <- function(state_summary, prefer = c("inactive", "explore", "burst", "social")) {
+  prefer <- match.arg(prefer)
+  if (is.null(state_summary) || nrow(state_summary) == 0 || !"State" %in% names(state_summary)) return(NA_character_)
+  prof <- state_summary %>%
+    mutate(
+      Movement_z = safe_numeric(.data[["Movement_z"]]),
+      Entropy_z = safe_numeric(.data[["Entropy_z"]]),
+      Proximity_z = safe_numeric(.data[["Proximity_z"]]),
+      state_score = case_when(
+        prefer == "inactive" ~ -Movement_z - Entropy_z,
+        prefer == "explore" ~ Entropy_z + Movement_z - Proximity_z,
+        prefer == "burst" ~ Movement_z,
+        prefer == "social" ~ Proximity_z,
+        TRUE ~ NA_real_
+      )
+    ) %>%
+    filter(is.finite(state_score))
+  if (nrow(prof) == 0) return(NA_character_)
+  as.character(prof$State[which.max(prof$state_score)][1])
+}
+
+feature_module_from_parts <- function(source, domain, metric, statistic, context, feature) {
+  key <- str_to_lower(paste(source, domain, metric, statistic, context, feature, sep = " "))
+  case_when(
+    str_detect(key, "biological_scores|rigidity_score|flexibility_score|withdrawal_score|fragmentation_score|recovery_score|adaptation_index|resilience_score") ~ "Predictive systems integration",
+    str_detect(key, "prediction|integrated_systems_phenotype") ~ "Predictive systems integration",
+    str_detect(key, "attractor|recurrence|manifold|multiscale|mse|sample_entropy|permutation_entropy|early_warning|criticalslowing|flickering|energy_landscape|complexity") ~ "Nonlinear systems dynamics",
+    str_detect(key, "gamm|trajectory|auc|peak|trough|dynamic_range|time_to_peak|rebound_slope|half_life|decay|curvature|asymmetry|recovery") ~ "Trajectory geometry",
+    str_detect(key, "dynamic_network|social_network|dyadic|centrality|degree|strength|betweenness|closeness|fragmentation|modularity|clustering|components|contact_entropy|isolation|engagement") ~ "Social topology",
+    str_detect(key, "hmm|latent_state|state_occupancy|dwell|transition|switch_rate|state_bias|rigidity|flexibility|social_state_fraction|burst_state_fraction") ~ "Latent-state organization",
+    str_detect(key, "rmssd|acf1|fano|cv|instability|inertia|persistence|burstiness") ~ "Temporal instability",
+    str_detect(key, "movement.*mean|entropy.*mean|proximity.*mean|mean_locomotor|mean_spatial|mean_social") ~ "Magnitude",
+    TRUE ~ "Other interpretable feature"
+  )
+}
+
 # ------------------------------------------------
 # INPUT PATH REGISTRY
 # ------------------------------------------------
@@ -370,16 +441,18 @@ paths <- tibble(
     "early_prediction",
     "dynamic_networks",
     "hmm_states",
-    "gamm_trajectory"
+    "gamm_trajectory",
+    "nextgen_selective"
   ),
   Path = c(
     file.path(project_root, "analysis_ready/03_derived_metrics", primary_bin_level, "all_behavior_metrics.csv"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", primary_bin_level, "tables"),
-    file.path(project_root, "analysis_ready/06_behavioral_dynamics/dynamic_social_networks", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", primary_bin_level, "tables"),
-    file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", primary_bin_level, "tables")
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/14_nextgen_behavioral_phenotyping", primary_bin_level, "tables")
   )
 )
 
@@ -417,6 +490,12 @@ base <- base %>%
     Proximity = safe_numeric(.data[[first_existing_col(., c("ProximityFraction", "Proximity", "proximity", "MeanProximity"), TRUE, "proximity")]])
   ) %>%
   arrange(AnimalNum, CageChange, Phase, TimeIndex)
+
+epoch_duration_qc <- if (exists("write_epoch_duration_qc")) {
+  write_epoch_duration_qc(base, output_dir, metric_source = "12_systems_neuroscience_summary", bin_size_sec = infer_bin_size_sec(base))
+} else {
+  tibble()
+}
 
 # ------------------------------------------------
 # BUILD CORE ANIMAL-LEVEL FEATURE MATRIX
@@ -573,26 +652,219 @@ load_optional_animal_table <- function(path, source_label, domain_label, scale_l
     select(AnimalNum, Group, Sex, feature, FeatureValue)
 }
 
+load_hmm_system_features <- function(scale_label = primary_bin_level) {
+  hmm_dir <- file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", scale_label, "tables")
+  occ <- read_any_table(file.path(hmm_dir, "hmm_state_occupancy.csv"))
+  dwell <- read_any_table(file.path(hmm_dir, "hmm_state_dwell_times.csv"))
+  trans <- read_any_table(file.path(hmm_dir, "hmm_transition_probabilities.csv"))
+  state_summary <- read_any_table(file.path(hmm_dir, "hmm_state_summary.csv"))
+  if (is.null(occ) && is.null(dwell) && is.null(trans)) return(tibble())
+
+  inactive_state <- dominant_state_by_profile(state_summary, "inactive")
+  explore_state <- dominant_state_by_profile(state_summary, "explore")
+  burst_state <- dominant_state_by_profile(state_summary, "burst")
+  social_state <- dominant_state_by_profile(state_summary, "social")
+
+  occ_features <- if (!is.null(occ) && nrow(occ) > 0) {
+    occ %>%
+      standardize_id_columns() %>%
+      mutate(State = as.character(State), frac_time = safe_numeric(frac_time)) %>%
+      group_by(AnimalNum, Group, Sex) %>%
+      summarise(
+        state_occupancy_entropy = feature_entropy(frac_time / sum(frac_time, na.rm = TRUE)),
+        social_state_fraction = sum(frac_time[State == social_state], na.rm = TRUE),
+        burst_state_fraction = sum(frac_time[State == burst_state], na.rm = TRUE),
+        inactive_state_fraction = sum(frac_time[State == inactive_state], na.rm = TRUE),
+        exploratory_state_fraction = sum(frac_time[State == explore_state], na.rm = TRUE),
+        .groups = "drop"
+      )
+  } else tibble()
+
+  dwell_features <- if (!is.null(dwell) && nrow(dwell) > 0) {
+    dwell %>%
+      standardize_id_columns() %>%
+      mutate(State = as.character(State)) %>%
+      group_by(AnimalNum, Group, Sex) %>%
+      summarise(
+        mean_dwell_time_per_state = mean(safe_numeric(mean_dwell_bins), na.rm = TRUE),
+        max_dwell_time_per_state = max(safe_numeric(max_dwell_bins), na.rm = TRUE),
+        inactive_mean_dwell_time = mean(safe_numeric(mean_dwell_bins)[State == inactive_state], na.rm = TRUE),
+        burst_mean_dwell_time = mean(safe_numeric(mean_dwell_bins)[State == burst_state], na.rm = TRUE),
+        .groups = "drop"
+      )
+  } else tibble()
+
+  trans_features <- if (!is.null(trans) && nrow(trans) > 0) {
+    trans %>%
+      standardize_id_columns() %>%
+      mutate(
+        State = as.character(State),
+        NextState = as.character(NextState),
+        TransitionProbability = safe_numeric(TransitionProbability)
+      ) %>%
+      group_by(AnimalNum, Group, Sex) %>%
+      summarise(
+        self_transition_probability = mean(TransitionProbability[State == NextState], na.rm = TRUE),
+        transition_entropy = feature_entropy(TransitionProbability / sum(TransitionProbability, na.rm = TRUE)),
+        inactive_to_explore_probability = mean(TransitionProbability[State == inactive_state & NextState == explore_state], na.rm = TRUE),
+        inactive_to_burst_probability = mean(TransitionProbability[State == inactive_state & NextState == burst_state], na.rm = TRUE),
+        number_of_state_transitions = sum(safe_numeric(Transitions), na.rm = TRUE),
+        state_switch_rate = sum(safe_numeric(Transitions)[State != NextState], na.rm = TRUE) / sum(safe_numeric(Transitions), na.rm = TRUE),
+        .groups = "drop"
+      )
+  } else tibble()
+
+  hmm_parts <- list(occ_features, dwell_features, trans_features) %>% keep(~ nrow(.x) > 0)
+  if (length(hmm_parts) == 0) return(tibble())
+
+  hmm_wide <- reduce(hmm_parts, full_join, by = c("AnimalNum", "Group", "Sex"))
+  for (nm in c(
+    "social_state_fraction", "exploratory_state_fraction", "inactive_state_fraction",
+    "self_transition_probability", "mean_dwell_time_per_state", "max_dwell_time_per_state",
+    "transition_entropy", "state_switch_rate", "inactive_to_explore_probability"
+  )) {
+    if (!nm %in% names(hmm_wide)) hmm_wide[[nm]] <- NA_real_
+  }
+
+  hmm_wide %>%
+    mutate(
+      resilient_state_bias_index = safe_scale(social_state_fraction) + safe_scale(exploratory_state_fraction) - safe_scale(inactive_state_fraction),
+      behavioral_rigidity_index = rowMeans(cbind(safe_scale(self_transition_probability), safe_scale(mean_dwell_time_per_state), safe_scale(max_dwell_time_per_state)), na.rm = TRUE),
+      exploratory_flexibility_index = rowMeans(cbind(safe_scale(transition_entropy), safe_scale(state_switch_rate), safe_scale(inactive_to_explore_probability)), na.rm = TRUE)
+    ) %>%
+    pivot_longer(-c(AnimalNum, Group, Sex), names_to = "MetricName", values_to = "FeatureValue") %>%
+    filter(is.finite(FeatureValue)) %>%
+    mutate(feature = make_feature_name("hmm", "latent_state", scale_label, MetricName, "animal_level", "all")) %>%
+    select(AnimalNum, Group, Sex, feature, FeatureValue)
+}
+
+load_gamm_shape_features <- function(scale_label = primary_bin_level) {
+  path <- first_existing_path(c(
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", scale_label, "tables/gamm_trajectory_features.csv"),
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_features", scale_label, "tables/combined_gamm_features.csv")
+  ))
+  dat <- read_any_table(path)
+  if (is.null(dat) || nrow(dat) == 0) return(tibble())
+  dat <- standardize_id_columns(dat) %>%
+    mutate(Metric = if ("Metric" %in% names(.)) safe_name(Metric) else "behavior")
+
+  for (nm in c("auc", "mean_pred", "peak", "trough", "dynamic_range", "time_to_peak", "rmssd_pred", "acf1_pred", "n_bins")) {
+    if (!nm %in% names(dat)) dat[[nm]] <- NA_real_
+  }
+
+  dat <- dat %>%
+    rowwise() %>%
+    mutate(
+      rebound_slope = ifelse(is.finite(dynamic_range) & is.finite(time_to_peak) & is.finite(n_bins) & n_bins > time_to_peak,
+                             -dynamic_range / pmax(n_bins - time_to_peak, 1), NA_real_),
+      adaptation_half_life = ifelse(is.finite(time_to_peak), time_to_peak / 2, NA_real_),
+      early_peak_amplitude = ifelse(is.finite(peak) & is.finite(mean_pred), peak - mean_pred, NA_real_),
+      late_phase_decay = ifelse(is.finite(peak) & is.finite(trough) & is.finite(n_bins), (peak - trough) / pmax(n_bins, 1), NA_real_),
+      trajectory_curvature = ifelse(is.finite(dynamic_range) & is.finite(rmssd_pred), dynamic_range * rmssd_pred, NA_real_),
+      trajectory_asymmetry = ifelse(is.finite(peak) & is.finite(trough) & is.finite(mean_pred), (peak - mean_pred) - (mean_pred - trough), NA_real_),
+      cumulative_instability_auc = ifelse(is.finite(auc) & is.finite(rmssd_pred), abs(auc) * rmssd_pred, NA_real_),
+      peak_to_baseline_recovery_time = ifelse(is.finite(n_bins) & is.finite(time_to_peak), pmax(n_bins - time_to_peak, 0), NA_real_)
+    ) %>%
+    ungroup()
+
+  metric_cols <- intersect(c(
+    "auc", "mean_pred", "peak", "trough", "dynamic_range", "time_to_peak", "rmssd_pred", "acf1_pred",
+    "rebound_slope", "adaptation_half_life", "early_peak_amplitude", "late_phase_decay",
+    "trajectory_curvature", "trajectory_asymmetry", "cumulative_instability_auc", "peak_to_baseline_recovery_time"
+  ), names(dat))
+
+  dat %>%
+    select(AnimalNum, Group, Sex, Metric, any_of(c("Phase", "CageChange")), all_of(metric_cols)) %>%
+    mutate(across(any_of(c("Phase", "CageChange")), ~ safe_name(as.character(.x)))) %>%
+    pivot_longer(all_of(metric_cols), names_to = "MetricName", values_to = "FeatureValue") %>%
+    unite("ContextTag", any_of(c("Metric", "Phase", "CageChange")), sep = "_", remove = FALSE, na.rm = TRUE) %>%
+    filter(is.finite(FeatureValue)) %>%
+    mutate(feature = make_feature_name("gamm", "trajectory_geometry", scale_label, MetricName, "animal_level", ContextTag)) %>%
+    select(AnimalNum, Group, Sex, feature, FeatureValue)
+}
+
+load_nextgen_selective_features <- function(scale_label = primary_bin_level) {
+  ng_dir <- file.path(project_root, "analysis_ready/14_nextgen_behavioral_phenotyping", scale_label, "tables")
+  candidate_tables <- tibble(
+    source_label = c("nextgen_complexity", "nextgen_early_warning", "nextgen_energy_landscape", "nextgen_coupling", "nextgen_integrated"),
+    domain_label = c("nonlinear_dynamics", "nonlinear_dynamics", "nonlinear_dynamics", "social_topology", "systems_integration"),
+    path = file.path(ng_dir, c(
+      "multiscale_complexity_features.csv",
+      "early_warning_summary_by_animal.csv",
+      "behavioral_energy_landscape_summary_by_animal.csv",
+      "animal_social_coupling_summary.csv",
+      "nextgen_behavioral_phenotype_matrix.csv"
+    ))
+  )
+  keep_regex <- "mse_auc|perm_entropy|CriticalSlowingIndex|FlickeringIndex|InstabilityRiseIndex|attractor|depth|energy|occupancy|coupling|ComplexityIndex|EnergyLandscapeIndex|NextGenPhenotypeIndex"
+  pmap_dfr(candidate_tables, function(source_label, domain_label, path) {
+    dat <- read_any_table(path)
+    if (is.null(dat) || nrow(dat) == 0) return(tibble())
+    dat <- standardize_id_columns(dat)
+    metric_cols <- dat %>% select(where(is.numeric)) %>% names()
+    metric_cols <- setdiff(metric_cols, c("AnimalNum", endpoint_cols))
+    metric_cols <- metric_cols[str_detect(metric_cols, keep_regex)]
+    if (length(metric_cols) == 0) return(tibble())
+    dat %>%
+      select(AnimalNum, Group, Sex, all_of(metric_cols)) %>%
+      pivot_longer(all_of(metric_cols), names_to = "MetricName", values_to = "FeatureValue") %>%
+      filter(is.finite(FeatureValue)) %>%
+      mutate(feature = make_feature_name(source_label, domain_label, scale_label, MetricName, "animal_level", "selected")) %>%
+      select(AnimalNum, Group, Sex, feature, FeatureValue)
+  })
+}
+
+load_graph_period_features <- function(scale_label = primary_bin_level) {
+  path <- file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", scale_label, "tables/dyadic_graph_period_summary.csv")
+  dat <- read_any_table(path)
+  if (is.null(dat) || nrow(dat) == 0) return(tibble())
+  group_col <- first_existing_col(dat, c("Group", "Phenotype", "Condition", "Treatment", "StressGroup"), TRUE, "group")
+  sex_col <- first_existing_col(dat, c("Sex", "sex"), TRUE, "sex")
+  roster <- core_feature_wide %>% distinct(AnimalNum, Group, Sex)
+  metric_cols <- intersect(c(
+    "fragmentation_index", "mean_density", "mean_modularity", "mean_clustering",
+    "mean_components", "mean_largest_component_fraction", "density_rmssd",
+    "mean_edges", "mean_strength"
+  ), names(dat))
+  if (length(metric_cols) == 0) return(tibble())
+  dat %>%
+    mutate(
+      Group = factor(as.character(.data[[group_col]]), levels = group_levels),
+      Sex = factor(as.character(.data[[sex_col]]), levels = levels(roster$Sex))
+    ) %>%
+    select(Group, Sex, any_of(c("Phase", "CageChange", "System")), all_of(metric_cols)) %>%
+    left_join(roster, by = c("Group", "Sex")) %>%
+    filter(!is.na(AnimalNum)) %>%
+    mutate(across(any_of(c("Phase", "CageChange", "System")), ~ safe_name(as.character(.x)))) %>%
+    pivot_longer(all_of(metric_cols), names_to = "MetricName", values_to = "FeatureValue") %>%
+    unite("ContextTag", any_of(c("Phase", "CageChange", "System")), sep = "_", remove = FALSE, na.rm = TRUE) %>%
+    filter(is.finite(FeatureValue)) %>%
+    mutate(feature = make_feature_name("dynamic_network", "social_network", scale_label, MetricName, "group_network", ContextTag)) %>%
+    select(AnimalNum, Group, Sex, feature, FeatureValue)
+}
+
 optional_files <- tibble(
-  source_label = c("burstiness", "state_space", "state_space", "early_prediction", "dynamic_network", "hmm", "gamm"),
-  domain_label = c("temporal_dynamics", "latent_space", "behavioral_state", "prediction", "social_network", "behavioral_state", "trajectory"),
+  source_label = c("burstiness", "state_space", "state_space", "early_prediction", "dynamic_network", "dynamic_network"),
+  domain_label = c("temporal_dynamics", "latent_space", "behavioral_state", "prediction", "social_network", "social_network"),
   path = c(
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", sensitivity_bin_levels, "tables/burstiness_instability_features.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", sensitivity_bin_levels, "tables/state_diversity_metrics.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", sensitivity_bin_levels, "tables/state_switching_metrics.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", sensitivity_bin_levels, "tables/early_behavior_features.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/animal_level_social_dynamics.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", sensitivity_bin_levels, "tables/hmm_state_occupancy.csv")),
-    first_existing_path(c(
-      file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", sensitivity_bin_levels, "tables/gamm_trajectory_features.csv"),
-      file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_features", sensitivity_bin_levels, "tables/combined_gamm_features.csv")
-    ))
+    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/dyadic_node_summary.csv"))
   )
 )
 
 optional_long <- pmap_dfr(optional_files, function(source_label, domain_label, path) {
   load_optional_animal_table(path, source_label, domain_label)
-})
+}) %>%
+  bind_rows(
+    map_dfr(sensitivity_bin_levels, load_hmm_system_features),
+    map_dfr(sensitivity_bin_levels, load_gamm_shape_features),
+    map_dfr(sensitivity_bin_levels, load_graph_period_features),
+    map_dfr(sensitivity_bin_levels, load_nextgen_selective_features)
+  )
 
 optional_wide <- if (nrow(optional_long) > 0) {
   optional_long %>%
@@ -632,11 +904,133 @@ if (!is.null(proteomics_dat)) {
   systems_features <- left_join(systems_features, proteomics_dat, by = "AnimalNum")
 }
 
+make_named_biological_scores <- function(dat) {
+  candidate_features <- dat %>% select(where(is.numeric)) %>% names()
+  candidate_features <- setdiff(candidate_features, c("AnimalNum", endpoint_cols))
+  candidate_features <- candidate_features[
+    !str_detect(candidate_features, "(__|^)n_bins($|__)|observed_bins|expected_bins|duration|count$|transitions$|switches$|auc$|path_length$")
+  ]
+
+  score_from_patterns <- function(positive_regex, negative_regex = NULL) {
+    pos <- candidate_features[str_detect(candidate_features, regex(positive_regex, ignore_case = TRUE))]
+    neg <- if (is.null(negative_regex)) character(0) else candidate_features[str_detect(candidate_features, regex(negative_regex, ignore_case = TRUE))]
+    pos <- setdiff(pos, neg)
+    parts <- list()
+    if (length(pos) > 0) {
+      parts$positive <- dat %>%
+        select(all_of(pos)) %>%
+        mutate(across(everything(), ~ safe_scale(safe_numeric(.x)))) %>%
+        as.matrix()
+    }
+    if (length(neg) > 0) {
+      parts$negative <- dat %>%
+        select(all_of(neg)) %>%
+        mutate(across(everything(), ~ safe_scale(safe_numeric(.x)))) %>%
+        as.matrix()
+      parts$negative <- -parts$negative
+    }
+    if (length(parts) == 0) return(rep(NA_real_, nrow(dat)))
+    mat <- do.call(cbind, parts)
+    out <- rowMeans(mat, na.rm = TRUE)
+    out[!is.finite(out)] <- NA_real_
+    out
+  }
+
+  rigidity <- score_from_patterns(
+    "self_transition|mean_dwell|max_dwell|inactive_mean_dwell|behavioral_rigidity|acf1|inertia|persistence|attractor.*depth",
+    "transition_entropy|state_switch_rate|switch.*per_hour|exploratory_flexibility"
+  )
+  flexibility <- score_from_patterns(
+    "transition_entropy|state_switch_rate|switch.*per_hour|exploratory|entropy.*rmssd|movement.*rmssd|contact_entropy|partner_entropy|exploratory_flexibility",
+    "self_transition|behavioral_rigidity|inactive_mean_dwell"
+  )
+  withdrawal <- score_from_patterns(
+    "active_isolation|passive_isolation|social_withdrawal|top_partner_share|inactive_state_fraction",
+    "proximity.*mean|social_engagement|contact_fraction|mean_contact|social_state_fraction|partner_entropy|partner_evenness"
+  )
+  fragmentation <- score_from_patterns(
+    "fragmentation|modularity|components|active_isolation",
+    "density|clustering|largest_component|social_engagement|mean_strength"
+  )
+  recovery <- score_from_patterns(
+    "rebound_slope|recovery|late_phase_decay|trajectory_asymmetry|auc_per_hour",
+    "time_to_peak|adaptation_half_life|acf1_pred|cumulative_instability_auc|trajectory_curvature|dynamic_range"
+  )
+  resilience_bias <- score_from_patterns(
+    "resilient_state_bias|social_state_fraction|exploratory_state_fraction|social_engagement|partner_entropy|trajectory_recovery",
+    "inactive_state_fraction|behavioral_rigidity|active_isolation|passive_isolation|fragmentation"
+  )
+  nonlinear_adaptability <- score_from_patterns(
+    "complexity|mse|permutation_entropy|manifold_occupancy|coupling|entropy.*mean",
+    "criticalslowing|flickering|attractor.*depth|energy.*depth"
+  )
+
+  named <- tibble(
+    AnimalNum = dat$AnimalNum,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "behavioral_rigidity_score", "module_score", "all") := rigidity,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "exploratory_flexibility_score", "module_score", "all") := flexibility,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "social_withdrawal_score", "module_score", "all") := withdrawal,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "social_fragmentation_score", "module_score", "all") := fragmentation,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "trajectory_recovery_score", "module_score", "all") := recovery,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "resilient_state_bias_score", "module_score", "all") := resilience_bias,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "nonlinear_adaptability_score", "module_score", "all") := nonlinear_adaptability
+  ) %>%
+    mutate(
+      !!make_feature_name("systems", "biological_scores", primary_bin_level, "stress_adaptation_index", "module_score", "all") := rowMeans(
+        cbind(
+          safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "exploratory_flexibility_score", "module_score", "all")]]),
+          safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "trajectory_recovery_score", "module_score", "all")]]),
+          safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "resilient_state_bias_score", "module_score", "all")]]),
+          -safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "behavioral_rigidity_score", "module_score", "all")]]),
+          -safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "social_withdrawal_score", "module_score", "all")]]),
+          -safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "social_fragmentation_score", "module_score", "all")]])
+        ),
+        na.rm = TRUE
+      ),
+      !!make_feature_name("systems", "biological_scores", primary_bin_level, "systems_resilience_score", "module_score", "all") := rowMeans(
+        cbind(
+          safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "stress_adaptation_index", "module_score", "all")]]),
+          safe_scale(.data[[make_feature_name("systems", "biological_scores", primary_bin_level, "nonlinear_adaptability_score", "module_score", "all")]])
+        ),
+        na.rm = TRUE
+      )
+    )
+
+  named
+}
+
+named_biological_scores <- make_named_biological_scores(systems_features)
+systems_features <- left_join(systems_features, named_biological_scores, by = "AnimalNum")
+
 feature_cols <- systems_features %>% select(where(is.numeric)) %>% names()
 feature_cols <- setdiff(feature_cols, c("AnimalNum", endpoint_cols))
 
+is_raw_duration_sensitive_feature <- function(feature, metric, statistic, context) {
+  key <- str_to_lower(paste(feature, metric, statistic, context, sep = " "))
+  key[is.na(key)] <- ""
+  raw_signal <- str_detect(
+    key,
+    "transition|switch|count|n_bins|n_transitions|n_switches|path_length|roughness|auc|contact_bins|seconds|duration|dwell_bins|fragmentation_event"
+  )
+  normalized_signal <- str_detect(
+    key,
+    "per_hour|per_epoch|rate|fraction|probability|occupancy|mean|median|rmssd|acf1|entropy_rate|normalized|completeness"
+  )
+  isTRUE(raw_signal) && !isTRUE(normalized_signal)
+}
+
 feature_dictionary <- parse_system_feature(feature_cols) %>%
   mutate(
+    Module = feature_module_from_parts(Source, Domain, Metric, Statistic, Context, feature),
+    RawDurationSensitive = pmap_lgl(
+      list(feature, Metric, Statistic, Context),
+      is_raw_duration_sensitive_feature
+    ),
+    DurationUse = if_else(
+      RawDurationSensitive,
+      "descriptive_audit_only_use_normalized_counterpart_for_embedding_or_prediction",
+      "duration_robust_or_normalized"
+    ),
     Interpretation = case_when(
       str_detect(feature, "movement") & str_detect(feature, "mean") ~ "Mean locomotor output",
       str_detect(feature, "entropy") & str_detect(feature, "mean") ~ "Mean spatial dispersion / positional entropy",
@@ -646,6 +1040,12 @@ feature_dictionary <- parse_system_feature(feature_cols) %>%
       str_detect(feature, "social_withdrawal") ~ "High movement with low proximity; exploratory-social decoupling",
       str_detect(feature, "behavioral_instability") ~ "Composite local volatility across movement, entropy and proximity",
       str_detect(feature, "behavioral_inertia") ~ "Composite autocorrelation/persistence across behavioral channels",
+      Module == "Latent-state organization" ~ "Latent behavioral-state persistence, occupancy, dwell time or transition flexibility",
+      Module == "Social topology" ~ "Social-network topology, centrality, fragmentation or contact organization",
+      Module == "Trajectory geometry" ~ "Shape of smooth behavioral adaptation trajectories",
+      Module == "Nonlinear systems dynamics" ~ "Exploratory nonlinear complexity, recurrence, attractor or early-warning dynamics",
+      Module == "Predictive systems integration" ~ "Module-level or integrated predictive phenotype score",
+      Domain == "biological_scores" ~ "Named biological composite score for systems-level interpretation",
       TRUE ~ "Integrated behavioral feature"
     )
   )
@@ -664,15 +1064,19 @@ feature_qc <- map_dfr(feature_cols, function(fc) {
   )
 }) %>%
   left_join(feature_dictionary, by = "feature") %>%
-  arrange(Source, Domain, Scale, Metric, Statistic)
+  arrange(Module, Source, Domain, Scale, Metric, Statistic)
 
 usable_features <- feature_qc %>%
   filter(n_finite >= 4, missing_fraction <= 0.50, !zero_variance) %>%
   pull(feature)
 
+duration_robust_features <- feature_qc %>%
+  filter(n_finite >= 4, missing_fraction <= 0.50, !zero_variance, !RawDurationSensitive) %>%
+  pull(feature)
+
 prospective_prediction_features <- feature_qc %>%
   filter(
-    feature %in% usable_features,
+    feature %in% duration_robust_features,
     (
       Source == "raw" & Context == prospective_prediction_context
     ) |
@@ -682,16 +1086,33 @@ prospective_prediction_features <- feature_qc %>%
   ) %>%
   pull(feature)
 
+module_feature_sets <- feature_qc %>%
+  filter(feature %in% usable_features) %>%
+  group_by(Module) %>%
+  summarise(
+    n_usable_features = n(),
+    n_duration_robust_features = sum(!RawDurationSensitive, na.rm = TRUE),
+    n_raw_duration_sensitive_features = sum(RawDurationSensitive, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(factor(Module, levels = c(
+    "Magnitude", "Temporal instability", "Latent-state organization", "Social topology",
+    "Trajectory geometry", "Nonlinear systems dynamics", "Predictive systems integration",
+    "Other interpretable feature"
+  )))
+
 feature_sets <- tibble(
-  FeatureSet = c("descriptive_full_experiment", "prospective_prediction"),
-  n_features = c(length(usable_features), length(prospective_prediction_features)),
+  FeatureSet = c("descriptive_full_experiment", "duration_robust_embedding_prediction", "prospective_prediction"),
+  n_features = c(length(usable_features), length(duration_robust_features), length(prospective_prediction_features)),
   IntendedUse = c(
     "Descriptive phenotype architecture after RES/SUS labels are known",
+    "PCA/UMAP and module-level predictive models using normalized or duration-robust features",
     "Prediction/association with post-paradigm endpoints using pre-endpoint early behavior only"
   ),
-  IncludesCombZDerivedGroups = c(res_sus_derived_from_outcome, FALSE),
+  IncludesCombZDerivedGroups = c(res_sus_derived_from_outcome, res_sus_derived_from_outcome, FALSE),
   Notes = c(
     "RES/SUS group contrasts are descriptive because groups were derived from CombZ.",
+    "Excludes raw counts, cumulative AUC/path-length features, and other unnormalized duration-sensitive summaries when a normalized counterpart is available.",
     paste0("Uses raw first active 12 h after ", first_cage_change, " plus early composites; excludes GAMM/HMM/full-experiment and mixed-phase early-prediction module features.")
   )
 )
@@ -700,6 +1121,19 @@ write_table(systems_features, file.path(output_dir, "tables/systems_animal_featu
 write_table(feature_dictionary, file.path(output_dir, "tables/systems_feature_dictionary.csv"))
 write_table(feature_qc, file.path(output_dir, "tables/systems_feature_qc.csv"))
 write_table(feature_sets, file.path(output_dir, "tables/systems_feature_sets.csv"))
+write_table(module_feature_sets, file.path(output_dir, "tables/systems_module_feature_inventory.csv"))
+
+named_biological_scores_long <- systems_features %>%
+  select(AnimalNum, Group, Sex, matches("^systems__biological_scores__")) %>%
+  pivot_longer(matches("^systems__biological_scores__"), names_to = "feature", values_to = "Score") %>%
+  left_join(feature_dictionary, by = "feature") %>%
+  mutate(
+    ScoreLabel = Metric %>%
+      str_replace_all("_", " ") %>%
+      str_to_sentence()
+  )
+
+write_table(named_biological_scores_long, file.path(output_dir, "tables/systems_named_biological_scores.csv"))
 
 # ------------------------------------------------
 # GROUP SUMMARY AND CONTRASTS
@@ -712,7 +1146,7 @@ systems_long <- systems_features %>%
   left_join(feature_dictionary, by = "feature")
 
 group_summary <- systems_long %>%
-  group_by(Sex, Group, feature, Source, Domain, Scale, Metric, Statistic, Context) %>%
+  group_by(Sex, Group, feature, Module, Source, Domain, Scale, Metric, Statistic, Context) %>%
   summarise(
     n = n_distinct(AnimalNum),
     mean = mean(Value, na.rm = TRUE),
@@ -733,7 +1167,7 @@ contrast_pairs <- list(c("CON", "RES"), c("CON", "SUS"), c("RES", "SUS"))
 
 group_contrasts <- systems_long %>%
   filter(!is.na(Group), as.character(Group) %in% group_levels) %>%
-  group_by(Sex, feature, Source, Domain, Scale, Metric, Statistic, Context) %>%
+  group_by(Sex, feature, Module, Source, Domain, Scale, Metric, Statistic, Context) %>%
   group_modify(~{
     d <- .x
     map_dfr(contrast_pairs, function(pair) {
@@ -800,10 +1234,175 @@ write_table(group_summary, file.path(output_dir, "stats_tables/systems_group_sum
 write_table(group_contrasts, file.path(output_dir, "stats_tables/systems_group_contrasts.csv"))
 
 # ------------------------------------------------
+# INTERPRETABILITY LAYER: MODULE SCORECARDS + NAMED BIOLOGICAL SCORES
+# ------------------------------------------------
+
+module_scorecards_base <- feature_qc %>%
+  filter(feature %in% usable_features) %>%
+  group_by(Module) %>%
+  summarise(
+    n_features = n(),
+    n_duration_robust = sum(!RawDurationSensitive, na.rm = TRUE),
+    n_raw_duration_sensitive = sum(RawDurationSensitive, na.rm = TRUE),
+    median_missing_fraction = median(missing_fraction, na.rm = TRUE),
+    median_feature_sd = median(sd, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    group_contrasts %>%
+      filter(status == "tested", is.finite(hedges_g)) %>%
+      group_by(Module) %>%
+      summarise(
+        strongest_abs_hedges_g = max(abs(hedges_g), na.rm = TRUE),
+        median_abs_hedges_g = median(abs(hedges_g), na.rm = TRUE),
+        n_fdr_supported = sum(p_fdr < 0.05, na.rm = TRUE),
+        strongest_contrast = contrast[which.max(abs(hedges_g))][1],
+        strongest_sex = as.character(Sex[which.max(abs(hedges_g))][1]),
+        .groups = "drop"
+      ),
+    by = "Module"
+  ) %>%
+  mutate(
+    DurationRobustness = case_when(
+      n_features == 0 ~ "no_features",
+      n_raw_duration_sensitive == 0 ~ "all_duration_robust",
+      n_duration_robust >= n_raw_duration_sensitive ~ "mixed_mostly_robust",
+      TRUE ~ "duration_sensitive_review_needed"
+    ),
+    BiologicalReadout = case_when(
+      Module == "Magnitude" ~ "Overall locomotor, spatial and social magnitude",
+      Module == "Temporal instability" ~ "Local volatility, persistence and temporal organization",
+      Module == "Latent-state organization" ~ "State occupancy, dwell time, switching and flexibility",
+      Module == "Social topology" ~ "Engagement, isolation, centrality, fragmentation and partner structure",
+      Module == "Trajectory geometry" ~ "Adaptation, recovery, peak timing and trajectory shape",
+      Module == "Nonlinear systems dynamics" ~ "Complexity, attractor-like trapping, recurrence and early-warning dynamics",
+      Module == "Predictive systems integration" ~ "Named biological composites and prediction-ready module scores",
+      TRUE ~ "Other interpretable behavioral feature"
+    )
+  ) %>%
+  arrange(factor(Module, levels = c(
+    "Magnitude", "Temporal instability", "Latent-state organization", "Social topology",
+    "Trajectory geometry", "Nonlinear systems dynamics", "Predictive systems integration",
+    "Other interpretable feature"
+  )))
+
+write_table(module_scorecards_base, file.path(output_dir, "tables/systems_module_scorecards_base.csv"))
+write_table(module_scorecards_base, file.path(output_dir, "tables/systems_module_scorecards.csv"))
+
+feature_redundancy_tbl <- map_dfr(unique(feature_dictionary$Module), function(mod) {
+  feats <- feature_dictionary %>%
+    filter(Module == mod, feature %in% duration_robust_features) %>%
+    pull(feature)
+  feats <- intersect(feats, names(systems_features))
+  if (length(feats) < 2) return(tibble())
+  mat <- systems_features %>%
+    select(all_of(feats)) %>%
+    mutate(across(everything(), ~ replace_na(safe_numeric(.x), median(safe_numeric(.x), na.rm = TRUE)))) %>%
+    as.matrix()
+  cmat <- suppressWarnings(cor(mat, method = "spearman", use = "pairwise.complete.obs"))
+  idx <- which(upper.tri(cmat), arr.ind = TRUE)
+  tibble(
+    Module = mod,
+    Feature1 = colnames(cmat)[idx[, 1]],
+    Feature2 = colnames(cmat)[idx[, 2]],
+    spearman_rho = cmat[idx]
+  ) %>%
+    filter(is.finite(spearman_rho), abs(spearman_rho) >= 0.80) %>%
+    mutate(
+      redundancy_level = case_when(
+        abs(spearman_rho) >= 0.95 ~ "near_duplicate",
+        abs(spearman_rho) >= 0.90 ~ "very_high",
+        TRUE ~ "high"
+      )
+    )
+})
+
+write_table(feature_redundancy_tbl, file.path(output_dir, "tables/systems_feature_redundancy_within_modules.csv"))
+
+named_score_stats <- named_biological_scores_long %>%
+  filter(is.finite(Score)) %>%
+  group_by(Sex, ScoreLabel, Group) %>%
+  summarise(
+    n = n_distinct(AnimalNum),
+    mean = mean(Score, na.rm = TRUE),
+    ci_low = mean_ci(Score)["low"],
+    ci_high = mean_ci(Score)["high"],
+    median = median(Score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write_table(named_score_stats, file.path(output_dir, "stats_tables/systems_named_biological_score_group_summary.csv"))
+
+if (nrow(named_biological_scores_long) > 0) {
+  p_named_scores <- named_biological_scores_long %>%
+    filter(is.finite(Score)) %>%
+    mutate(ScoreLabel = factor(ScoreLabel, levels = unique(ScoreLabel))) %>%
+    ggplot(aes(Group, Score, colour = Group, fill = Group)) +
+    geom_violin(width = 0.82, alpha = 0.22, linewidth = 0.18, trim = FALSE) +
+    geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.70, linewidth = 0.20) +
+    geom_point(position = position_jitter(width = 0.08, height = 0), size = 0.9, alpha = 0.75) +
+    facet_grid(Sex ~ ScoreLabel, scales = "free_y") +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    labs(
+      title = "Named systems-level biological scores",
+      subtitle = "Composite z-scores translate feature modules into interpretable behavioral constructs",
+      x = NULL,
+      y = "Composite score"
+    ) +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "none")
+
+  save_plot_svg_pdf(p_named_scores, file.path(output_dir, "figures/publication_panels/Fig_systems_named_biological_scores"), width = 220, height = 125)
+
+  if (requireNamespace("plotly", quietly = TRUE) && requireNamespace("htmlwidgets", quietly = TRUE)) {
+    ensure_dir(file.path(output_dir, "figures/interactive"))
+    interactive_named <- named_biological_scores_long %>%
+      filter(is.finite(Score)) %>%
+      plotly::plot_ly(
+        x = ~Score,
+        y = ~ScoreLabel,
+        color = ~Group,
+        symbol = ~Sex,
+        colors = group_colors,
+        type = "scatter",
+        mode = "markers",
+        text = ~paste0("Animal: ", AnimalNum, "<br>Sex: ", Sex, "<br>Group: ", Group, "<br>Score: ", round(Score, 2)),
+        hoverinfo = "text"
+      ) %>%
+      plotly::layout(
+        title = "Interactive named biological scores",
+        xaxis = list(title = "Composite score"),
+        yaxis = list(title = "")
+      )
+    htmlwidgets::saveWidget(interactive_named, file.path(output_dir, "figures/interactive/systems_named_biological_scores.html"), selfcontained = TRUE)
+  }
+}
+
+p_module_scorecard <- module_scorecards_base %>%
+  mutate(Module = factor(Module, levels = rev(Module))) %>%
+  ggplot(aes(strongest_abs_hedges_g, Module, fill = n_duration_robust)) +
+  geom_col(width = 0.68, colour = "white", linewidth = 0.18) +
+  geom_text(aes(label = paste0("n=", n_features, "\nrobust=", n_duration_robust)), hjust = -0.06, size = 1.85, lineheight = 0.85) +
+  scale_fill_gradient(low = "#C6C3BB", high = "#3d3b6e", na.value = "grey85") +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "Module scorecard",
+    subtitle = "Strongest group effect per biological module with duration-robust feature count",
+    x = "Strongest absolute Hedges g",
+    y = NULL,
+    fill = "Robust\nfeatures"
+  ) +
+  make_nature_theme(base_size = 6) +
+  theme(plot.margin = margin(5.5, 18, 5.5, 5.5), legend.position = "right")
+
+save_plot_svg_pdf(p_module_scorecard, file.path(output_dir, "figures/publication_panels/Fig_systems_module_scorecard"), width = 150, height = 88)
+
+# ------------------------------------------------
 # DIMENSIONALITY REDUCTION: PCA + OPTIONAL UMAP
 # ------------------------------------------------
 
-x <- systems_features %>% select(all_of(usable_features))
+x <- systems_features %>% select(all_of(duration_robust_features))
 x_imp <- x %>% mutate(across(everything(), ~ replace_na(.x, median(.x, na.rm = TRUE))))
 x_mat <- as.matrix(x_imp)
 x_scaled <- scale(x_mat)
@@ -845,7 +1444,7 @@ p_pca <- pca_plot_tbl %>%
   scale_fill_manual(values = group_colors, drop = FALSE) +
   labs(
     title = "Integrated behavioral state space",
-    subtitle = paste0("PCA on ", length(usable_features), " descriptive features; n=", nrow(pca_scores), " animals"),
+    subtitle = paste0("PCA on ", length(duration_robust_features), " duration-robust descriptive features; n=", nrow(pca_scores), " animals"),
     x = "Systems PC1",
     y = "Systems PC2",
     caption = paste0("PC1 ", round(100 * var_exp[1], 1), "%; PC2 ", round(100 * var_exp[2], 1), "% variance")
@@ -876,7 +1475,7 @@ if (requireNamespace("uwot", quietly = TRUE) && nrow(x_scaled) >= 8) {
     scale_fill_manual(values = group_colors, drop = FALSE) +
     labs(
       title = "Nonlinear behavioral manifold",
-      subtitle = paste0("UMAP on integrated animal-level systems features; n=", nrow(umap_scores), "; n_neighbors=", n_neighbors),
+      subtitle = paste0("UMAP on duration-robust animal-level systems features; n=", nrow(umap_scores), "; n_neighbors=", n_neighbors),
       x = "UMAP1",
       y = "UMAP2"
     ) +
@@ -922,12 +1521,15 @@ latent_epoch_features <- base %>%
     n_bins = n(),
     .groups = "drop"
   ) %>%
-  filter(n_bins >= 4)
+  mutate(Phase = PhaseClass) %>%
+  join_duration_qc(epoch_duration_qc, by_cols = c("AnimalNum", "Group", "Sex", "CageChange", "Phase")) %>%
+  filter(n_bins >= 4, !short_epoch %in% TRUE)
 
 latent_feature_cols <- latent_epoch_features %>%
   select(where(is.numeric)) %>%
   names()
 latent_feature_cols <- setdiff(latent_feature_cols, c("CageChangeIndex", "n_bins"))
+latent_feature_cols <- setdiff(latent_feature_cols, c("observed_bins", "expected_bins", "total_observation_duration_hours", "active_duration_hours", "inactive_duration_hours", "duration_completeness_fraction", "cage_change_duration_fraction"))
 
 latent_embedding_tbl <- tibble()
 latent_trajectory_summary <- tibble()
@@ -1019,6 +1621,10 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
       latent_path_length = sum(step_distance, na.rm = TRUE),
       latent_net_displacement = sqrt((last(TemporalPC1) - first(TemporalPC1))^2 + (last(TemporalPC2) - first(TemporalPC2))^2),
       latent_roughness = latent_path_length / pmax(latent_net_displacement, 1e-6),
+      total_observation_duration_hours = sum(total_observation_duration_hours, na.rm = TRUE),
+      latent_path_length_per_hour = latent_path_length / pmax(total_observation_duration_hours, 1e-9),
+      latent_path_length_per_epoch = latent_path_length / pmax(n_epochs, 1),
+      latent_roughness_normalized = latent_roughness / pmax(n_epochs, 1),
       latent_variance = var(TemporalPC1, na.rm = TRUE) + var(TemporalPC2, na.rm = TRUE),
       mean_step_distance = mean(step_distance, na.rm = TRUE),
       .groups = "drop"
@@ -1030,10 +1636,10 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
     group_by(Sex, PhaseClass) %>%
     summarise(
       n = sum(is.finite(.data[[primary_outcome]]) & is.finite(latent_roughness)),
-      roughness_rho = safe_cor(latent_roughness, .data[[primary_outcome]], "spearman"),
-      roughness_p = safe_cor_p(latent_roughness, .data[[primary_outcome]], "spearman"),
-      path_length_rho = safe_cor(latent_path_length, .data[[primary_outcome]], "spearman"),
-      path_length_p = safe_cor_p(latent_path_length, .data[[primary_outcome]], "spearman"),
+      roughness_rho = safe_cor(latent_roughness_normalized, .data[[primary_outcome]], "spearman"),
+      roughness_p = safe_cor_p(latent_roughness_normalized, .data[[primary_outcome]], "spearman"),
+      path_length_rho = safe_cor(latent_path_length_per_hour, .data[[primary_outcome]], "spearman"),
+      path_length_p = safe_cor_p(latent_path_length_per_hour, .data[[primary_outcome]], "spearman"),
       variance_rho = safe_cor(latent_variance, .data[[primary_outcome]], "spearman"),
       variance_p = safe_cor_p(latent_variance, .data[[primary_outcome]], "spearman"),
       .groups = "drop"
@@ -1111,8 +1717,8 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
   }
 
   p_instability <- latent_instability_by_animal %>%
-    filter(is.finite(latent_roughness)) %>%
-    mutate(log_roughness = log10(latent_roughness + 1)) %>%
+    filter(is.finite(latent_roughness_normalized)) %>%
+    mutate(log_roughness = log10(latent_roughness_normalized + 1)) %>%
     ggplot(aes(Group, log_roughness, colour = Group, fill = Group)) +
     geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.28, linewidth = 0.28) +
     geom_point(position = position_jitter(width = 0.11, height = 0), size = 1.55, alpha = 0.78, stroke = 0.20) +
@@ -1121,9 +1727,9 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
     scale_fill_manual(values = group_colors, drop = FALSE) +
     labs(
       title = "Latent trajectory instability",
-      subtitle = "Path roughness through temporal state space by animal",
+      subtitle = "Duration-normalized path roughness through temporal state space by animal",
       x = NULL,
-      y = "log10(roughness + 1)"
+      y = "log10(normalized roughness + 1)"
     ) +
     make_nature_theme(base_size = 6)
 
@@ -1134,7 +1740,11 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
 # EFFECT-SIZE HEATMAPS
 # ------------------------------------------------
 
-focus_domains <- c("behavior", "composite", "temporal_dynamics", "latent_space", "behavioral_state", "trajectory")
+focus_domains <- c(
+  "behavior", "composite", "temporal_dynamics", "latent_space", "behavioral_state",
+  "latent_state", "social_network", "trajectory", "trajectory_geometry",
+  "nonlinear_dynamics", "systems_integration"
+)
 heat_tbl <- group_contrasts %>%
   filter(status == "tested", Domain %in% focus_domains) %>%
   mutate(
@@ -1245,6 +1855,471 @@ if (nrow(network_long) > 0) {
 
   save_plot_svg_pdf(p_net, file.path(output_dir, "figures/publication_panels/Fig_systems_feature_coupling_network_summary"), width = 150, height = 120)
 }
+
+# ------------------------------------------------
+# MODERN INTERPRETABILITY VISUALS: HMM FLOW, SOCIAL MAPS, TRAJECTORY ADAPTATION
+# ------------------------------------------------
+
+hmm_dir <- file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", primary_bin_level, "tables")
+hmm_state_summary <- read_any_table(file.path(hmm_dir, "hmm_state_summary.csv"))
+hmm_transition_prob <- read_any_table(file.path(hmm_dir, "hmm_transition_probabilities.csv"))
+hmm_dwell <- read_any_table(file.path(hmm_dir, "hmm_state_dwell_times.csv"))
+hmm_occupancy <- read_any_table(file.path(hmm_dir, "hmm_state_occupancy.csv"))
+
+state_label_tbl <- if (!is.null(hmm_state_summary) && nrow(hmm_state_summary) > 0) {
+  hmm_state_summary %>%
+    mutate(
+      State = as.character(State),
+      Movement_z = safe_numeric(Movement_z),
+      Entropy_z = safe_numeric(Entropy_z),
+      Proximity_z = safe_numeric(Proximity_z),
+      SemanticState = case_when(
+        Movement_z <= median(Movement_z, na.rm = TRUE) & Entropy_z <= median(Entropy_z, na.rm = TRUE) ~ "inactive/low-exploration",
+        Proximity_z >= quantile(Proximity_z, 0.67, na.rm = TRUE) ~ "social",
+        Movement_z >= quantile(Movement_z, 0.67, na.rm = TRUE) ~ "burst/high-movement",
+        Entropy_z >= quantile(Entropy_z, 0.67, na.rm = TRUE) ~ "exploratory",
+        TRUE ~ "mixed"
+      ),
+      StateLabel = paste0("S", State, "\n", SemanticState)
+    ) %>%
+    distinct(State, StateLabel, SemanticState)
+} else {
+  tibble(State = character(), StateLabel = character(), SemanticState = character())
+}
+
+write_table(state_label_tbl, file.path(output_dir, "tables/systems_hmm_state_semantic_labels.csv"))
+
+if (!is.null(hmm_transition_prob) && nrow(hmm_transition_prob) > 0) {
+  hmm_transition_plot_tbl <- hmm_transition_prob %>%
+    standardize_id_columns() %>%
+    mutate(
+      State = as.character(State),
+      NextState = as.character(NextState),
+      TransitionProbability = safe_numeric(TransitionProbability)
+    ) %>%
+    left_join(state_label_tbl %>% select(State, FromLabel = StateLabel), by = "State") %>%
+    left_join(state_label_tbl %>% select(NextState = State, ToLabel = StateLabel), by = "NextState") %>%
+    mutate(
+      FromLabel = coalesce(FromLabel, paste0("S", State)),
+      ToLabel = coalesce(ToLabel, paste0("S", NextState))
+    ) %>%
+    group_by(Sex, Group, FromLabel, ToLabel) %>%
+    summarise(mean_probability = mean(TransitionProbability, na.rm = TRUE), .groups = "drop")
+
+  transition_difference_wide <- hmm_transition_plot_tbl %>%
+    filter(as.character(Group) %in% c("CON", "RES", "SUS")) %>%
+    pivot_wider(names_from = Group, values_from = mean_probability)
+  for (grp in c("CON", "RES", "SUS")) {
+    if (!grp %in% names(transition_difference_wide)) transition_difference_wide[[grp]] <- NA_real_
+  }
+  transition_difference_tbl <- transition_difference_wide %>%
+    mutate(
+      `SUS - RES` = SUS - RES,
+      `SUS - CON` = SUS - CON,
+      `RES - CON` = RES - CON
+    ) %>%
+    pivot_longer(c(`SUS - RES`, `SUS - CON`, `RES - CON`), names_to = "Contrast", values_to = "DeltaProbability")
+
+  write_table(hmm_transition_plot_tbl, file.path(output_dir, "tables/systems_hmm_transition_probability_summary.csv"))
+  write_table(transition_difference_tbl, file.path(output_dir, "tables/systems_hmm_transition_probability_differences.csv"))
+
+  if (nrow(transition_difference_tbl) > 0) {
+    p_hmm_diff <- transition_difference_tbl %>%
+      filter(is.finite(DeltaProbability)) %>%
+      ggplot(aes(ToLabel, FromLabel, fill = DeltaProbability)) +
+      geom_tile(colour = "white", linewidth = 0.22) +
+      facet_grid(Sex ~ Contrast) +
+      scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey90") +
+      labs(
+        title = "HMM transition architecture differences",
+        subtitle = "Group differences in animal-level transition probabilities; positive values indicate higher probability in the first group",
+        x = "To state",
+        y = "From state",
+        fill = "Delta P"
+      ) +
+      make_nature_theme(base_size = 6) +
+      theme(axis.text.x = element_text(angle = 40, hjust = 1), legend.position = "right")
+
+    save_plot_svg_pdf(p_hmm_diff, file.path(output_dir, "figures/publication_panels/Fig_systems_hmm_transition_difference"), width = 175, height = 110)
+  }
+
+  if (requireNamespace("ggalluvial", quietly = TRUE)) {
+    hmm_flow_tbl <- hmm_transition_plot_tbl %>%
+      group_by(Sex, Group) %>%
+      slice_max(mean_probability, n = 8, with_ties = FALSE) %>%
+      ungroup() %>%
+      mutate(Flow = paste(FromLabel, ToLabel, sep = " -> "))
+
+    p_hmm_flow <- hmm_flow_tbl %>%
+      ggplot(aes(axis1 = FromLabel, axis2 = ToLabel, y = mean_probability, fill = Group)) +
+      ggalluvial::geom_alluvium(width = 0.18, alpha = 0.72) +
+      ggalluvial::geom_stratum(width = 0.18, colour = "grey35", linewidth = 0.18, fill = "grey96") +
+      ggplot2::geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 1.65, lineheight = 0.78) +
+      facet_grid(Sex ~ Group) +
+      scale_fill_manual(values = group_colors, drop = FALSE) +
+      scale_x_discrete(limits = c("From", "To"), expand = c(0.08, 0.08)) +
+      labs(
+        title = "Dominant latent-state flows",
+        subtitle = "Top HMM transitions by group and sex",
+        x = NULL,
+        y = "Mean transition probability"
+      ) +
+      make_nature_theme(base_size = 6) +
+      theme(legend.position = "none", axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+    save_plot_svg_pdf(p_hmm_flow, file.path(output_dir, "figures/publication_panels/Fig_systems_hmm_state_flow_alluvial"), width = 180, height = 125)
+  }
+}
+
+if (!is.null(hmm_dwell) && nrow(hmm_dwell) > 0) {
+  dwell_plot_tbl <- hmm_dwell %>%
+    standardize_id_columns() %>%
+    mutate(State = as.character(State), mean_dwell_hours = safe_numeric(mean_dwell_hours)) %>%
+    left_join(state_label_tbl %>% select(State, StateLabel), by = "State") %>%
+    mutate(StateLabel = coalesce(StateLabel, paste0("S", State))) %>%
+    filter(is.finite(mean_dwell_hours))
+
+  if (requireNamespace("ggridges", quietly = TRUE) && nrow(dwell_plot_tbl) > 0) {
+    p_dwell <- dwell_plot_tbl %>%
+      ggplot(aes(mean_dwell_hours, StateLabel, fill = Group, colour = Group)) +
+      ggridges::geom_density_ridges(alpha = 0.32, linewidth = 0.25, scale = 1.05, rel_min_height = 0.01) +
+      facet_grid(Sex ~ Phase, scales = "free_y") +
+      scale_colour_manual(values = group_colors, drop = FALSE) +
+      scale_fill_manual(values = group_colors, drop = FALSE) +
+      labs(
+        title = "HMM dwell-time distributions",
+        subtitle = "Long dwell times indicate state persistence or behavioral rigidity",
+        x = "Mean dwell time (hours)",
+        y = NULL
+      ) +
+      make_nature_theme(base_size = 6)
+
+    save_plot_svg_pdf(p_dwell, file.path(output_dir, "figures/publication_panels/Fig_systems_hmm_dwell_time_ridges"), width = 170, height = 115)
+  }
+}
+
+social_score_tbl <- named_biological_scores_long %>%
+  select(AnimalNum, Group, Sex, Metric, Score) %>%
+  filter(Metric %in% c("social_withdrawal_score", "social_fragmentation_score", "exploratory_flexibility_score")) %>%
+  pivot_wider(names_from = Metric, values_from = Score)
+
+if (nrow(social_score_tbl) > 0 && all(c("social_withdrawal_score", "social_fragmentation_score") %in% names(social_score_tbl))) {
+  p_social_map <- social_score_tbl %>%
+    ggplot(aes(social_withdrawal_score, social_fragmentation_score, colour = Group, fill = Group)) +
+    geom_hline(yintercept = 0, linewidth = 0.18, colour = "grey80") +
+    geom_vline(xintercept = 0, linewidth = 0.18, colour = "grey80") +
+    geom_point(aes(size = abs(exploratory_flexibility_score)), alpha = 0.82, stroke = 0.25) +
+    stat_ellipse(aes(group = Group), linewidth = 0.35, alpha = 0.45, show.legend = FALSE) +
+    facet_grid(. ~ Sex) +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    scale_size_continuous(range = c(1.4, 4.0), na.value = 1.4) +
+    labs(
+      title = "Social phenotype map",
+      subtitle = "Separates withdrawal from fragmented topology; point size reflects exploratory flexibility",
+      x = "Social withdrawal score",
+      y = "Social fragmentation score",
+      size = "|Flexibility|"
+    ) +
+    make_nature_theme(base_size = 7) +
+    theme(legend.position = "right")
+
+  save_plot_svg_pdf(p_social_map, file.path(output_dir, "figures/publication_panels/Fig_systems_social_phenotype_map"), width = 140, height = 78)
+}
+
+trajectory_score_tbl <- named_biological_scores_long %>%
+  select(AnimalNum, Group, Sex, Metric, Score) %>%
+  filter(Metric %in% c("trajectory_recovery_score", "behavioral_rigidity_score", "stress_adaptation_index")) %>%
+  pivot_wider(names_from = Metric, values_from = Score)
+
+if (nrow(trajectory_score_tbl) > 0 && all(c("trajectory_recovery_score", "behavioral_rigidity_score") %in% names(trajectory_score_tbl))) {
+  p_adaptation <- trajectory_score_tbl %>%
+    ggplot(aes(behavioral_rigidity_score, trajectory_recovery_score, colour = Group, fill = Group)) +
+    geom_hline(yintercept = 0, linewidth = 0.18, colour = "grey80") +
+    geom_vline(xintercept = 0, linewidth = 0.18, colour = "grey80") +
+    geom_point(aes(size = stress_adaptation_index), alpha = 0.84, stroke = 0.25) +
+    geom_smooth(method = "lm", se = TRUE, colour = "grey25", fill = "grey70", linewidth = 0.35, alpha = 0.14) +
+    facet_grid(. ~ Sex) +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    scale_size_continuous(range = c(1.4, 4.2), na.value = 1.6) +
+    labs(
+      title = "Adaptation phase portrait",
+      subtitle = "Recovery dynamics plotted against behavioral rigidity",
+      x = "Behavioral rigidity score",
+      y = "Trajectory recovery score",
+      size = "Adaptation\nindex"
+    ) +
+    make_nature_theme(base_size = 7) +
+    theme(legend.position = "right")
+
+  save_plot_svg_pdf(p_adaptation, file.path(output_dir, "figures/publication_panels/Fig_systems_trajectory_adaptation_phase_portrait"), width = 140, height = 78)
+}
+
+# ------------------------------------------------
+# MODULE-LEVEL PREDICTION LADDER HELPERS
+# ------------------------------------------------
+
+make_module_score <- function(dat, features, score_name) {
+  features <- intersect(features, names(dat))
+  if (length(features) == 0) return(tibble(AnimalNum = dat$AnimalNum, !!score_name := NA_real_))
+  mat <- dat %>%
+    select(all_of(features)) %>%
+    mutate(across(everything(), safe_numeric)) %>%
+    as.matrix()
+  mat <- scale(mat)
+  mat[!is.finite(mat)] <- NA_real_
+  tibble(AnimalNum = dat$AnimalNum, !!score_name := rowMeans(mat, na.rm = TRUE))
+}
+
+loo_lm_module_predict <- function(dat, predictors, model_name) {
+  predictors <- predictors[predictors %in% names(dat)]
+  predictors <- predictors[map_lgl(predictors, ~ isTRUE(sd(dat[[.x]], na.rm = TRUE) > 0))]
+  pred <- rep(NA_real_, nrow(dat))
+  coef_tbl <- tibble()
+  if (nrow(dat) < 6 || length(predictors) == 0) {
+    return(list(predictions = dat %>% transmute(AnimalNum, Group, Sex, Model = model_name, outcome, predicted = NA_real_, residual = NA_real_),
+                coefficients = coef_tbl))
+  }
+
+  for (i in seq_len(nrow(dat))) {
+    train_idx <- setdiff(seq_len(nrow(dat)), i)
+    train <- dat[train_idx, , drop = FALSE]
+    test <- dat[i, , drop = FALSE]
+    train_medians <- map_dbl(predictors, ~ median(train[[.x]], na.rm = TRUE))
+    train_medians[!is.finite(train_medians)] <- 0
+    for (j in seq_along(predictors)) {
+      train[[predictors[j]]][!is.finite(train[[predictors[j]]])] <- train_medians[j]
+      test[[predictors[j]]][!is.finite(test[[predictors[j]]])] <- train_medians[j]
+    }
+    form <- as.formula(paste("outcome ~", paste(predictors, collapse = " + ")))
+    fit <- try(lm(form, data = train), silent = TRUE)
+    if (inherits(fit, "try-error")) next
+    pred[i] <- tryCatch(as.numeric(predict(fit, newdata = test)), error = function(e) NA_real_)
+    cf <- coef(fit)
+    coef_tbl <- bind_rows(coef_tbl, tibble(Model = model_name, held_out = dat$AnimalNum[i], term = names(cf), coefficient = as.numeric(cf)))
+  }
+
+  list(
+    predictions = dat %>% transmute(AnimalNum, Group, Sex, Model = model_name, outcome, predicted = pred, residual = outcome - predicted),
+    coefficients = coef_tbl
+  )
+}
+
+prediction_performance_tbl <- function(pred_tbl, n_features, seed = 1) {
+  ok <- pred_tbl %>% filter(is.finite(outcome), is.finite(predicted))
+  if (nrow(ok) < 4) {
+    return(tibble(n = nrow(ok), n_features = n_features, pearson_r = NA_real_, spearman_rho = NA_real_, rmse = NA_real_, mae = NA_real_, cv_r2 = NA_real_, permutation_p = NA_real_, pearson_ci_low = NA_real_, pearson_ci_high = NA_real_, spearman_ci_low = NA_real_, spearman_ci_high = NA_real_))
+  }
+  pear <- safe_cor(ok$outcome, ok$predicted, "pearson")
+  spear <- safe_cor(ok$outcome, ok$predicted, "spearman")
+  baseline <- mean(ok$outcome, na.rm = TRUE)
+  set.seed(seed)
+  perm <- replicate(n_prediction_permutations, abs(safe_cor(ok$outcome, sample(ok$predicted), "pearson")))
+  set.seed(seed + 100)
+  boot <- replicate(n_prediction_bootstrap, {
+    idx <- sample(seq_len(nrow(ok)), replace = TRUE)
+    c(pearson = safe_cor(ok$outcome[idx], ok$predicted[idx], "pearson"),
+      spearman = safe_cor(ok$outcome[idx], ok$predicted[idx], "spearman"))
+  })
+  tibble(
+    n = nrow(ok),
+    n_features = n_features,
+    pearson_r = pear,
+    spearman_rho = spear,
+    rmse = sqrt(mean((ok$outcome - ok$predicted)^2, na.rm = TRUE)),
+    mae = mean(abs(ok$outcome - ok$predicted), na.rm = TRUE),
+    cv_r2 = 1 - sum((ok$outcome - ok$predicted)^2, na.rm = TRUE) / sum((ok$outcome - baseline)^2, na.rm = TRUE),
+    permutation_p = (sum(perm >= abs(pear), na.rm = TRUE) + 1) / (sum(is.finite(perm)) + 1),
+    pearson_ci_low = quantile(boot["pearson", ], 0.025, na.rm = TRUE, names = FALSE),
+    pearson_ci_high = quantile(boot["pearson", ], 0.975, na.rm = TRUE, names = FALSE),
+    spearman_ci_low = quantile(boot["spearman", ], 0.025, na.rm = TRUE, names = FALSE),
+    spearman_ci_high = quantile(boot["spearman", ], 0.975, na.rm = TRUE, names = FALSE)
+  )
+}
+
+build_prediction_ladder <- function(outcome_to_plot, animal_filter = NULL, analysis_set = "full") {
+  source_dat <- systems_features
+  if (!is.null(animal_filter)) {
+    source_dat <- source_dat %>% semi_join(tibble(AnimalNum = animal_filter), by = "AnimalNum")
+  }
+
+  fd <- feature_dictionary %>% filter(feature %in% duration_robust_features)
+  early_raw <- fd %>% filter(Source == "raw", Context == prospective_prediction_context)
+  movement_features <- early_raw %>% filter(Metric == "movement") %>% pull(feature)
+  proximity_features <- early_raw %>% filter(Metric == "proximity") %>% pull(feature)
+  entropy_acf_features <- early_raw %>% filter(Metric == "entropy", Statistic == "acf1") %>% pull(feature)
+  instability_features <- fd %>% filter(Module == "Temporal instability", feature %in% prospective_prediction_features | Source %in% c("burstiness", "state_space")) %>% pull(feature)
+  latent_features <- fd %>% filter(Module == "Latent-state organization") %>% pull(feature)
+  social_features <- fd %>% filter(Module == "Social topology") %>% pull(feature)
+  trajectory_features <- fd %>% filter(Module == "Trajectory geometry") %>% pull(feature)
+  nonlinear_features <- fd %>% filter(Module == "Nonlinear systems dynamics") %>% pull(feature)
+
+  score_tbl <- source_dat %>% select(AnimalNum, Group, Sex, all_of(outcome_to_plot)) %>% rename(outcome = all_of(outcome_to_plot))
+  score_tbl <- reduce(list(
+    make_module_score(source_dat, movement_features, "movement_score"),
+    make_module_score(source_dat, proximity_features, "proximity_score"),
+    make_module_score(source_dat, entropy_acf_features, "entropy_acf1_score"),
+    make_module_score(source_dat, instability_features, "instability_score"),
+    make_module_score(source_dat, latent_features, "latent_state_score"),
+    make_module_score(source_dat, social_features, "social_topology_score"),
+    make_module_score(source_dat, trajectory_features, "trajectory_geometry_score"),
+    make_module_score(source_dat, nonlinear_features, "nonlinear_dynamics_score")
+  ), left_join, by = "AnimalNum") %>%
+    right_join(score_tbl, by = "AnimalNum") %>%
+    select(AnimalNum, Group, Sex, outcome, everything()) %>%
+    filter(is.finite(outcome))
+
+  ladder <- tibble(
+    ModelOrder = 1:7,
+    Model = c(
+      "movement-only",
+      "movement + proximity",
+      "movement + entropy_acf1",
+      "movement + instability metrics",
+      "movement + latent-state metrics",
+      "movement + social-network metrics",
+      "integrated systems model"
+    ),
+    Predictors = list(
+      "movement_score",
+      c("movement_score", "proximity_score"),
+      c("movement_score", "proximity_score", "entropy_acf1_score"),
+      c("movement_score", "proximity_score", "entropy_acf1_score", "instability_score"),
+      c("movement_score", "proximity_score", "entropy_acf1_score", "instability_score", "latent_state_score"),
+      c("movement_score", "proximity_score", "entropy_acf1_score", "instability_score", "latent_state_score", "social_topology_score"),
+      c("movement_score", "proximity_score", "entropy_acf1_score", "instability_score", "latent_state_score", "social_topology_score", "trajectory_geometry_score", "nonlinear_dynamics_score")
+    )
+  )
+
+  fits <- pmap(ladder, function(ModelOrder, Model, Predictors) {
+    loo_lm_module_predict(score_tbl, Predictors, Model)
+  })
+  pred_tbl <- map_dfr(fits, "predictions")
+  coef_tbl <- map_dfr(fits, "coefficients")
+  perf_tbl <- map2_dfr(fits, seq_len(nrow(ladder)), function(fit, idx) {
+    prediction_performance_tbl(fit$predictions, length(ladder$Predictors[[idx]]), seed = 100 + idx) %>%
+      mutate(ModelOrder = ladder$ModelOrder[idx], Model = ladder$Model[idx], Predictors = paste(ladder$Predictors[[idx]], collapse = " + "))
+  }) %>%
+    arrange(ModelOrder) %>%
+    mutate(
+      delta_cv_r2_vs_previous = cv_r2 - lag(cv_r2),
+      delta_cv_r2_vs_movement = cv_r2 - cv_r2[Model == "movement-only"][1],
+      DurationAnalysisSet = analysis_set,
+      DurationSensitivityStatus = "fit"
+    )
+
+  pred_tbl <- pred_tbl %>% mutate(DurationAnalysisSet = analysis_set)
+  coef_tbl <- coef_tbl %>% mutate(DurationAnalysisSet = analysis_set)
+  score_tbl <- score_tbl %>% mutate(DurationAnalysisSet = analysis_set)
+
+  list(scores = score_tbl, predictions = pred_tbl, coefficients = coef_tbl, performance = perf_tbl)
+}
+
+# Module-score coupling uses module aggregates rather than hundreds of individual features.
+module_score_matrix <- {
+  fd <- feature_dictionary %>% filter(feature %in% duration_robust_features)
+  module_features <- split(fd$feature, fd$Module)
+  score_parts <- imap(module_features, function(features, module_name) {
+    make_module_score(systems_features, features, paste0("module_score__", safe_name(module_name)))
+  })
+  if (length(score_parts) == 0) {
+    systems_features %>% select(AnimalNum, Group, Sex)
+  } else {
+    reduce(score_parts, left_join, by = "AnimalNum") %>%
+    left_join(systems_features %>% select(AnimalNum, Group, Sex), by = "AnimalNum") %>%
+    relocate(AnimalNum, Group, Sex)
+  }
+}
+
+write_table(module_score_matrix, file.path(output_dir, "tables/systems_module_scores_by_animal.csv"))
+
+module_score_cols <- names(module_score_matrix)[str_detect(names(module_score_matrix), "^module_score__")]
+module_coupling_tbl <- map_dfr(levels(droplevels(systems_features$Sex)), function(sx) {
+  dat <- module_score_matrix %>% filter(as.character(Sex) == sx)
+  if (nrow(dat) < 5 || length(module_score_cols) < 2) return(tibble())
+  mat <- dat %>%
+    select(all_of(module_score_cols)) %>%
+    mutate(across(everything(), ~ replace_na(safe_numeric(.x), median(safe_numeric(.x), na.rm = TRUE)))) %>%
+    as.matrix()
+  cmat <- suppressWarnings(cor(mat, method = "spearman", use = "pairwise.complete.obs"))
+  idx <- which(upper.tri(cmat), arr.ind = TRUE)
+  tibble(
+    Sex = sx,
+    Module1 = str_remove(colnames(cmat)[idx[, 1]], "^module_score__") %>% str_replace_all("_", " ") %>% str_to_sentence(),
+    Module2 = str_remove(colnames(cmat)[idx[, 2]], "^module_score__") %>% str_replace_all("_", " ") %>% str_to_sentence(),
+    spearman_rho = cmat[idx]
+  ) %>%
+    filter(is.finite(spearman_rho))
+})
+
+write_table(module_coupling_tbl, file.path(output_dir, "tables/systems_module_coupling_edges.csv"))
+
+if (nrow(module_coupling_tbl) > 0) {
+  p_module_coupling <- module_coupling_tbl %>%
+    filter(abs(spearman_rho) >= 0.25) %>%
+    mutate(Pair = paste(Module1, Module2, sep = " <-> "),
+           Pair = factor(Pair, levels = unique(Pair[order(abs(spearman_rho), decreasing = TRUE)]))) %>%
+    ggplot(aes(spearman_rho, Pair, fill = spearman_rho)) +
+    geom_col(width = 0.68) +
+    facet_grid(Sex ~ ., scales = "free_y", space = "free_y") +
+    scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0) +
+    labs(
+      title = "Module-level coupling map",
+      subtitle = "Spearman correlations among biologically interpretable module scores",
+      x = "Spearman rho",
+      y = NULL,
+      fill = "rho"
+    ) +
+    make_nature_theme(base_size = 6) +
+    theme(legend.position = "right")
+
+  save_plot_svg_pdf(p_module_coupling, file.path(output_dir, "figures/publication_panels/Fig_systems_module_coupling_network"), width = 150, height = 108)
+}
+
+duration_negative_control_tbl <- if (nrow(epoch_duration_qc) > 0) {
+  duration_qc_for_negative_control <- epoch_duration_qc
+  if (!"short_regrouping_epoch" %in% names(duration_qc_for_negative_control)) {
+    duration_qc_for_negative_control <- duration_qc_for_negative_control %>% mutate(short_regrouping_epoch = FALSE)
+  }
+  animal_duration_summary <- duration_qc_for_negative_control %>%
+    group_by(AnimalNum) %>%
+    summarise(
+      mean_duration_completeness = mean(duration_completeness_fraction, na.rm = TRUE),
+      min_duration_completeness = min(duration_completeness_fraction, na.rm = TRUE),
+      fraction_short_epochs = mean(short_epoch %in% TRUE | cage_change_duration_class == "short" | short_regrouping_epoch %in% TRUE, na.rm = TRUE),
+      total_observation_hours = sum(total_observation_duration_hours, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(across(c(min_duration_completeness, mean_duration_completeness), ~ if_else(is.infinite(.x), NA_real_, .x))) %>%
+    left_join(systems_features %>% select(AnimalNum, Group, Sex, any_of(endpoint_cols)), by = "AnimalNum")
+
+  duration_cols <- c("mean_duration_completeness", "min_duration_completeness", "fraction_short_epochs", "total_observation_hours")
+  endpoint_available_for_qc <- intersect(endpoint_cols, names(animal_duration_summary))
+  write_table(animal_duration_summary, file.path(output_dir, "tables/systems_duration_negative_control_by_animal.csv"))
+
+  map_dfr(endpoint_available_for_qc, function(outcome) {
+    y <- safe_numeric(animal_duration_summary[[outcome]])
+    map_dfr(duration_cols, function(dc) {
+      x <- safe_numeric(animal_duration_summary[[dc]])
+      tibble(
+        outcome = outcome,
+        duration_metric = dc,
+        n = sum(is.finite(x) & is.finite(y)),
+        spearman_rho = safe_cor(x, y, "spearman"),
+        spearman_p = safe_cor_p(x, y, "spearman"),
+        reviewer_interpretation = "negative_control_duration_metric_should_not_drive_endpoint_association"
+      )
+    })
+  }) %>%
+    group_by(outcome) %>%
+    mutate(spearman_fdr = p.adjust(spearman_p, method = "BH")) %>%
+    ungroup()
+} else {
+  tibble()
+}
+
+write_table(duration_negative_control_tbl, file.path(output_dir, "stats_tables/systems_duration_negative_control_endpoint_correlations.csv"))
 
 # ------------------------------------------------
 # OUTCOME INTEGRATION AND PREDICTION SUMMARY
@@ -1431,182 +2506,236 @@ if (length(available_outcomes) > 0) {
     save_plot_svg_pdf(p_prosp_scatter, file.path(output_dir, "figures/publication_panels/Fig_systems_prospective_feature_scatter"), width = 190, height = 118)
   }
 
-  if (requireNamespace("glmnet", quietly = TRUE)) {
-    model_dat <- systems_features %>%
-      filter(is.finite(safe_numeric(.data[[outcome_to_plot]])))
-    model_features <- prospective_prediction_features[prospective_prediction_features %in% names(model_dat)]
-    model_feature_qc <- map_dfr(model_features, function(fc) {
-      x <- safe_numeric(model_dat[[fc]])
-      tibble(
-        feature = fc,
-        n_finite = sum(is.finite(x)),
-        missing_fraction = mean(!is.finite(x)),
-        zero_variance = sd(x, na.rm = TRUE) == 0
-      )
-    })
-    model_features <- model_feature_qc %>%
-      filter(n_finite >= 8, missing_fraction <= 0.50, !zero_variance) %>%
-      pull(feature)
-
-    x_model_raw <- model_dat %>%
-      select(all_of(model_features)) %>%
-      mutate(across(everything(), safe_numeric)) %>%
-      as.matrix()
-    y_model <- safe_numeric(model_dat[[outcome_to_plot]])
-
-    if (nrow(x_model_raw) >= 8 && ncol(x_model_raw) >= 2) {
-      pred <- rep(NA_real_, length(y_model))
-      coef_tbl <- tibble()
-      set.seed(1)
-      for (i in seq_along(y_model)) {
-        train_idx <- setdiff(seq_along(y_model), i)
-        x_train <- x_model_raw[train_idx, , drop = FALSE]
-        x_test <- x_model_raw[i, , drop = FALSE]
-        train_medians <- apply(x_train, 2, median, na.rm = TRUE)
-        train_medians[!is.finite(train_medians)] <- 0
-        for (j in seq_along(train_medians)) {
-          x_train[!is.finite(x_train[, j]), j] <- train_medians[j]
-          x_test[!is.finite(x_test[, j]), j] <- train_medians[j]
-        }
-        fit <- glmnet::cv.glmnet(
-          x_train, y_model[train_idx],
-          alpha = 0.5,
-          standardize = TRUE,
-          nfolds = min(5, length(train_idx))
-        )
-        pred[i] <- as.numeric(predict(fit, x_test, s = "lambda.min"))
-        cc <- as.matrix(coef(fit, s = "lambda.min"))[, 1]
-        coef_tbl <- bind_rows(coef_tbl, tibble(held_out = model_dat$AnimalNum[i], feature = names(cc), coefficient = as.numeric(cc)))
-      }
-
-      prediction_tbl <- model_dat %>%
-        transmute(AnimalNum, Group, Sex, outcome = y_model, predicted = pred, residual = outcome - predicted)
-      baseline <- mean(prediction_tbl$outcome, na.rm = TRUE)
-      loo_r <- safe_cor(prediction_tbl$outcome, prediction_tbl$predicted, "pearson")
-      loo_r_ci <- cor_ci_approx(loo_r, nrow(prediction_tbl))
-      loo_rho <- safe_cor(prediction_tbl$outcome, prediction_tbl$predicted, "spearman")
-      loo_rho_ci <- cor_ci_approx(loo_rho, nrow(prediction_tbl))
-      prediction_perf <- tibble(
-        outcome = outcome_to_plot,
-        FeatureSet = "prospective_prediction",
-        n = nrow(prediction_tbl),
-        n_features = length(model_features),
-        loo_pearson_r = loo_r,
-        loo_pearson_ci_low = loo_r_ci["low"],
-        loo_pearson_ci_high = loo_r_ci["high"],
-        loo_spearman_rho = loo_rho,
-        loo_spearman_ci_low = loo_rho_ci["low"],
-        loo_spearman_ci_high = loo_rho_ci["high"],
-        loo_rmse = sqrt(mean((prediction_tbl$outcome - prediction_tbl$predicted)^2, na.rm = TRUE)),
-        baseline_rmse = sqrt(mean((prediction_tbl$outcome - baseline)^2, na.rm = TRUE)),
-        cv_r2_vs_mean = 1 - sum((prediction_tbl$outcome - prediction_tbl$predicted)^2, na.rm = TRUE) /
-          sum((prediction_tbl$outcome - baseline)^2, na.rm = TRUE),
-        Model = "Elastic net, leave-one-animal-out cross-validation",
-        Preprocessing = "Missing feature values imputed from training-fold medians only"
-      )
-
-      set.seed(2)
-      pearson_perm <- abs(replicate(1000, safe_cor(prediction_tbl$outcome, sample(prediction_tbl$predicted), "pearson")))
-      spearman_perm <- abs(replicate(1000, safe_cor(prediction_tbl$outcome, sample(prediction_tbl$predicted), "spearman")))
-      prediction_permutation <- tibble(
-        n_permutations = 1000,
-        pearson_r_permutation_p = (sum(pearson_perm >= abs(loo_r), na.rm = TRUE) + 1) / (sum(is.finite(pearson_perm)) + 1),
-        spearman_rho_permutation_p = (sum(spearman_perm >= abs(loo_rho), na.rm = TRUE) + 1) / (sum(is.finite(spearman_perm)) + 1),
-        NullModel = "Permutation of cross-validated predictions relative to observed endpoint; model not refit"
-      )
-      prediction_perf <- bind_cols(prediction_perf, prediction_permutation)
-
-      prediction_auc_tbl <- tibble()
-      if (requireNamespace("pROC", quietly = TRUE)) {
-        prediction_auc_tbl <- prediction_tbl %>%
-          filter(Group %in% c("RES", "SUS"), is.finite(predicted)) %>%
-          group_by(Sex) %>%
-          group_modify(~ {
-            if (n_distinct(.x$Group) < 2) return(tibble(n = nrow(.x), auc_res_sus = NA_real_))
-            roc_obj <- try(pROC::roc(response = .x$Group, predictor = -.x$predicted, levels = c("RES", "SUS"), quiet = TRUE), silent = TRUE)
-            tibble(n = nrow(.x), auc_res_sus = if (inherits(roc_obj, "try-error")) NA_real_ else as.numeric(pROC::auc(roc_obj)))
-          }) %>%
-          ungroup() %>%
-          bind_rows(
-            prediction_tbl %>%
-              filter(Group %in% c("RES", "SUS"), is.finite(predicted)) %>%
-              { if (n_distinct(.$Group) < 2) tibble(Sex = "Pooled", n = nrow(.), auc_res_sus = NA_real_) else {
-                roc_obj <- try(pROC::roc(response = .$Group, predictor = -.$predicted, levels = c("RES", "SUS"), quiet = TRUE), silent = TRUE)
-                tibble(Sex = "Pooled", n = nrow(.), auc_res_sus = if (inherits(roc_obj, "try-error")) NA_real_ else as.numeric(pROC::auc(roc_obj)))
-              }}
-          ) %>%
-          mutate(
-            Outcome = "RES vs SUS classification from cross-validated predicted CombZ",
-            ScoreDirection = "Higher score = lower predicted CombZ = more susceptible-like"
-          )
-      }
-
-      coef_summary <- coef_tbl %>%
-        filter(feature != "(Intercept)") %>%
-        group_by(feature) %>%
-        summarise(nonzero_frequency = mean(coefficient != 0), median_coefficient = median(coefficient), .groups = "drop") %>%
-        left_join(feature_dictionary, by = "feature") %>%
-        arrange(desc(nonzero_frequency), desc(abs(median_coefficient)))
-
-      write_table(prediction_tbl, file.path(output_dir, "tables/systems_prospective_outcome_loo_predictions.csv"))
-      write_table(prediction_perf, file.path(output_dir, "tables/systems_prospective_outcome_loo_performance.csv"))
-      write_table(coef_summary, file.path(output_dir, "tables/systems_prospective_outcome_elastic_net_feature_stability.csv"))
-      write_table(prediction_auc_tbl, file.path(output_dir, "tables/systems_prospective_outcome_res_sus_auc.csv"))
-      write_table(prediction_tbl, file.path(output_dir, "tables/systems_outcome_loo_predictions.csv"))
-      write_table(prediction_perf, file.path(output_dir, "tables/systems_outcome_loo_performance.csv"))
-      write_table(coef_summary, file.path(output_dir, "tables/systems_outcome_elastic_net_feature_stability.csv"))
-      write_table(prediction_auc_tbl, file.path(output_dir, "tables/systems_outcome_res_sus_auc.csv"))
-
-      prediction_sex_stats <- prediction_tbl %>%
-        group_by(Sex) %>%
-        summarise(
-          n = n_distinct(AnimalNum),
-          pearson_r = safe_cor(outcome, predicted, "pearson"),
-          spearman_rho = safe_cor(outcome, predicted, "spearman"),
-          rmse = sqrt(mean((outcome - predicted)^2, na.rm = TRUE)),
-          .groups = "drop"
-        ) %>%
-        mutate(
-          StatLabel = paste0(
-            "r=", formatC(pearson_r, format = "f", digits = 2),
-            "\n", rho_label(spearman_rho),
-            "\nRMSE=", formatC(rmse, format = "f", digits = 2),
-            "\nn=", n
-          )
-        )
-
-      write_table(prediction_sex_stats, file.path(output_dir, "tables/systems_prospective_outcome_loo_performance_by_sex.csv"))
-
-      p_pred <- prediction_tbl %>%
-        ggplot(aes(outcome, predicted, colour = Group, fill = Group)) +
-        geom_abline(slope = 1, intercept = 0, linewidth = 0.25, linetype = "dashed", colour = "grey45") +
-        geom_point(size = 2.2, alpha = 0.9) +
-        geom_smooth(method = "lm", se = TRUE, linewidth = 0.45, colour = "grey25") +
-        geom_text(
-          data = prediction_sex_stats,
-          aes(x = -Inf, y = Inf, label = StatLabel),
-          inherit.aes = FALSE,
-          hjust = -0.06,
-          vjust = 1.10,
-          size = 2.05,
-          lineheight = 0.86,
-          colour = "grey15"
-        ) +
-        facet_wrap(~ Sex, nrow = 1) +
-        scale_colour_manual(values = group_colors, drop = FALSE) +
-        scale_fill_manual(values = group_colors, drop = FALSE) +
-        labs(
-          title = paste0("Prospective early behavior predicts ", outcome_to_plot),
-          subtitle = paste0("LOO elastic-net on ", length(model_features), " early features: pooled r=", round(prediction_perf$loo_pearson_r, 2), "; pooled CV R2=", round(prediction_perf$cv_r2_vs_mean, 2)),
-          x = paste0("Observed ", outcome_to_plot, " (lower = worse)"),
-          y = paste0("Predicted ", outcome_to_plot),
-          caption = "Panel labels report sex-stratified prediction performance; model fitting was leave-one-animal-out across all animals."
-        ) +
-        make_nature_theme(base_size = 7)
-
-      save_plot_svg_pdf(p_pred, file.path(output_dir, "figures/publication_panels/Fig_systems_prospective_crossvalidated_prediction"), width = 135, height = 75)
-    }
+  animal_duration_source <- epoch_duration_qc
+  if (!"short_regrouping_epoch" %in% names(animal_duration_source)) {
+    animal_duration_source <- animal_duration_source %>% mutate(short_regrouping_epoch = FALSE)
   }
+  animal_duration_flags <- animal_duration_source %>%
+    group_by(AnimalNum) %>%
+    summarise(
+      contains_short_duration_epoch = any(short_epoch %in% TRUE | cage_change_duration_class == "short" | short_regrouping_epoch %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    )
+  animals_without_short_duration <- systems_features %>%
+    left_join(animal_duration_flags, by = "AnimalNum") %>%
+    filter(!contains_short_duration_epoch %in% TRUE) %>%
+    pull(AnimalNum)
+
+  prediction_ladder <- build_prediction_ladder(outcome_to_plot, analysis_set = "full")
+  prediction_ladder_no_short <- if (length(animals_without_short_duration) >= 8) {
+    build_prediction_ladder(outcome_to_plot, animal_filter = animals_without_short_duration, analysis_set = "excluding_short_duration")
+  } else {
+    skipped_perf <- prediction_ladder$performance %>%
+      mutate(
+        across(c(n, n_features, pearson_r, spearman_rho, rmse, mae, cv_r2, permutation_p,
+                 pearson_ci_low, pearson_ci_high, spearman_ci_low, spearman_ci_high,
+                 delta_cv_r2_vs_previous, delta_cv_r2_vs_movement), ~ NA_real_),
+        DurationAnalysisSet = "excluding_short_duration",
+        DurationSensitivityStatus = "skipped_too_few_animals"
+      )
+    list(scores = tibble(), predictions = tibble(), coefficients = tibble(), performance = skipped_perf)
+  }
+
+  prediction_tbl_all_models_duration_sensitivity <- bind_rows(
+    prediction_ladder$predictions,
+    prediction_ladder_no_short$predictions
+  )
+  prediction_perf_duration_sensitivity <- bind_rows(
+    prediction_ladder$performance,
+    prediction_ladder_no_short$performance
+  ) %>%
+    group_by(Model) %>%
+    mutate(
+      full_cv_r2 = cv_r2[DurationAnalysisSet == "full"][1],
+      full_pearson_r = pearson_r[DurationAnalysisSet == "full"][1],
+      full_rmse = rmse[DurationAnalysisSet == "full"][1],
+      delta_cv_r2_vs_full = cv_r2 - full_cv_r2,
+      delta_pearson_r_vs_full = pearson_r - full_pearson_r,
+      delta_rmse_vs_full = rmse - full_rmse
+    ) %>%
+    ungroup() %>%
+    select(-full_cv_r2, -full_pearson_r, -full_rmse)
+
+  prediction_tbl_all_models <- prediction_ladder$predictions
+  prediction_tbl <- prediction_tbl_all_models %>% filter(Model == "integrated systems model")
+  prediction_perf <- prediction_ladder$performance %>%
+    mutate(
+      outcome = outcome_to_plot,
+      loo_pearson_r = pearson_r,
+      loo_spearman_rho = spearman_rho,
+      loo_rmse = rmse,
+      cv_r2_vs_mean = cv_r2,
+      pearson_r_permutation_p = permutation_p,
+      ModelFamily = "Module-level linear model ladder, leave-one-animal-out cross-validation",
+      Preprocessing = "Features are collapsed into biologically interpretable z-scored module scores before modeling"
+    )
+  prediction_perf_integrated <- prediction_perf %>% filter(Model == "integrated systems model") %>% slice_head(n = 1)
+  prediction_coef_tbl <- prediction_ladder$coefficients
+  write_table(prediction_ladder$scores, file.path(output_dir, "tables/systems_prediction_module_scores.csv"))
+  write_table(prediction_tbl_all_models, file.path(output_dir, "tables/systems_prediction_ladder_loo_predictions.csv"))
+  write_table(prediction_perf, file.path(output_dir, "tables/systems_prediction_ladder_performance.csv"))
+  write_table(prediction_coef_tbl, file.path(output_dir, "tables/systems_prediction_ladder_coefficients.csv"))
+  write_table(bind_rows(prediction_ladder$scores, prediction_ladder_no_short$scores), file.path(output_dir, "tables/systems_prediction_module_scores_duration_sensitivity.csv"))
+  write_table(prediction_tbl_all_models_duration_sensitivity, file.path(output_dir, "tables/systems_prediction_ladder_loo_predictions_duration_sensitivity.csv"))
+  write_table(prediction_perf_duration_sensitivity, file.path(output_dir, "tables/systems_prediction_ladder_performance_duration_sensitivity.csv"))
+  write_table(bind_rows(prediction_ladder$coefficients, prediction_ladder_no_short$coefficients), file.path(output_dir, "tables/systems_prediction_ladder_coefficients_duration_sensitivity.csv"))
+  write_table(prediction_tbl, file.path(output_dir, "tables/systems_prospective_outcome_loo_predictions.csv"))
+  write_table(prediction_perf_integrated, file.path(output_dir, "tables/systems_prospective_outcome_loo_performance.csv"))
+
+  prediction_module_delta_tbl <- prediction_perf %>%
+    transmute(
+      ModelOrder,
+      Model,
+      AddedModule = case_when(
+        Model == "movement-only" ~ "Magnitude",
+        Model == "movement + proximity" ~ "Magnitude/social proximity",
+        Model == "movement + entropy_acf1" ~ "Temporal persistence",
+        Model == "movement + instability metrics" ~ "Temporal instability",
+        Model == "movement + latent-state metrics" ~ "Latent-state organization",
+        Model == "movement + social-network metrics" ~ "Social topology",
+        Model == "integrated systems model" ~ "Trajectory + nonlinear integration",
+        TRUE ~ Model
+      ),
+      cv_r2,
+      delta_cv_r2_vs_previous,
+      delta_cv_r2_vs_movement,
+      pearson_r,
+      rmse,
+      permutation_p
+    ) %>%
+    mutate(delta_cv_r2_vs_previous = if_else(Model == "movement-only", cv_r2, delta_cv_r2_vs_previous))
+
+  write_table(prediction_module_delta_tbl, file.path(output_dir, "tables/systems_prediction_module_delta_waterfall.csv"))
+
+  p_delta <- prediction_module_delta_tbl %>%
+    mutate(AddedModule = factor(AddedModule, levels = AddedModule)) %>%
+    ggplot(aes(AddedModule, delta_cv_r2_vs_previous, fill = delta_cv_r2_vs_previous)) +
+    geom_hline(yintercept = 0, linewidth = 0.25, colour = "grey55") +
+    geom_col(width = 0.68, colour = "white", linewidth = 0.18) +
+    geom_text(aes(label = formatC(delta_cv_r2_vs_previous, format = "f", digits = 2)), vjust = if_else(delta_cv_r2_vs_previous >= 0, -0.2, 1.15), size = 1.9) +
+    scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey85") +
+    labs(
+      title = "Incremental predictive value by systems module",
+      subtitle = paste0("Leave-one-animal-out prediction of ", outcome_to_plot, "; bars show delta CV-R2 versus previous ladder step"),
+      x = NULL,
+      y = "Delta CV-R2",
+      fill = "Delta"
+    ) +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "right")
+
+  save_plot_svg_pdf(p_delta, file.path(output_dir, "figures/publication_panels/Fig_systems_prediction_delta_waterfall"), width = 160, height = 86)
+
+  p_duration_sensitivity <- prediction_perf_duration_sensitivity %>%
+    filter(Model %in% c("movement-only", "movement + latent-state metrics", "movement + social-network metrics", "integrated systems model")) %>%
+    mutate(Model = factor(Model, levels = unique(Model))) %>%
+    ggplot(aes(Model, cv_r2, fill = DurationAnalysisSet)) +
+    geom_hline(yintercept = 0, linewidth = 0.25, colour = "grey55") +
+    geom_col(position = position_dodge(width = 0.70), width = 0.64, colour = "white", linewidth = 0.18) +
+    labs(
+      title = "Prediction robustness to short-duration epochs",
+      subtitle = "Matched full-data versus excluding-short-duration model performance",
+      x = NULL,
+      y = "LOOCV R2",
+      fill = "Analysis set"
+    ) +
+    scale_fill_manual(values = c(full = "#3d3b6e", excluding_short_duration = "#e63947"), drop = FALSE) +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "top")
+
+  save_plot_svg_pdf(p_duration_sensitivity, file.path(output_dir, "figures/publication_panels/Fig_systems_prediction_duration_sensitivity"), width = 150, height = 82)
+
+  module_prediction_map <- tibble(
+    Module = c("Magnitude", "Temporal instability", "Latent-state organization", "Social topology", "Trajectory geometry", "Nonlinear systems dynamics", "Predictive systems integration"),
+    PredictionReadout = c(
+      prediction_module_delta_tbl$cv_r2[prediction_module_delta_tbl$Model == "movement-only"][1],
+      prediction_module_delta_tbl$delta_cv_r2_vs_previous[prediction_module_delta_tbl$Model == "movement + instability metrics"][1],
+      prediction_module_delta_tbl$delta_cv_r2_vs_previous[prediction_module_delta_tbl$Model == "movement + latent-state metrics"][1],
+      prediction_module_delta_tbl$delta_cv_r2_vs_previous[prediction_module_delta_tbl$Model == "movement + social-network metrics"][1],
+      prediction_module_delta_tbl$delta_cv_r2_vs_previous[prediction_module_delta_tbl$Model == "integrated systems model"][1],
+      prediction_module_delta_tbl$delta_cv_r2_vs_previous[prediction_module_delta_tbl$Model == "integrated systems model"][1],
+      prediction_perf_integrated$cv_r2[1]
+    )
+  )
+
+  module_scorecards <- module_scorecards_base %>%
+    left_join(module_prediction_map, by = "Module") %>%
+    mutate(
+      PredictionInterpretation = case_when(
+        !is.finite(PredictionReadout) ~ "not_available",
+        PredictionReadout > 0.05 ~ "improves_prediction",
+        PredictionReadout > 0 ~ "small_positive_increment",
+        TRUE ~ "no_increment_or_overfit"
+      )
+    )
+
+  write_table(module_scorecards, file.path(output_dir, "tables/systems_module_scorecards.csv"))
+
+  prediction_sex_stats <- prediction_tbl %>%
+    group_by(Sex) %>%
+    summarise(
+      n = n_distinct(AnimalNum),
+      pearson_r = safe_cor(outcome, predicted, "pearson"),
+      spearman_rho = safe_cor(outcome, predicted, "spearman"),
+      rmse = sqrt(mean((outcome - predicted)^2, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      StatLabel = paste0(
+        "r=", formatC(pearson_r, format = "f", digits = 2),
+        "\n", rho_label(spearman_rho),
+        "\nRMSE=", formatC(rmse, format = "f", digits = 2),
+        "\nn=", n
+      )
+    )
+  write_table(prediction_sex_stats, file.path(output_dir, "tables/systems_prospective_outcome_loo_performance_by_sex.csv"))
+
+  p_ladder <- prediction_perf %>%
+    mutate(Model = factor(Model, levels = Model)) %>%
+    ggplot(aes(Model, cv_r2, fill = delta_cv_r2_vs_movement)) +
+    geom_hline(yintercept = 0, linewidth = 0.25, colour = "grey55") +
+    geom_col(width = 0.68, colour = "white", linewidth = 0.18) +
+    geom_text(aes(label = paste0("r=", formatC(pearson_r, format = "f", digits = 2), "\nΔR2=", formatC(delta_cv_r2_vs_movement, format = "f", digits = 2))), size = 1.8, vjust = -0.15) +
+    scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey85") +
+    labs(
+      title = paste0("Cross-validated prediction ladder for ", outcome_to_plot),
+      subtitle = "Module scores test incremental value beyond early movement magnitude",
+      x = NULL,
+      y = "LOOCV R2 vs mean",
+      fill = "ΔR2 vs movement",
+      caption = "Permutation p-values and bootstrap CIs are exported in systems_prediction_ladder_performance.csv."
+    ) +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "right")
+  save_plot_svg_pdf(p_ladder, file.path(output_dir, "figures/publication_panels/Fig_systems_prediction_ladder"), width = 165, height = 92)
+
+  p_pred <- prediction_tbl %>%
+    ggplot(aes(outcome, predicted, colour = Group, fill = Group)) +
+    geom_abline(slope = 1, intercept = 0, linewidth = 0.25, linetype = "dashed", colour = "grey45") +
+    geom_point(size = 2.2, alpha = 0.9) +
+    geom_smooth(method = "lm", se = TRUE, linewidth = 0.45, colour = "grey25") +
+    geom_text(
+      data = prediction_sex_stats,
+      aes(x = -Inf, y = Inf, label = StatLabel),
+      inherit.aes = FALSE,
+      hjust = -0.06,
+      vjust = 1.10,
+      size = 2.05,
+      lineheight = 0.86,
+      colour = "grey15"
+    ) +
+    facet_wrap(~ Sex, nrow = 1) +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    labs(
+      title = paste0("Integrated systems model predicts ", outcome_to_plot),
+      subtitle = paste0("Module-level LOOCV: pooled r=", round(prediction_perf_integrated$pearson_r, 2), "; CV R2=", round(prediction_perf_integrated$cv_r2, 2)),
+      x = paste0("Observed ", outcome_to_plot, " (lower = worse)"),
+      y = paste0("Predicted ", outcome_to_plot)
+    ) +
+    make_nature_theme(base_size = 7)
+  save_plot_svg_pdf(p_pred, file.path(output_dir, "figures/publication_panels/Fig_systems_prospective_crossvalidated_prediction"), width = 135, height = 75)
+
 }
 
 # ------------------------------------------------
@@ -1742,7 +2871,12 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
       scale_fill_manual(values = group_colors, drop = FALSE) +
       labs(
         title = "D. Prospective endpoint prediction",
-        subtitle = paste0("First active 12 h; pooled r=", round(prediction_perf$loo_pearson_r, 2), ", CV R2=", round(prediction_perf$cv_r2_vs_mean, 2)),
+        subtitle = paste0(
+          "Module ladder; pooled r=",
+          round(if (exists("prediction_perf_integrated")) prediction_perf_integrated$loo_pearson_r else prediction_perf$loo_pearson_r[1], 2),
+          ", CV R2=",
+          round(if (exists("prediction_perf_integrated")) prediction_perf_integrated$cv_r2_vs_mean else prediction_perf$cv_r2_vs_mean[1], 2)
+        ),
         x = paste0("Observed ", outcome_to_plot),
         y = paste0("Predicted ", outcome_to_plot)
       ) +
@@ -1760,18 +2894,7 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
   write_table(group_n_panel, file.path(output_dir, "tables/systems_dashboard_group_n_by_sex.csv"))
 
   module_effect_tbl <- heat_tbl %>%
-    mutate(
-      Module = case_when(
-        str_detect(Metric, "proximity|social") ~ "Social proximity",
-        str_detect(Metric, "movement|locomotor|activity") ~ "Locomotor activity",
-        str_detect(Metric, "entropy") ~ "Spatial entropy",
-        str_detect(Statistic, "rmssd|acf1|sd|dynamic_range|burst|instability") |
-          str_detect(Metric, "switch|transition|roughness|volatility") ~ "Temporal instability",
-        str_detect(Source, "hmm|state") | str_detect(Domain, "behavioral_state|latent_space") ~ "Latent state organization",
-        str_detect(Source, "gamm|trajectory") | str_detect(Domain, "trajectory") ~ "Trajectory dynamics",
-        TRUE ~ "Composite/misc."
-      )
-    ) %>%
+    mutate(Module = if_else(is.na(Module), "Other interpretable feature", Module)) %>%
     group_by(Sex, contrast, Module) %>%
     summarise(
       n_features = n(),
@@ -1784,9 +2907,9 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
       module_effect = if_else(is.finite(median_g), median_g, max_abs_g),
       sig = sig_label(min_q),
       Module = factor(Module, levels = rev(c(
-        "Locomotor activity", "Spatial entropy", "Social proximity",
-        "Temporal instability", "Latent state organization", "Trajectory dynamics",
-        "Composite/misc."
+        "Magnitude", "Temporal instability", "Latent-state organization", "Social topology",
+        "Trajectory geometry", "Nonlinear systems dynamics", "Predictive systems integration",
+        "Other interpretable feature"
       )))
     ) %>%
     filter(is.finite(module_effect))
@@ -1820,7 +2943,7 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
     p_pca +
       labs(
         title = "A. Integrated behavioral state space",
-        subtitle = paste0("PCA on ", length(usable_features), " animal-level features; points are animals")
+        subtitle = paste0("PCA on ", length(duration_robust_features), " duration-robust animal-level features; points are animals")
       )
   }
 
@@ -1870,6 +2993,139 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
 # TEXT SUMMARY FOR MANUSCRIPT / LAB MEETING
 # ------------------------------------------------
 
+duration_methods_text <- tibble(
+  Section = "Methods - duration normalization",
+  Text = paste(
+    "Observation duration was quantified for every animal x cage-change x phase epoch before downstream behavioral analysis.",
+    "Epochs were classified as short when their observed bin count was substantially below the median epoch duration for the corresponding phase, and cage changes were classified without hard-coding cage-change labels.",
+    "Per-bin means and medians were retained as duration-robust summaries, whereas cumulative quantities including AUCs, transition counts, switch counts, burst counts, path lengths and interaction counts were converted to per-hour or per-epoch rates.",
+    "Temporal-stability metrics such as RMSSD, ACF1, transition entropy and HMM transition summaries were set to missing when too few bins were available for stable estimation.",
+    "Major outputs include full-data results and duration-sensitivity tables excluding automatically detected short-duration epochs, so biological CC4 structure is preserved while duration artifacts are not interpreted as phenotypes."
+  )
+)
+
+systems_visualization_guide <- tibble(
+  Figure = c(
+    "Fig_systems_module_scorecard",
+    "Fig_systems_named_biological_scores",
+    "Fig_systems_hmm_transition_difference",
+    "Fig_systems_hmm_state_flow_alluvial",
+    "Fig_systems_social_phenotype_map",
+    "Fig_systems_trajectory_adaptation_phase_portrait",
+    "Fig_systems_prediction_delta_waterfall",
+    "Fig_systems_prediction_duration_sensitivity",
+    "Fig_systems_module_coupling_network",
+    "systems_named_biological_scores.html"
+  ),
+  PrimaryQuestion = c(
+    "Which biological modules carry the strongest group effects and how duration-robust are they?",
+    "How do animals distribute across named constructs such as rigidity, flexibility, withdrawal and recovery?",
+    "Which latent-state transitions differ between SUS, RES and CON?",
+    "What are the dominant HMM state flows by group and sex?",
+    "Can social withdrawal be separated from fragmented/unstable social topology?",
+    "Do recovery dynamics dissociate from behavioral rigidity?",
+    "Which module adds predictive value beyond the previous model step?",
+    "Does prediction survive exclusion of short-duration epochs?",
+    "Which biological modules are coupled or dissociated within sex?",
+    "Exploratory hoverable view of animal-level named scores"
+  ),
+  ManuscriptUse = c(
+    "Main or supplementary module overview",
+    "Main biological interpretation panel",
+    "Main HMM/latent-state panel",
+    "Supplementary or talk figure if ggalluvial is installed",
+    "Main social topology interpretation panel",
+    "Main trajectory adaptation panel",
+    "Main prediction ladder companion",
+    "Reviewer robustness panel",
+    "Supplementary systems architecture panel",
+    "Lab meeting/exploration only"
+  ),
+  Caution = c(
+    "Summarizes strongest effects; use detailed contrast table for exact statistics.",
+    "Composite scores are interpretable indices, not independent raw measurements.",
+    "Depends on HMM state labeling; semantic labels are data-derived.",
+    "Displays top flows only to reduce clutter.",
+    "Uses named social composites; inspect source features for mechanistic detail.",
+    "Phase portrait is descriptive; use trajectory-feature stats for inference.",
+    "LOOCV estimates can be noisy with small n.",
+    "Short-excluded model can lose power if many animals contain short epochs.",
+    "Correlation is descriptive and does not imply causality.",
+    "Interactive HTML is not intended as a manuscript figure."
+  )
+)
+
+systems_output_naming_conventions <- tibble(
+  Convention = c(
+    "Folder: tables/",
+    "Folder: stats_tables/",
+    "Folder: tables/qc/",
+    "Folder: tables/duration_sensitivity/",
+    "Folder: figures/publication_panels/",
+    "Folder: figures/supplementary/",
+    "Folder: figures/qc/",
+    "Folder: figures/exploratory/",
+    "Prefix: Fig_systems_",
+    "Prefix: systems_",
+    "Palette",
+    "File formats"
+  ),
+  Meaning = c(
+    "Analysis-ready data tables used by downstream scripts.",
+    "Statistical summaries, contrasts, model performance and FDR-corrected results.",
+    "Quality-control tables, missingness, duration checks and input audits.",
+    "Full versus excluding-short-duration sensitivity outputs.",
+    "Static manuscript-style panels exported as SVG, PDF and PNG.",
+    "Detailed supportive figures that are too dense for the main figure.",
+    "Diagnostic figures for model/data-quality checks.",
+    "Discovery and interactive/exploratory figures; do not cite as primary inference.",
+    "Publication-facing figure generated by the integrated systems script.",
+    "Publication-facing table generated by the integrated systems script.",
+    "CON = deep indigo, RES = warm grey, SUS = red; use the same palette across all panels.",
+    "SVG/PDF are manuscript-preferred; PNG is exported for quick previews and slide decks."
+  ),
+  ReviewerBenefit = c(
+    "Separates raw analysis products from statistical claims.",
+    "Makes inferential outputs easy to find.",
+    "Makes preprocessing and missingness assumptions auditable.",
+    "Makes unequal-duration robustness explicit.",
+    "Keeps main figures visually consistent.",
+    "Prevents main figures from becoming overcrowded.",
+    "Provides transparency without bloating manuscript figures.",
+    "Keeps modern visualizations available but clearly labeled.",
+    "Easy figure tracking in manuscripts and slide decks.",
+    "Easy table tracking in supplements.",
+    "Prevents group-color drift across analyses.",
+    "Supports both publication production and fast review."
+  )
+)
+
+duration_sensitivity_audit <- tibble::tribble(
+  ~script, ~output_file, ~metric, ~duration_sensitive, ~reason, ~correction_applied, ~normalized_metric_name, ~cc4_exclusion_sensitivity_available, ~reviewer_risk,
+  "03_build_multiscale_behavior_metrics.R", "all_behavior_metrics.csv", "Movement, MovementDistance, ProximitySeconds", TRUE, "Raw counts/seconds scale with observed duration.", "Added observation-duration QC and per-hour rate columns.", "MovementPerHour; MovementDistancePerHour; ProximitySecondsPerHour", TRUE, "high",
+  "04_gamm_movement_proximity_phase_and_early_window.R", "gamm AUC tables", "GAMM trajectory AUC", TRUE, "GAMM AUC integrates over the available time grid and can scale with trajectory duration.", "Observation-duration QC exported and AUC tables include per-hour normalized values.", "AUC_per_hour; AUC_diff_per_hour", TRUE, "high",
+  "05_build_dyadic_rfid_contacts.R", "dyadic_network_ready.csv", "same/adjacent position seconds", TRUE, "Dyadic contact seconds scale with observed duration and feed network edge weights.", "Added epoch duration QC, BinSizeSec, and per-hour contact-second rates.", "same_position_seconds_per_hour; adjacent_seconds_per_hour", TRUE, "high",
+  "06_burstiness_temporal_instability.R", "temporal_instability_metrics_per_animal_all_metrics.csv", "RMSSD, ACF1, CV, Fano", TRUE, "Temporal estimates become unstable with short epochs.", "Epoch duration QC joined; helper safeguards retain minimum-bin NA rules; excluding-short-duration table exported.", "same metric, duration-tagged", TRUE, "medium",
+  "07_behavioral_state_space.R", "state_switching_metrics.csv", "n_switches, n_transitions, switch_rate", TRUE, "Raw transition counts scale with number of bins.", "Counts converted to per-hour rates; transition metrics require minimum bins.", "n_switches_per_hour; n_transitions_per_hour", TRUE, "high",
+  "07_behavioral_state_space.R", "state_diversity_metrics.csv", "state entropy", TRUE, "Entropy stability depends on epoch length.", "Duration QC joined and entropy_rate exported.", "entropy_rate", TRUE, "medium",
+  "08_early_prediction_models.R", "early_behavior_features.csv", "early-window features", TRUE, "Prediction features can leak duration if QC columns enter the model.", "Duration QC exported; duration columns excluded from predictors; short-duration feature table exported.", "early_behavior_features_excluding_short_duration.csv", TRUE, "medium",
+  "08b_early_prediction_model_ladder.R", "model_ladder_performance_duration_sensitivity.csv", "prediction ladder performance", TRUE, "LOOCV performance may change if short-duration early-window rows contribute different feature reliability.", "Full-data and excluding-short-duration prediction ladders exported with performance deltas.", "duration-sensitive prediction-performance comparison", TRUE, "medium",
+  "09_dynamic_social_networks.R", "animal_level_social_dynamics.csv", "contact switches", TRUE, "Switch counts scale with observation duration.", "Contact switches converted to per-hour rates and duration-sensitivity table exported.", "contact_switch_count_per_hour", TRUE, "high",
+  "09_dynamic_social_networks.R", "dyadic_pair_summary.csv", "contact bins", TRUE, "Dyadic contact counts scale with observed bins.", "Contact bins converted to per-hour rates.", "contact_bins_per_hour", FALSE, "high",
+  "10_hmm_behavioral_states.R", "hmm_transition_counts.csv", "Transitions", TRUE, "Raw HMM transitions scale with sequence length.", "Minimum sequence length raised and transitions converted to per-hour rates.", "Transitions_per_hour", TRUE, "high",
+  "10_hmm_behavioral_states.R", "hmm_state_dwell_times.csv", "dwell bins", TRUE, "Dwell time in bins depends on bin size and available duration.", "Dwell bins converted to hours and duration QC joined.", "mean_dwell_hours; median_dwell_hours; max_dwell_hours", TRUE, "medium",
+  "11_gamm_trajectory_features.R", "combined_gamm_features.csv", "AUC", TRUE, "AUC is cumulative over trajectory duration.", "AUC set to NA for short trajectories and converted to per-hour rate.", "auc_per_hour", TRUE, "high",
+  "12_systems_neuroscience_summary.R", "systems_temporal_latent_epoch_embeddings.csv", "PCA/UMAP/PHATE epoch state space", TRUE, "Embedding can be biased by short/cumulative epoch summaries.", "Duration QC joined; short epochs excluded from latent trajectory embedding.", "duration-tagged normalized features", TRUE, "medium",
+  "12_systems_neuroscience_summary.R", "systems_pca_scores.csv; systems_umap_scores.csv", "animal-level systems state space", TRUE, "Unnormalized cumulative features can dominate embedding axes when observation duration differs.", "PCA/UMAP use duration-robust feature pool excluding raw cumulative/count summaries.", "duration_robust_embedding_prediction feature set", TRUE, "medium",
+  "12_systems_neuroscience_summary.R", "systems_latent_instability_by_animal.csv", "latent path length and roughness", TRUE, "Path length scales with number of epochs.", "Path length normalized per hour and per epoch; roughness normalized by epoch count.", "latent_path_length_per_hour; latent_path_length_per_epoch; latent_roughness_normalized", TRUE, "high",
+  "12_systems_neuroscience_summary.R", "systems_prediction_ladder_performance_duration_sensitivity.csv", "integrated systems prediction ladder", TRUE, "Module scores can inherit duration artifacts if raw cumulative features are included.", "Prediction ladder uses duration-robust feature pool and exports full vs excluding-short-duration performance.", "duration-robust module scores", TRUE, "medium"
+)
+
+write_table(duration_methods_text, file.path(output_dir, "tables/duration_normalization_methods_text.csv"))
+write_table(systems_visualization_guide, file.path(output_dir, "tables/systems_visualization_guide.csv"))
+write_table(systems_output_naming_conventions, file.path(output_dir, "tables/systems_output_naming_conventions.csv"))
+write_table(duration_sensitivity_audit, file.path(output_dir, "tables/duration_sensitivity_audit.csv"))
+
 strong_findings <- group_contrasts %>%
   filter(evidence %in% c("large_FDR_supported", "FDR_supported", "large_effect_uncertain")) %>%
   arrange(match(evidence, c("large_FDR_supported", "FDR_supported", "large_effect_uncertain")), desc(abs(hedges_g))) %>%
@@ -1885,7 +3141,9 @@ systems_summary <- tibble(
   Item = c(
     "Animals included",
     "Usable descriptive features",
+    "Duration-robust embedding/prediction features",
     "Prospective prediction features",
+    "Named biological scores",
     "Primary bin level",
     "Prospective window",
     "Primary outcome direction",
@@ -1896,15 +3154,17 @@ systems_summary <- tibble(
   Value = c(
     as.character(n_distinct(systems_features$AnimalNum)),
     as.character(length(usable_features)),
+    as.character(length(duration_robust_features)),
     as.character(length(prospective_prediction_features)),
+    as.character(n_distinct(named_biological_scores_long$Metric)),
     primary_bin_level,
     paste0("First active 12 h after ", first_cage_change),
     primary_outcome_label,
     "Derived from post-paradigm CombZ; group contrasts are descriptive phenotype contrasts, not independent endpoint validation.",
     paste(sort(unique(feature_dictionary$Domain)), collapse = "; "),
-    "Use PCA/UMAP and effect-size heatmaps for descriptive system-level organization. Use prospective prediction outputs for pre-endpoint prediction claims."
-  )
-)
+    "Use PCA/UMAP for duration-robust descriptive system-level organization. Use module-level prediction ladder outputs and short-duration sensitivity tables for incremental predictive-value claims."
+      )
+    )
 
 write_table(strong_findings, file.path(output_dir, "tables/systems_top_findings_for_reporting.csv"))
 write_table(systems_summary, file.path(output_dir, "tables/systems_analysis_summary.csv"))
@@ -1915,28 +3175,52 @@ stats_reporting_guide <- tibble(
     "systems_group_contrasts.csv",
     "systems_outcome_associations.csv",
     "systems_prospective_outcome_associations.csv",
-    "systems_prospective_outcome_loo_performance.csv"
+    "systems_prospective_outcome_loo_performance.csv",
+    "systems_prediction_ladder_performance.csv",
+    "systems_prediction_ladder_performance_duration_sensitivity.csv",
+    "systems_module_scorecards.csv",
+    "systems_named_biological_scores.csv",
+    "systems_duration_negative_control_endpoint_correlations.csv",
+    "systems_module_feature_inventory.csv"
   ),
   PrimaryStatistic = c(
     "Mean, 95% CI, median, IQR, animal n",
     "Welch mean difference, 95% CI, Hedges g, Cohen d, Wilcoxon p",
     "Spearman rho with approximate 95% CI; Pearson r also reported",
     "Spearman rho with approximate 95% CI for pre-endpoint early features only",
-    "Leave-one-animal-out elastic-net r, rho, RMSE, CV R2 with approximate correlation CIs"
+    "Integrated module-level LOOCV r, rho, RMSE, MAE and CV R2",
+    "LOOCV r, rho, RMSE, MAE, CV R2, permutation p, bootstrap CIs and delta CV R2",
+    "Matched full-data and excluding-short-duration LOOCV performance with deltas versus full data",
+    "Feature count, duration robustness, strongest group effect and prediction readout by module",
+    "Named z-scored biological constructs such as rigidity, flexibility, social withdrawal and recovery",
+    "Spearman association between duration/QC variables and endpoint variables",
+    "Number of usable features per biologically interpretable module"
   ),
   MultipleTesting = c(
     "Not applicable",
     "BH FDR within Sex x Source x Domain x Scale x Context x contrast; broad Sex x contrast FDR provided",
     "BH FDR within outcome x descriptive feature set",
     "BH FDR within outcome x prospective feature set",
-    "Cross-validation, no per-feature multiplicity claim"
+    "Cross-validation, no per-feature multiplicity claim",
+    "Cross-validation plus permutation test per ladder model",
+    "Sensitivity analysis; compare effect direction and predictive-performance deltas",
+    "Descriptive module-level summary; detailed tests in group contrast and prediction tables",
+    "BH FDR available through the standard group-contrast/outcome-association outputs when scores enter the feature matrix",
+    "BH FDR within endpoint; should be interpreted as a negative-control screen",
+    "Not applicable"
   ),
   ManuscriptUse = c(
     "Figure legends and Supplementary tables",
     "Primary descriptive phenotype effect-size table",
     "Exploratory full-experiment endpoint associations",
     "Prospective endpoint association claims",
-    "Prospective prediction performance claims"
+    "Integrated systems prediction performance claims",
+    "Incremental predictive value beyond movement magnitude",
+    "Reviewer-facing robustness check for unequal observation duration",
+    "Main/supplementary module interpretability table",
+    "Main biological construct table and raincloud-style figure",
+    "Reviewer-facing duration confound check",
+    "Feature architecture and redundancy-control reporting"
   )
 )
 
@@ -1947,4 +3231,11 @@ message("Output: ", output_dir)
 message("Primary figure candidates:")
 message("  - figures/publication_panels/Fig_systems_state_space_PCA.svg")
 message("  - figures/publication_panels/Fig_systems_effect_size_heatmap.svg")
+message("  - figures/publication_panels/Fig_systems_module_scorecard.svg")
+message("  - figures/publication_panels/Fig_systems_named_biological_scores.svg")
+message("  - figures/publication_panels/Fig_systems_hmm_transition_difference.svg")
+message("  - figures/publication_panels/Fig_systems_social_phenotype_map.svg")
+message("  - figures/publication_panels/Fig_systems_trajectory_adaptation_phase_portrait.svg")
+message("  - figures/publication_panels/Fig_systems_prediction_delta_waterfall.svg")
+message("  - figures/publication_panels/Fig_systems_prediction_ladder.svg")
 message("  - figures/Fig_integrated_systems_dashboard.svg")
