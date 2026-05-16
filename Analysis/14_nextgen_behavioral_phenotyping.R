@@ -379,6 +379,7 @@ state_from_centres <- function(centres) {
 # Load and prepare data
 # -----------------------------
 ensure_dir(output_dir)
+output_dirs <- analysis_output_dirs(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures/publication_panels"))
@@ -386,6 +387,24 @@ ensure_dir(data_dir)
 ensure_dir(stats_dir)
 ensure_dir(first_active_figure_dir)
 ensure_dir(longitudinal_figure_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "14_nextgen_behavioral_phenotyping.R",
+  analysis_name = "next-generation behavioral phenotyping",
+  primary_tables = c(
+    "tables/multiscale_complexity_features.csv",
+    "tables/early_warning_summary_by_animal.csv",
+    "tables/behavioral_energy_landscape_summary_by_animal.csv",
+    "tables/nextgen_behavioral_phenotype_matrix.csv",
+    "stats_tables"
+  ),
+  primary_figures = c(
+    "figures/publication_panels",
+    "figures/first_cage_change_active_12h",
+    "figures/phase_sex_cage_change_trajectories"
+  ),
+  notes = c("Use as exploratory next-generation phenotype atlas; script 12 selects interpretable features for integration.")
+)
 
 raw <- read_any(input_file)
 if (is.null(raw)) stop("Missing input file. Run 03_build_multiscale_behavior_metrics.R first.", call. = FALSE)
