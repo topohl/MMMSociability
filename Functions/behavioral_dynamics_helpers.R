@@ -30,12 +30,68 @@ ensure_dir <- function(path) {
   invisible(path)
 }
 
+mmm_group_levels <- c("CON", "RES", "SUS")
+mmm_group_colors <- c("CON" = "#3d3b6e", "RES" = "#C6C3BB", "SUS" = "#e63947", "All" = "grey55")
+mmm_pair_colors <- c("RES-CON" = "#3d3b6e", "SUS-CON" = "#e63947", "SUS-RES" = "#8A817C")
+mmm_state_colors <- c("#2F4858", "#4D908E", "#7E9F35", "#F2A65A", "#B23A48", "#6D597A")
+mmm_diverging_colors <- c(low = "#3d3b6e", mid = "white", high = "#e63947")
+
 safe_name <- function(x) {
   x %>%
     as.character() %>%
     str_replace_all("[^A-Za-z0-9]+", "_") %>%
     str_replace_all("^_|_$", "") %>%
     str_to_lower()
+}
+
+pretty_metric_label <- function(x) {
+  x %>%
+    as.character() %>%
+    str_replace_all("__", " | ") %>%
+    str_replace_all("_", " ") %>%
+    str_squish() %>%
+    str_to_sentence()
+}
+
+analysis_output_dirs <- function(output_dir) {
+  dirs <- list(
+    root = output_dir,
+    tables = file.path(output_dir, "tables"),
+    stats = file.path(output_dir, "stats_tables"),
+    qc = file.path(output_dir, "qc"),
+    table_qc = file.path(output_dir, "tables", "qc"),
+    table_sensitivity = file.path(output_dir, "tables", "duration_sensitivity"),
+    figure_root = file.path(output_dir, "figures"),
+    figure_publication = file.path(output_dir, "figures", "publication_panels"),
+    figure_supplementary = file.path(output_dir, "figures", "supplementary"),
+    figure_qc = file.path(output_dir, "figures", "qc"),
+    figure_exploratory = file.path(output_dir, "figures", "exploratory"),
+    figure_interactive = file.path(output_dir, "figures", "interactive")
+  )
+  purrr::walk(unlist(dirs), ensure_dir)
+  dirs
+}
+
+write_output_manifest <- function(output_dir,
+                                  script_name,
+                                  analysis_name,
+                                  primary_tables = character(),
+                                  primary_figures = character(),
+                                  notes = character()) {
+  analysis_output_dirs(output_dir)
+  manifest <- tibble(
+    script = script_name,
+    analysis = analysis_name,
+    output_type = c(rep("table", length(primary_tables)), rep("figure", length(primary_figures)), rep("note", length(notes))),
+    output = c(primary_tables, primary_figures, notes),
+    recommended_use = c(
+      rep("analysis_ready_table", length(primary_tables)),
+      rep("publication_or_supplementary_figure", length(primary_figures)),
+      rep("interpretation_note", length(notes))
+    )
+  )
+  readr::write_csv(manifest, file.path(output_dir, "output_manifest.csv"))
+  invisible(manifest)
 }
 
 first_existing_col <- function(dat, candidates, required = TRUE, label = "column") {
@@ -292,25 +348,42 @@ calc_dfa_alpha <- function(x,
   tibble(dfa_alpha = unname(coef(fit)[2]), dfa_n_scales = nrow(fluct))
 }
 
-make_nature_theme <- function(base_size = 8) {
-  theme_classic(base_size = base_size) +
+make_nature_theme <- function(base_size = 7, base_family = "Arial") {
+  theme_classic(base_size = base_size, base_family = base_family) +
     theme(
-      axis.line = element_line(linewidth = 0.3, colour = "black"),
-      axis.ticks = element_line(linewidth = 0.25, colour = "black"),
+      axis.line = element_line(linewidth = 0.28, colour = "black"),
+      axis.ticks = element_line(linewidth = 0.22, colour = "black"),
       axis.text = element_text(colour = "black"),
+      axis.title = element_text(colour = "black"),
       strip.background = element_blank(),
-      strip.text = element_text(face = "bold"),
+      strip.text = element_text(face = "bold", colour = "black"),
       legend.title = element_blank(),
       legend.position = "top",
-      plot.title = element_text(face = "bold", hjust = 0),
-      plot.subtitle = element_text(hjust = 0)
+      legend.key.height = unit(3.4, "mm"),
+      legend.key.width = unit(6, "mm"),
+      panel.spacing = unit(1.0, "lines"),
+      plot.title = element_text(face = "bold", hjust = 0, margin = margin(b = 2)),
+      plot.subtitle = element_text(hjust = 0, colour = "grey25", margin = margin(b = 3)),
+      plot.caption = element_text(hjust = 0, colour = "grey35", size = rel(0.82)),
+      plot.margin = margin(4, 4, 4, 4)
     )
 }
 
-save_plot_svg_pdf <- function(plot, filename_base, width = 85, height = 65, units = "mm") {
+make_publication_theme <- function(base_size = 7) {
+  make_nature_theme(base_size = base_size) +
+    theme(
+      panel.grid.major.y = element_line(linewidth = 0.13, colour = "grey92"),
+      panel.grid.major.x = element_blank(),
+      legend.position = "top"
+    )
+}
+
+save_plot_svg_pdf <- function(plot, filename_base, width = 85, height = 65, units = "mm", dpi = 600) {
   ensure_dir(dirname(filename_base))
   ggplot2::ggsave(paste0(filename_base, ".svg"), plot, width = width, height = height, units = units)
-  ggplot2::ggsave(paste0(filename_base, ".pdf"), plot, width = width, height = height, units = units)
+  pdf_device <- if (isTRUE(capabilities("cairo"))) grDevices::cairo_pdf else "pdf"
+  ggplot2::ggsave(paste0(filename_base, ".pdf"), plot, width = width, height = height, units = units, device = pdf_device)
+  ggplot2::ggsave(paste0(filename_base, ".png"), plot, width = width, height = height, units = units, dpi = dpi)
   invisible(filename_base)
 }
 
