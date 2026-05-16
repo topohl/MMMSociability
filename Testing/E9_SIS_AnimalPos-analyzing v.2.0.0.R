@@ -15,6 +15,7 @@
 #' - `working_directory`: Set the working directory.
 #' - `batch` and `cage change`: Define the filenames for processing.
 #' - `analyze_by_halfhour`: Set to TRUE to also analyze by half-hour periods
+#' - `analyze_by_timebin`: Set to TRUE to also analyze additional time-bin periods
 #'
 #' @note
 #' The data in `data_preprocessed` has already been preprocessed in
@@ -28,7 +29,7 @@
 
 # Load required packages
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(readr, dplyr, lubridate, tibble, purrr, ggplot2, reshape2,
+pacman::p_load(readr, dplyr, tidyr, lubridate, tibble, purrr, ggplot2, reshape2,
          scales, stringr)
 
 # Customizable variables
@@ -37,6 +38,20 @@ save_plots <- TRUE  # Set to TRUE to save generated plots
 save_tables <- TRUE # Set to TRUE to save generated tables
 exclude_homecage <- TRUE  # Set to TRUE to exclude home cage positions
 analyze_by_halfhour <- TRUE  # Set to TRUE to also analyze by half-hour periods
+analyze_by_timebin <- TRUE  # Set to TRUE to also analyze additional time-bin periods
+analyze_shannon_entropy <- TRUE  # Set to TRUE to calculate Shannon entropy outputs
+progress_log_every <- 100  # Print progress every N time-bin periods
+run_halfhour_regression_check <- FALSE  # Set to TRUE when archived half-hour tables are available
+halfhour_regression_directory <- NULL  # Optional folder with previous half-hour CSV outputs
+
+# Additional time-bin resolutions are calculated in parallel to the existing
+# half-hour workflow. The half-hour analysis remains the primary/default output.
+bin_settings <- list(
+  "10sec" = 10,
+  "1min"  = 60,
+  "5min"  = 300,
+  "10min" = 600
+)
 
 # Paths
 working_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
@@ -49,8 +64,20 @@ saving_directory <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/
 plots_base <- paste0("/plots/", ifelse(exclude_homecage, "noHomeCage", "withHomeCage"))
 tables_base <- paste0("/tables/", ifelse(exclude_homecage, "noHomeCage", "withHomeCage"))
 
-# Source required functions
-source(paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"))
+# Source required functions. Prefer the matching Testing file, then fall back
+# to project-level locations so the script works from the lab drive and repo.
+function_file_candidates <- c(
+  paste0(working_directory, "/Testing/E9_SIS_AnimalPos-functions v.2.0.0.R"),
+  paste0(working_directory, "/Functions/E9_SIS_AnimalPos-functions.R"),
+  paste0(working_directory, "/E9_SIS_AnimalPos-functions.R"),
+  "Testing/E9_SIS_AnimalPos-functions v.2.0.0.R",
+  "Functions/E9_SIS_AnimalPos-functions.R"
+)
+functions_file <- function_file_candidates[file.exists(function_file_candidates)][1]
+if (is.na(functions_file)) {
+  stop("Could not find E9_SIS_AnimalPos-functions.R in any expected location.")
+}
+source(functions_file)
 #source("C:/Users/Tobias Pohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R")
 
 # Define batch and cage change identifiers
@@ -82,17 +109,47 @@ for (batch in batches) {
   plots_dir_halfhour <- paste0(current_plots_dir, "/by_halfhour")
   tables_dir_halfhour <- paste0(current_tables_dir, "/by_halfhour")
 
+  # Create Shannon entropy directories
+  plots_dir_shannon_phase <- paste0(current_plots_dir, "/by_phase/shannon_entropy")
+  tables_dir_shannon_phase <- paste0(current_tables_dir, "/by_phase/shannon_entropy")
+  plots_dir_shannon_halfhour <- paste0(current_plots_dir, "/by_halfhour/shannon_entropy")
+  tables_dir_shannon_halfhour <- paste0(current_tables_dir, "/by_halfhour/shannon_entropy")
+
+  # Create additional time-bin analysis directories
+  plots_dir_timebin <- list()
+  tables_dir_timebin <- list()
+  for (bin_name in names(bin_settings)) {
+    plots_dir_timebin[[bin_name]] <- paste0(current_plots_dir, "/by_timebin_", bin_name)
+    tables_dir_timebin[[bin_name]] <- paste0(current_tables_dir, "/by_timebin_", bin_name)
+  }
+
   # Create metadata directory
   tables_dir_metadata <- paste0(current_tables_dir, "/metadata")
 
-  # Create all directories
+  # Create all directories and check that table targets are writable.
   dir.create(paste0(saving_directory, plots_dir_phase), recursive = TRUE, showWarnings = FALSE)
-  dir.create(paste0(saving_directory, tables_dir_phase), recursive = TRUE, showWarnings = FALSE)
-  dir.create(paste0(saving_directory, tables_dir_metadata), recursive = TRUE, showWarnings = FALSE)
+  ensure_output_dir(paste0(saving_directory, tables_dir_phase))
+  ensure_output_dir(paste0(saving_directory, tables_dir_metadata))
 
   if (analyze_by_halfhour) {
     dir.create(paste0(saving_directory, plots_dir_halfhour), recursive = TRUE, showWarnings = FALSE)
-    dir.create(paste0(saving_directory, tables_dir_halfhour), recursive = TRUE, showWarnings = FALSE)
+    ensure_output_dir(paste0(saving_directory, tables_dir_halfhour))
+  }
+
+  if (analyze_shannon_entropy) {
+    dir.create(paste0(saving_directory, plots_dir_shannon_phase), recursive = TRUE, showWarnings = FALSE)
+    ensure_output_dir(paste0(saving_directory, tables_dir_shannon_phase))
+    if (analyze_by_halfhour) {
+    dir.create(paste0(saving_directory, plots_dir_shannon_halfhour), recursive = TRUE, showWarnings = FALSE)
+    ensure_output_dir(paste0(saving_directory, tables_dir_shannon_halfhour))
+    }
+  }
+
+  if (analyze_by_timebin) {
+    for (bin_name in names(bin_settings)) {
+    dir.create(paste0(saving_directory, plots_dir_timebin[[bin_name]]), recursive = TRUE, showWarnings = FALSE)
+    ensure_output_dir(paste0(saving_directory, tables_dir_timebin[[bin_name]]))
+    }
   }
 
   message("✓ Created directory structure for ", batch, " ", cageChange)
@@ -101,10 +158,17 @@ for (batch in batches) {
   filename <- paste0("E9_SIS_", batch, "_", cageChange, "_AnimalPos")
   # Define the path to the CSV file
   csvFilePath <- paste0(working_directory, "/preprocessed_data/", filename, "_preprocessed.csv")
+  if (!file.exists(csvFilePath)) {
+    warning("Preprocessed file does not exist: ", csvFilePath, ". Skipping.")
+    next
+  }
 
   # Read the preprocessed data from the CSV file into a tibble
   data_preprocessed <- as_tibble(read_delim(csvFilePath, delim = ",",
                         show_col_types = FALSE))
+  validate_preprocessed_data(data_preprocessed,
+                             require_halfhour = analyze_by_halfhour,
+                             label = paste(batch, cageChange))
 
   # Note: The data in "data_preprocessed" has already been preprocessed in another script.
   # ---------------------------------------------------
@@ -206,20 +270,33 @@ for (batch in batches) {
   if (analyze_by_halfhour) {
     # Create column labels for half-hour periods (H0, H1, H2, etc.)
     halfhour_column <- paste0("H", halfhour_periods)
-    
+
     # Create tibbles for half-hour analysis
     result_halfhour_proximity <- tibble("HalfHour" = halfhour_column)
     result_halfhour_movement <- tibble("HalfHour" = halfhour_column)
-    
+
     # Add columns for each animal
     for (animal in unique_animals) {
     result_halfhour_proximity[[animal]] <- NA
     result_halfhour_movement[[animal]] <- NA
     }
-    
+
     # Add columns for each system in movement
     for (system in unique_systems) {
     result_halfhour_movement[[system]] <- NA
+    }
+  }
+
+  # ===================================================================
+  # CREATE SHANNON ENTROPY RESULT TABLES
+  # ===================================================================
+  if (analyze_shannon_entropy) {
+    cagePosProb <- tibble()
+    cagePosEntropy <- tibble()
+    animalPosEntropy <- tibble()
+    if (analyze_by_halfhour) {
+    cagePosEntropy_halfhour <- tibble()
+    animalPosEntropy_halfhour <- tibble()
     }
   }
 
@@ -304,7 +381,7 @@ for (batch in batches) {
       filter(ConsecActive == ifelse(phase == "Active", phase_number, 0)) %>%
       filter(ConsecInactive == ifelse(phase == "Inactive", phase_number, 0)) %>%
       as_tibble()
-      
+
       # Skip if no data exists for this phase
       if (nrow(data_system_phase) == 0) {
       message(paste0("No data found for System: ", system_id, ", ", phase, " phase number: ", phase_number, ". Skipping..."))
@@ -392,6 +469,22 @@ for (batch in batches) {
       # Update current_row and initial_time for the next iteration
       current_row <- animal_list[["data_temp"]][["current_row"]]
       initial_time <- animal_list[[1]][[2]]
+      }
+
+      if (analyze_shannon_entropy) {
+      message("Calculating Shannon entropy for the current phase")
+      p <- paste0(substr(phase, 1, 1), phase_number)
+      shannon_results <- calculate_period_shannon_entropy(data_system_phase,
+                                  animal_ids,
+                                  system_id,
+                                  system_complete,
+                                  batch,
+                                  cageChange,
+                                  period_column = "Phase",
+                                  period_value = p)
+      cagePosProb <- dplyr::bind_rows(cagePosProb, shannon_results$cagePosProb)
+      cagePosEntropy <- dplyr::bind_rows(cagePosEntropy, shannon_results$cagePosEntropy)
+      animalPosEntropy <- dplyr::bind_rows(animalPosEntropy, shannon_results$animalPosEntropy)
       }
 
       # Generate heatmaps
@@ -562,94 +655,44 @@ for (batch in batches) {
     # ===================================================================
     if (analyze_by_halfhour) {
     message("Starting half-hour period analysis")
-    
+
     for (halfhour_period in halfhour_periods) {
       print(paste0("System: ", system_id, ", Half-hour period: ", halfhour_period))
-      
+
       # Filter data for the current half-hour period
       data_system_halfhour <- data_system %>%
       filter(HalfHoursElapsed == halfhour_period) %>%
       as_tibble()
-      
+
       # Skip if no data exists for this period
       if (nrow(data_system_halfhour) == 0) {
       message(paste0("No data found for System: ", system_id, ", Half-hour period: ", halfhour_period, ". Skipping..."))
       next
       }
-      
-      # Initialize lists for storing animal positions and temporary data
-      animal_list <- list(
-      "animal_1" = list(name = "", time = "", position = 0),
-      "animal_2" = list(name = "", time = "", position = 0),
-      "animal_3" = list(name = "", time = "", position = 0),
-      "animal_4" = list(name = "", time = "", position = 0),
-      "data_temp" = list(elapsed_seconds = 0, current_row = 0)
-      )
-      
-      # Initialize lists storing proximity and movement results
-      total_proximity_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0),
-                     c(animal_ids[3], 0), c(animal_ids[4], 0))
-      
-      count_movement_list <- list(c(animal_ids[1], 0), c(animal_ids[2], 0),
-                    c(animal_ids[3], 0), c(animal_ids[4], 0),
-                    c(system_id, 0))
-      
-      count_proximity_list <- list(m1 = c(0, 0, 0, 0),
-                     m2 = c(0, 0, 0, 0),
-                     m3 = c(0, 0, 0, 0),
-                     m4 = c(0, 0, 0, 0))
-      
+
       # Perform calculations for the current half-hour period
       message("Calculating proximity and movement data for half-hour period")
-      
-      # Initialize animal positions
-      animal_list <- initialize_animal_positions(animal_ids, data_system_halfhour, animal_list)
-      
-      # Assign initial time and line number for the while loop
-      initial_time <- animal_list[[1]][[2]]
-      current_row <- 5
-      elapsed_seconds <- 0
-      total_rows <- nrow(data_system_halfhour) + 1
-      
-      # Iterate through the rows of the current half-hour period data
-      while (current_row != total_rows && current_row < total_rows) {
-      
-      # Make a copy of the previous animal list
-      previous_animal_list <- animal_list
-      
-      # Update animal list with new positions from the next row
-      animal_list <- update_animal_list(animal_ids,
-                        animal_list,
-                        data_system_halfhour,
-                        initial_time,
-                        current_row)
-      
-      # Update elapsed_seconds
-      elapsed_seconds <- animal_list[["data_temp"]][["elapsed_seconds"]]
-      
-      # Update result lists using analysis functions
-      if (system_complete) {
-        count_proximity_list <- update_proximity(previous_animal_list,
-                             animal_list,
-                             count_proximity_list,
-                             elapsed_seconds)
-        
-        total_proximity_list <- update_total_proximity(previous_animal_list,
-                               animal_list,
-                               total_proximity_list,
-                               elapsed_seconds)
+      period_results <- calculate_period_proximity_movement(data_system_halfhour,
+                                  animal_ids,
+                                  system_id,
+                                  system_complete)
+      total_proximity_list <- period_results$total_proximity_list
+      count_movement_list <- period_results$count_movement_list
+
+      if (analyze_shannon_entropy) {
+      message("Calculating Shannon entropy for half-hour period")
+      shannon_results <- calculate_period_shannon_entropy(data_system_halfhour,
+                                  animal_ids,
+                                  system_id,
+                                  system_complete,
+                                  batch,
+                                  cageChange,
+                                  period_column = "HalfHour",
+                                  period_value = halfhour_period)
+      cagePosEntropy_halfhour <- dplyr::bind_rows(cagePosEntropy_halfhour, shannon_results$cagePosEntropy)
+      animalPosEntropy_halfhour <- dplyr::bind_rows(animalPosEntropy_halfhour, shannon_results$animalPosEntropy)
       }
-      
-      count_movement_list <- update_movement(previous_animal_list,
-                           animal_list,
-                           count_movement_list,
-                           elapsed_seconds)
-      
-      # Update current_row and initial_time for the next iteration
-      current_row <- animal_list[["data_temp"]][["current_row"]]
-      initial_time <- animal_list[[1]][[2]]
-      }
-      
+
       # Record half-hour proximity data in the result tibble
       if (system_complete) {
       message("Recording half-hour proximity data in tibble")
@@ -660,7 +703,7 @@ for (batch in batches) {
         result_halfhour_proximity[[animal]][[row]] <- total_proximity_list[[i]][[2]]
       }
       }
-      
+
       # Record half-hour movement data in the result tibble
       message("Recording half-hour movement data in tibble")
       h <- paste0("H", halfhour_period)
@@ -693,68 +736,268 @@ for (batch in batches) {
     systemHeatmaps_positions <- list()
   }
 
+  # ===================================================================
+  # ANALYSIS BY ADDITIONAL TIME-BIN PERIODS
+  # ===================================================================
+  if (analyze_by_timebin) {
+    message("Starting additional time-bin period analysis")
+
+    for (bin_name in names(bin_settings)) {
+    bin_seconds <- bin_settings[[bin_name]]
+    message("Processing time-bin resolution: ", bin_name, " (", bin_seconds, " seconds)")
+
+    # Build and discard one resolution at a time to keep memory use bounded.
+    data_timebin <- data_preprocessed %>%
+      add_timebin_transitions(bin_seconds = bin_seconds) %>%
+      dplyr::arrange(DateTime) %>%
+      count_timebins_elapsed(bin_seconds = bin_seconds)
+    validate_preprocessed_data(data_timebin,
+                               require_halfhour = FALSE,
+                               label = paste(batch, cageChange, bin_name))
+
+    timebin_periods <- sort(unique(data_timebin$TimeBin))
+    if (length(timebin_periods) == 0) {
+      message("   No time-bin periods found for ", bin_name, ". Skipping.")
+      next
+    }
+    message("   Time-bin periods: ", length(timebin_periods),
+            " (", min(timebin_periods), " to ", max(timebin_periods), ")")
+
+    if (save_tables == TRUE && "SyntheticTimeBinAnchor" %in% names(data_timebin)) {
+      timebin_audit <- tibble(
+        Batch = batch,
+        CageChange = cageChange,
+        Bin = bin_name,
+        BinSeconds = bin_seconds,
+        RawRows = sum(!data_timebin$SyntheticTimeBinAnchor),
+        SyntheticRows = sum(data_timebin$SyntheticTimeBinAnchor),
+        TotalRows = nrow(data_timebin)
+      )
+      write.csv(timebin_audit,
+        file = paste0(saving_directory, tables_dir_timebin[[bin_name]], "/", batch, "_", cageChange, "_timebin_", bin_name, "_anchor_audit.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_timebin_", bin_name, "_anchor_audit.csv")
+    }
+
+    timebin_column <- paste0("T", timebin_periods)
+    result_timebin_proximity <- tibble("TimeBin" = timebin_column)
+    result_timebin_movement <- tibble("TimeBin" = timebin_column)
+
+    for (animal in unique_animals) {
+      result_timebin_proximity[[animal]] <- NA
+      result_timebin_movement[[animal]] <- NA
+    }
+
+    for (system in unique_systems) {
+      result_timebin_movement[[system]] <- NA
+    }
+
+    proximity_long_rows <- list()
+    movement_long_rows <- list()
+
+    for (system_id in unique_systems) {
+      data_system_timebin <- data_timebin %>%
+      filter(System == system_id) %>%
+      as_tibble()
+      if (nrow(data_system_timebin) == 0) {
+      next
+      }
+
+      animal_ids <- unique(data_system_timebin$AnimalID)
+      system_complete <- ifelse(length(animal_ids) < 4, FALSE, TRUE)
+      while (length(animal_ids) < 4) {
+      animal_ids <- append(animal_ids, NA)
+      }
+
+      for (period_index in seq_along(timebin_periods)) {
+      timebin_period <- timebin_periods[[period_index]]
+      if (period_index == 1 || period_index %% progress_log_every == 0 || period_index == length(timebin_periods)) {
+        message("   ", system_id, " ", bin_name, ": period ", period_index, "/", length(timebin_periods))
+      }
+
+      data_system_timebin_period <- data_system_timebin %>%
+        filter(TimeBin == timebin_period) %>%
+        as_tibble()
+
+      if (nrow(data_system_timebin_period) == 0) {
+        next
+      }
+
+      period_results <- calculate_period_proximity_movement(data_system_timebin_period,
+                                    animal_ids,
+                                    system_id,
+                                    system_complete)
+      total_proximity_list <- period_results$total_proximity_list
+      count_movement_list <- period_results$count_movement_list
+
+      t <- paste0("T", timebin_period)
+      row <- which(result_timebin_movement$TimeBin == t)
+
+      if (system_complete) {
+        for (i in 1:4) {
+        animal <- total_proximity_list[[i]][[1]]
+        result_timebin_proximity[[animal]][[row]] <- total_proximity_list[[i]][[2]]
+        proximity_long_rows[[length(proximity_long_rows) + 1]] <- tibble(
+          Batch = batch,
+          CageChange = cageChange,
+          System = system_id,
+          Bin = bin_name,
+          BinSeconds = bin_seconds,
+          TimeBin = t,
+          TimeBinIndex = timebin_period,
+          AnimalID = animal,
+          ProximitySeconds = total_proximity_list[[i]][[2]]
+        )
+        }
+      }
+
+      for(i in 1:4) {
+        animal <- count_movement_list[[i]][[1]]
+        if(!is.na(animal)) {
+        result_timebin_movement[[animal]][[row]] <- count_movement_list[[i]][[2]]
+        movement_long_rows[[length(movement_long_rows) + 1]] <- tibble(
+          Batch = batch,
+          CageChange = cageChange,
+          System = system_id,
+          Bin = bin_name,
+          BinSeconds = bin_seconds,
+          TimeBin = t,
+          TimeBinIndex = timebin_period,
+          EntityType = "Animal",
+          Entity = animal,
+          MovementCount = count_movement_list[[i]][[2]]
+        )
+        }
+      }
+
+      result_timebin_movement[[system_id]][[row]] <- count_movement_list[[5]][[2]]
+      movement_long_rows[[length(movement_long_rows) + 1]] <- tibble(
+        Batch = batch,
+        CageChange = cageChange,
+        System = system_id,
+        Bin = bin_name,
+        BinSeconds = bin_seconds,
+        TimeBin = t,
+        TimeBinIndex = timebin_period,
+        EntityType = "System",
+        Entity = system_id,
+        MovementCount = count_movement_list[[5]][[2]]
+      )
+      }
+    }
+
+    if (save_tables == TRUE) {
+      proximity_long <- dplyr::bind_rows(proximity_long_rows)
+      movement_long <- dplyr::bind_rows(movement_long_rows)
+
+      write.csv(result_timebin_proximity,
+        file = paste0(saving_directory, tables_dir_timebin[[bin_name]], "/", batch, "_", cageChange, "_timebin_", bin_name, "_proximity.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_timebin_", bin_name, "_proximity.csv")
+
+      write.csv(result_timebin_movement,
+        file = paste0(saving_directory, tables_dir_timebin[[bin_name]], "/", batch, "_", cageChange, "_timebin_", bin_name, "_movement.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_timebin_", bin_name, "_movement.csv")
+
+      write.csv(proximity_long,
+        file = paste0(saving_directory, tables_dir_timebin[[bin_name]], "/", batch, "_", cageChange, "_timebin_", bin_name, "_proximity_long.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_timebin_", bin_name, "_proximity_long.csv")
+
+      write.csv(movement_long,
+        file = paste0(saving_directory, tables_dir_timebin[[bin_name]], "/", batch, "_", cageChange, "_timebin_", bin_name, "_movement_long.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_timebin_", bin_name, "_movement_long.csv")
+      message("      Location: ", tables_dir_timebin[[bin_name]])
+    }
+
+    rm(data_timebin)
+    }
+  }
+
   # ---------------------------------------------------
   # Save Tables and Plots
   # ---------------------------------------------------
-  
+
   if (save_tables == TRUE || save_plots == TRUE) {
     message("=======================================================================")
     message("SAVING RESULTS FOR ", batch, " ", cageChange)
     message("=======================================================================")
   }
-  
+
   # ===================================================================
   # 1. SAVE METADATA
   # ===================================================================
   if (save_tables == TRUE) {
     message("1. Saving metadata tables...")
-    
+
     # Save System Animal ID tables
     write.csv(system_animal_ids,
-        file = paste0(saving_directory, tables_dir_metadata, "/", batch, "_", cageChange, "_animal_ids.csv"), 
+        file = paste0(saving_directory, tables_dir_metadata, "/", batch, "_", cageChange, "_animal_ids.csv"),
         row.names = FALSE)
     message("   ✓ Saved: ", batch, "_", cageChange, "_animal_ids.csv")
     message("      Location: ", tables_dir_metadata)
   }
-  
+
   # ===================================================================
   # 2. SAVE PHASE-BASED ANALYSIS (Active/Inactive)
   # ===================================================================
   if (save_tables == TRUE) {
     message("2. Saving phase-based analysis tables...")
-    
+
     # Save Social Proximity tables (by phase)
     write.csv(result_total_proximity,
-        file = paste0(saving_directory, tables_dir_phase, "/", batch, "_", cageChange, "_total_proximity.csv"), 
+        file = paste0(saving_directory, tables_dir_phase, "/", batch, "_", cageChange, "_total_proximity.csv"),
         row.names = FALSE)
     message("   ✓ Saved: ", batch, "_", cageChange, "_total_proximity.csv")
-    
+
     # Save Movement tables (by phase)
     write.csv(result_total_movement,
-        file = paste0(saving_directory, tables_dir_phase, "/", batch, "_", cageChange, "_total_movement.csv"), 
+        file = paste0(saving_directory, tables_dir_phase, "/", batch, "_", cageChange, "_total_movement.csv"),
         row.names = FALSE)
     message("   ✓ Saved: ", batch, "_", cageChange, "_total_movement.csv")
     message("      Location: ", tables_dir_phase)
   }
-  
+
+  if (analyze_shannon_entropy && save_tables == TRUE) {
+    message("2b. Saving phase-based Shannon entropy tables...")
+
+    write.csv(cagePosProb,
+        file = paste0(saving_directory, tables_dir_shannon_phase, "/", batch, "_", cageChange, "_cagePosProb.csv"),
+        row.names = FALSE)
+    message("   ✓ Saved: ", batch, "_", cageChange, "_cagePosProb.csv")
+
+    write.csv(cagePosEntropy,
+        file = paste0(saving_directory, tables_dir_shannon_phase, "/", batch, "_", cageChange, "_cagePosEntropy.csv"),
+        row.names = FALSE)
+    message("   ✓ Saved: ", batch, "_", cageChange, "_cagePosEntropy.csv")
+
+    write.csv(animalPosEntropy,
+        file = paste0(saving_directory, tables_dir_shannon_phase, "/", batch, "_", cageChange, "_animalPosEntropy.csv"),
+        row.names = FALSE)
+    message("   ✓ Saved: ", batch, "_", cageChange, "_animalPosEntropy.csv")
+    message("      Location: ", tables_dir_shannon_phase)
+  }
+
   if (save_plots == TRUE) {
     message("3. Saving phase-based analysis plots...")
-    
+
     # Save total proximity plots (one per complete system)
     if (length(all_plots_total_proximity) > 0) {
-    
+
     # Apply theme and save each plot
     for (i in seq_along(all_plots_total_proximity)) {
       # Extract plot information for title
       original_plot <- all_plots_total_proximity[[i]]
       plot_title <- if(!is.null(original_plot$labels$title)) original_plot$labels$title else paste("Total Proximity -", batch, cageChange)
       plot_subtitle <- if(!is.null(original_plot$labels$subtitle)) original_plot$labels$subtitle else paste("System", i)
-      
+
       # Apply theme
       proximity_lineplot <- generate_proximity_lineplot(original_plot, plot_title, plot_subtitle, batch, cageChange)
-      
+
       ggsave(
-    filename = paste0(saving_directory, plots_dir_phase, "/total_proximity_", batch, "_", cageChange, "_sys.", i, ".svg"), 
+    filename = paste0(saving_directory, plots_dir_phase, "/total_proximity_", batch, "_", cageChange, "_sys.", i, ".svg"),
     plot = proximity_lineplot,
     width = 8,
     height = 8,
@@ -762,42 +1005,42 @@ for (batch in batches) {
       )
     }
     message("   ✓ Saved ", length(all_plots_total_proximity), " total proximity plots")
-    
+
     # Save proximity heatmaps (one per complete system, multiple phases per system)
     if (length(allHeatmaps_proximity) > 0) {
     saved_count <- 0
     for (i in seq_along(allHeatmaps_proximity)) {
-      
+
       # Check if heatmap list exists and has elements
       if (length(allHeatmaps_proximity[[i]]) == 0) next
-      
+
       # Check if the first heatmap exists and has a title
-      if (is.null(allHeatmaps_proximity[[i]][[1]]) || 
+      if (is.null(allHeatmaps_proximity[[i]][[1]]) ||
       is.null(allHeatmaps_proximity[[i]][[1]]$labels) ||
       is.null(allHeatmaps_proximity[[i]][[1]]$labels$title)) next
-      
+
       # Extract system name from title
       title <- allHeatmaps_proximity[[i]][[1]]$labels$title
       pattern <- "sys\\.[0-9]"
-      
+
       match_result <- regexec(pattern, title)
       if (match_result[[1]][1] > 0) {
       system_substring <- regmatches(title, match_result)[[1]]
       } else {
       system_substring <- paste0("system_", i)
       }
-      
+
       # Separate Active and Inactive phase heatmaps by checking subtitle
       active_plots <- list()
       inactive_plots <- list()
-      
+
       for (plot in allHeatmaps_proximity[[i]]) {
       if (!is.null(plot$labels$subtitle)) {
       subtitle <- as.character(plot$labels$subtitle)
-      
+
       # Debug: print subtitle to see format
       # print(paste("Proximity subtitle:", subtitle))
-      
+
       # Check if it starts with "Phase: Active" or "Phase: Inactive"
       if (grepl("^Phase:\\s*Active", subtitle, ignore.case = TRUE)) {
       active_plots <- c(active_plots, list(plot))
@@ -809,13 +1052,13 @@ for (batch in batches) {
       }
       }
       }
-      
+
       n_active <- length(active_plots)
       n_inactive <- length(inactive_plots)
       n_rows <- max(n_active, n_inactive)
-      
+
       message("   Arranging ", n_active, " active and ", n_inactive, " inactive proximity heatmaps for ", system_substring)
-      
+
       # If no plots were classified, fall back to original list
       if (n_active == 0 && n_inactive == 0) {
       message("   Warning: No proximity plots classified by phase type. Using sequential layout.")
@@ -827,29 +1070,29 @@ for (batch in batches) {
       } else {
       # Create layout matrix: Active on left, Inactive on right
       layout_mat <- matrix(NA, nrow = n_rows, ncol = 2)
-      
+
       # Fill left column with active plots (1, 2, 3, 4...)
       if (n_active > 0) {
       for (j in 1:n_active) {
       layout_mat[j, 1] <- j
       }
       }
-      
+
       # Fill right column with inactive plots (n_active+1, n_active+2, ...)
       if (n_inactive > 0) {
       for (j in 1:n_inactive) {
       layout_mat[j, 2] <- n_active + j
       }
       }
-      
+
       # Combine plots in order: all active first, then all inactive
       combined_plots <- c(active_plots, inactive_plots)
       }
-      
+
       # Set plot dimensions
       plot_width <- 14
       plot_height <- 5 * n_rows
-      
+
       # Save proximity heatmap grid as SVG
       tryCatch({
       ggsave(
@@ -867,42 +1110,42 @@ for (batch in batches) {
     }
     message("   ✓ Saved ", saved_count, " proximity heatmap grids as SVG")
     }
-    
+
     # Save positional heatmaps (one per system, multiple phases per system)
-    if (length(allHeatmaps_positions) > 0 && 
-      !is.null(allHeatmaps_positions[[batch]]) && 
+    if (length(allHeatmaps_positions) > 0 &&
+      !is.null(allHeatmaps_positions[[batch]]) &&
       !is.null(allHeatmaps_positions[[batch]][[cageChange]])) {
-    
+
     saved_count <- 0
-    
+
     for (sys_name in names(allHeatmaps_positions[[batch]][[cageChange]])) {
       heatmap_list <- allHeatmaps_positions[[batch]][[cageChange]][[sys_name]]
-      
+
       # Check if heatmap list exists and has elements
       if (is.null(heatmap_list) || length(heatmap_list) == 0) {
       message("   Skipping empty position heatmap for ", sys_name)
       next
       }
-      
+
       # Check if the first heatmap exists and has a title
-      if (is.null(heatmap_list[[1]]) || 
+      if (is.null(heatmap_list[[1]]) ||
       is.null(heatmap_list[[1]]$labels) ||
       is.null(heatmap_list[[1]]$labels$title)) {
       message("   Skipping position heatmap ", sys_name, " - no valid title found")
       next
       }
-      
+
       # Separate Active and Inactive phase heatmaps by checking subtitle
       active_plots <- list()
       inactive_plots <- list()
-      
+
       for (plot in heatmap_list) {
       if (!is.null(plot$labels$subtitle)) {
       subtitle <- as.character(plot$labels$subtitle)
-      
+
       # Debug: print subtitle to see format
       # print(paste("Subtitle:", subtitle))
-      
+
       # Check if it starts with "Phase: Active" or "Phase: Inactive"
       if (grepl("^Phase:\\s*Active", subtitle, ignore.case = TRUE)) {
       active_plots <- c(active_plots, list(plot))
@@ -914,13 +1157,13 @@ for (batch in batches) {
       }
       }
       }
-      
+
       n_active <- length(active_plots)
       n_inactive <- length(inactive_plots)
       n_rows <- max(n_active, n_inactive)
-      
+
       message("   Arranging ", n_active, " active and ", n_inactive, " inactive position heatmaps for ", sys_name)
-      
+
       # If no plots were classified, fall back to original list
       if (n_active == 0 && n_inactive == 0) {
       message("   Warning: No plots classified by phase type. Using sequential layout.")
@@ -932,29 +1175,29 @@ for (batch in batches) {
       } else {
       # Create layout matrix: Active on left, Inactive on right
       layout_mat <- matrix(NA, nrow = n_rows, ncol = 2)
-      
+
       # Fill left column with active plots (1, 2, 3, 4...)
       if (n_active > 0) {
       for (i in 1:n_active) {
       layout_mat[i, 1] <- i
       }
       }
-      
+
       # Fill right column with inactive plots (n_active+1, n_active+2, ...)
       if (n_inactive > 0) {
       for (i in 1:n_inactive) {
       layout_mat[i, 2] <- n_active + i
       }
       }
-      
+
       # Combine plots in order: all active first, then all inactive
       combined_plots <- c(active_plots, inactive_plots)
       }
-      
+
       # Set plot dimensions
       plot_width <- 14
       plot_height <- 5 * n_rows
-      
+
       # Save positional heatmap grid as SVG
       tryCatch({
       ggsave(
@@ -970,34 +1213,67 @@ for (batch in batches) {
       message("   ✗ Error saving position heatmap for ", sys_name, ": ", e$message)
       })
     }
-    
+
     if (saved_count > 0) {
       message("   ✓ Saved ", saved_count, " position heatmap grids as SVG")
       message("      Location: ", plots_dir_phase)
     }
     }
     }
-    
+
     # ===================================================================
     # 3. SAVE HALF-HOUR ANALYSIS
     # ===================================================================
     if (analyze_by_halfhour && save_tables == TRUE) {
     message("4. Saving half-hour analysis tables...")
-    
+
     # Save Social Proximity tables (by half-hour)
     write.csv(result_halfhour_proximity,
-      file = paste0(saving_directory, tables_dir_halfhour, "/", batch, "_", cageChange, "_halfhour_proximity.csv"), 
+      file = paste0(saving_directory, tables_dir_halfhour, "/", batch, "_", cageChange, "_halfhour_proximity.csv"),
       row.names = FALSE)
     message("   ✓ Saved: ", batch, "_", cageChange, "_halfhour_proximity.csv")
-    
+
     # Save Movement tables (by half-hour)
     write.csv(result_halfhour_movement,
-      file = paste0(saving_directory, tables_dir_halfhour, "/", batch, "_", cageChange, "_halfhour_movement.csv"), 
+      file = paste0(saving_directory, tables_dir_halfhour, "/", batch, "_", cageChange, "_halfhour_movement.csv"),
       row.names = FALSE)
     message("   ✓ Saved: ", batch, "_", cageChange, "_halfhour_movement.csv")
     message("      Location: ", tables_dir_halfhour)
+
+    if (analyze_shannon_entropy) {
+      message("4b. Saving half-hour Shannon entropy tables...")
+
+      write.csv(cagePosEntropy_halfhour,
+        file = paste0(saving_directory, tables_dir_shannon_halfhour, "/", batch, "_", cageChange, "_cagePosEntropy_halfhour.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_cagePosEntropy_halfhour.csv")
+
+      write.csv(animalPosEntropy_halfhour,
+        file = paste0(saving_directory, tables_dir_shannon_halfhour, "/", batch, "_", cageChange, "_animalPosEntropy_halfhour.csv"),
+        row.names = FALSE)
+      message("   ✓ Saved: ", batch, "_", cageChange, "_animalPosEntropy_halfhour.csv")
+      message("      Location: ", tables_dir_shannon_halfhour)
     }
-    
+
+    if (run_halfhour_regression_check && !is.null(halfhour_regression_directory)) {
+      previous_proximity <- file.path(halfhour_regression_directory,
+                                      batch,
+                                      cageChange,
+                                      paste0(batch, "_", cageChange, "_halfhour_proximity.csv"))
+      previous_movement <- file.path(halfhour_regression_directory,
+                                     batch,
+                                     cageChange,
+                                     paste0(batch, "_", cageChange, "_halfhour_movement.csv"))
+      if (file.exists(previous_proximity) && file.exists(previous_movement)) {
+      compare_halfhour_results(previous_proximity, result_halfhour_proximity)
+      compare_halfhour_results(previous_movement, result_halfhour_movement)
+      message("   ✓ Half-hour regression check passed for ", batch, " ", cageChange)
+      } else {
+      message("   Skipping half-hour regression check; archived tables not found for ", batch, " ", cageChange)
+      }
+    }
+    }
+
     # ===================================================================
     # SUMMARY
     # ===================================================================
