@@ -33,6 +33,7 @@ suppressPackageStartupMessages({
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_stats_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -488,6 +489,7 @@ ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
+output_dirs <- analysis_output_dirs(output_dir)
 ensure_dir(file.path(output_dir, "figures", "primary_movement"))
 ensure_dir(file.path(output_dir, "figures", "supplementary_all_metrics"))
 ensure_dir(file.path(output_dir, "figures", "first_active_first_cage_change"))
@@ -496,6 +498,24 @@ ensure_dir(file.path(output_dir, "figures", "cage_change_deltas"))
 ensure_dir(file.path(output_dir, "figures", "publication"))
 ensure_dir(file.path(output_dir, "figures", "publication", "panels"))
 ensure_dir(file.path(output_dir, "figures", "publication", "overview"))
+write_output_manifest(
+  output_dir,
+  script_name = "06_burstiness_temporal_instability.R",
+  analysis_name = "temporal instability and burstiness",
+  primary_tables = c(
+    "tables/temporal_instability_metrics_per_animal_all_metrics.csv",
+    "tables/burstiness_instability_features.csv",
+    "stats_tables/overall_instability_duration_sensitivity_group_summary.csv",
+    "stats_tables/overall_instability_duration_sensitivity_group_contrasts.csv"
+  ),
+  primary_figures = c(
+    "figures/publication/panels/primary_movement_instability_overview.svg",
+    "figures/publication/overview"
+  ),
+  notes = c("Primary movement figures remain in their legacy folder and should also be treated as publication-panel candidates.")
+)
+
+epoch_duration_qc <- write_epoch_duration_qc(behav, output_dir, metric_source = "06_temporal_instability", bin_size_sec = infer_bin_size_sec(behav))
 
 # ------------------------------------------------
 # LONG FORMAT
@@ -524,16 +544,27 @@ instability_tbl <- long_dat %>%
   group_by(Group, Sex, Phase, CageChange, CageChangeIndex, AnimalNum, Metric, MetricRole) %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   summarise(calc_instability_metrics(Value), .groups = "drop") %>%
-  mutate(BinLevel = bin_level, ProximityInput = proximity_col)
+  mutate(BinLevel = bin_level, ProximityInput = proximity_col) %>%
+  join_duration_qc(epoch_duration_qc)
 
 movement_instability_tbl <- instability_tbl %>%
   filter(Metric == primary_metric)
 
 write_table(instability_tbl, file.path(output_dir, "tables", "temporal_instability_metrics_per_animal_all_metrics.csv"))
 write_table(movement_instability_tbl, file.path(output_dir, "tables", "temporal_instability_metrics_per_animal_primary_movement.csv"))
+generate_duration_sensitivity_outputs(instability_tbl, epoch_duration_qc, output_dir, "temporal_instability_metrics_per_animal_all_metrics")
 
 overall_stats <- write_stats_package(
   instability_tbl,
+  analysis_name = "overall_cage_change_phase_instability",
+  value_cols = instability_outcomes,
+  by_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex", "Group")
+)
+write_duration_sensitivity_statistics(
+  instability_tbl,
+  epoch_duration_qc,
+  output_dir,
   analysis_name = "overall_cage_change_phase_instability",
   value_cols = instability_outcomes,
   by_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex"),
@@ -582,6 +613,15 @@ delta_stats <- write_stats_package(
   by_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex"),
   summary_group_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex", "Group")
 )
+write_duration_sensitivity_statistics(
+  cage_change_delta_tbl,
+  epoch_duration_qc,
+  output_dir,
+  analysis_name = "delta_from_first_cage_change_instability",
+  value_cols = paste0("delta_", instability_outcomes),
+  by_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "Metric", "Phase", "CageChange", "Sex", "Group")
+)
 
 first_active_first_cage_change_long <- long_dat %>%
   filter(CageChangeIndex == baseline_cage_change, as.character(Phase) == "Active") %>%
@@ -597,7 +637,8 @@ first_active_first_cage_change_instability_tbl <- first_active_first_cage_change
   mutate(BinLevel = bin_level, ProximityInput = proximity_col) %>%
   group_by(BinLevel, ProximityInput, Window, Group, Sex, Phase, CageChange, CageChangeIndex, AnimalNum, Metric, MetricRole) %>%
   arrange(TimeFromFirstActiveStart, .by_group = TRUE) %>%
-  summarise(calc_instability_metrics(Value), .groups = "drop")
+  summarise(calc_instability_metrics(Value), .groups = "drop") %>%
+  join_duration_qc(epoch_duration_qc)
 
 movement_first_active_first_cage_change_instability_tbl <- first_active_first_cage_change_instability_tbl %>%
   filter(Metric == primary_metric)
@@ -608,6 +649,15 @@ write_table(movement_first_active_first_cage_change_instability_tbl, file.path(o
 
 first_active_stats <- write_stats_package(
   first_active_first_cage_change_instability_tbl,
+  analysis_name = "first_active_first_cage_change_instability",
+  value_cols = instability_outcomes,
+  by_cols = c("BinLevel", "ProximityInput", "Metric", "Sex"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "Metric", "Sex", "Group")
+)
+write_duration_sensitivity_statistics(
+  first_active_first_cage_change_instability_tbl,
+  epoch_duration_qc,
+  output_dir,
   analysis_name = "first_active_first_cage_change_instability",
   value_cols = instability_outcomes,
   by_cols = c("BinLevel", "ProximityInput", "Metric", "Sex"),
