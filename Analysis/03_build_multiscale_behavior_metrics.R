@@ -42,6 +42,7 @@ suppressPackageStartupMessages({
 })
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -92,6 +93,22 @@ if (use_multicore && requireNamespace("furrr", quietly = TRUE) && requireNamespa
 
 ensure_dir(output_root)
 ensure_dir(file.path(output_root, "qc"))
+analysis_output_dirs(output_root)
+write_output_manifest(
+  output_root,
+  script_name = "03_build_multiscale_behavior_metrics.R",
+  analysis_name = "canonical multiscale behavior metrics",
+  primary_tables = c(
+    "10sec_based/all_behavior_metrics.csv",
+    "1min_based/all_behavior_metrics.csv",
+    "5min_based/all_behavior_metrics.csv",
+    "10min_based/all_behavior_metrics.csv",
+    "30min_based/all_behavior_metrics.csv",
+    "qc/multiscale_behavior_metrics_qc.csv",
+    "qc/animal_group_sex_assignment_qc.csv"
+  ),
+  notes = c("Downstream scripts should prefer normalized ProximityFraction and per-hour rate fields when comparing unequal durations.")
+)
 
 # ------------------------------------------------
 # POSITION GEOMETRY
@@ -665,6 +682,13 @@ standardize_metric_output <- function(out, bin_label) {
       Proximity = ProximityFraction,
       AdjacentProximity = AdjacentProximityFraction,
       MeanGridDistanceToOthers = replace_na(MeanGridDistanceToOthers, NA_real_),
+      total_observation_duration_hours = observation_seconds / 3600,
+      MovementPerHour = if_else(is.finite(total_observation_duration_hours) & total_observation_duration_hours > 0,
+                                Movement / total_observation_duration_hours, NA_real_),
+      MovementDistancePerHour = if_else(is.finite(total_observation_duration_hours) & total_observation_duration_hours > 0,
+                                        MovementDistance / total_observation_duration_hours, NA_real_),
+      ProximitySecondsPerHour = if_else(is.finite(total_observation_duration_hours) & total_observation_duration_hours > 0,
+                                        ProximitySeconds / total_observation_duration_hours, NA_real_),
       Group = if_else(is.na(Group) | Group == "", "All", Group),
       Sex = if_else(is.na(Sex) | Sex == "", "All", Sex),
       BinLabel = bin_label
@@ -686,8 +710,9 @@ build_bin_metrics <- function(bin_label, bin_size_sec) {
     select(
       AnimalNum, AnimalID, Batch, CageChange, System, Group, Sex, Phase,
       BinLabel, BinSizeSec, BinStart, TimeIndex,
-      Movement, MovementDistance,
+      Movement, MovementPerHour, MovementDistance, MovementDistancePerHour,
       Proximity, ProximitySeconds, ProximityFraction,
+      ProximitySecondsPerHour,
       AdjacentProximity, AdjacentProximitySeconds, AdjacentProximityFraction,
       MeanGridDistanceToOthers,
       Entropy, DominantPosition, n_positions_visited,
@@ -699,6 +724,7 @@ build_bin_metrics <- function(bin_label, bin_size_sec) {
   out_dir <- file.path(output_root, paste0(bin_label, "_based"))
   ensure_dir(out_dir)
   write_table(out, file.path(out_dir, "all_behavior_metrics.csv"))
+  write_epoch_duration_qc(out, out_dir, metric_source = paste0("03_", bin_label, "_behavior_metrics"), bin_size_sec = bin_size_sec)
   out
 }
 
@@ -773,8 +799,9 @@ build_phase_metrics <- function() {
     select(
       AnimalNum, AnimalID, Batch, CageChange, System, Group, Sex, Phase,
       PhaseNumber, BinLabel, BinSizeSec, BinStart, TimeIndex,
-      Movement, MovementDistance,
+      Movement, MovementPerHour, MovementDistance, MovementDistancePerHour,
       Proximity, ProximitySeconds, ProximityFraction,
+      ProximitySecondsPerHour,
       AdjacentProximity, AdjacentProximitySeconds, AdjacentProximityFraction,
       MeanGridDistanceToOthers,
       Entropy, DominantPosition, n_positions_visited,
@@ -786,6 +813,7 @@ build_phase_metrics <- function() {
   out_dir <- file.path(output_root, "phase_based")
   ensure_dir(out_dir)
   write_table(out, file.path(out_dir, "all_behavior_metrics.csv"))
+  write_epoch_duration_qc(out, out_dir, metric_source = "03_phase_behavior_metrics", bin_size_sec = NA_real_)
   out
 }
 
