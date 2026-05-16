@@ -27,6 +27,7 @@ suppressPackageStartupMessages({
 })
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -42,10 +43,24 @@ proximity_col <- "ProximityFraction"
 ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "figures"))
+output_dirs <- analysis_output_dirs(output_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "11_gamm_trajectory_features.R",
+  analysis_name = "GAMM trajectory features",
+  primary_tables = c(
+    "tables/gamm_trajectory_features.csv",
+    "tables/gamm_model_qc.csv",
+    "tables/epoch_duration_qc.csv"
+  ),
+  notes = c("Use auc_per_hour rather than raw auc when comparing unequal-duration cage changes.")
+)
 
 raw_dat <- read_behavior_table(input_file)
 if (!proximity_col %in% names(raw_dat)) proximity_col <- "Proximity"
 behav <- standardize_behavior_columns(raw_dat, proximity_col = proximity_col)
+
+epoch_duration_qc <- write_epoch_duration_qc(behav, output_dir, metric_source = "11_gamm_trajectory_features", bin_size_sec = infer_bin_size_sec(behav))
 
 metric_names <- c("Movement", "Entropy", "Proximity")
 all_features <- list()
@@ -105,7 +120,7 @@ for (metric in metric_names) {
       Metric = metric,
       BinLevel = bin_level,
       ProximityInput = proximity_col,
-      auc = pracma::trapz(TimeIndex, Pred),
+      auc = if_else(n() >= 4, pracma::trapz(TimeIndex, Pred), NA_real_),
       mean_pred = mean(Pred, na.rm = TRUE),
       peak = max(Pred, na.rm = TRUE),
       trough = min(Pred, na.rm = TRUE),
@@ -115,7 +130,9 @@ for (metric in metric_names) {
       acf1_pred = calc_acf1(Pred),
       n_bins = n(),
       .groups = "drop"
-    )
+    ) %>%
+    join_duration_qc(epoch_duration_qc) %>%
+    normalize_auc_per_hour("auc")
 
   all_features[[metric]] <- feature_tbl
   write_table(feature_tbl, file.path(output_dir, "tables", paste0(safe_name(metric), "_gamm_features.csv")))
