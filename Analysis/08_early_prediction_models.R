@@ -27,6 +27,7 @@ suppressPackageStartupMessages({
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_stats_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -285,9 +286,28 @@ ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
+output_dirs <- analysis_output_dirs(output_dir)
 ensure_dir(file.path(output_dir, "figures", "publication"))
 ensure_dir(file.path(output_dir, "figures", "publication", "overview"))
 ensure_dir(file.path(output_dir, "figures", "publication", "panels"))
+write_output_manifest(
+  output_dir,
+  script_name = "08_early_prediction_models.R",
+  analysis_name = "early prediction models",
+  primary_tables = c(
+    "tables/early_behavior_features.csv",
+    "tables/early_behavior_features_excluding_short_duration.csv",
+    "tables/leave_one_animal_out_performance.csv",
+    "tables/leave_one_animal_out_performance_duration_sensitivity.csv"
+  ),
+  primary_figures = c(
+    "figures/publication/panels",
+    "figures/publication/overview"
+  ),
+  notes = c("Prediction figures should report whether duration-sensitive rows were excluded or retained.")
+)
+
+epoch_duration_qc <- write_epoch_duration_qc(behav, output_dir, metric_source = "08_early_prediction_models", bin_size_sec = infer_bin_size_sec(behav))
 
 # ------------------------------------------------
 # EARLY WINDOW SELECTION
@@ -333,6 +353,7 @@ early_design_tbl <- tibble(
 write_table(early_dat, file.path(output_dir, "tables", "early_window_rows_used.csv"))
 write_table(early_window_summary, file.path(output_dir, "tables", "early_window_summary_by_animal.csv"))
 write_table(early_design_tbl, file.path(output_dir, "tables", "early_window_design_summary.csv"))
+write_table(filter_short_duration_epochs(early_dat, epoch_duration_qc), file.path(output_dir, "tables", "early_window_rows_used_excluding_short_duration.csv"))
 
 # ------------------------------------------------
 # FEATURE EXTRACTION
@@ -345,6 +366,18 @@ feature_long <- metric_long %>%
   group_by(AnimalNum, Group, Sex, Metric) %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   summarise(calc_instability_metrics(Value), .groups = "drop")
+
+early_duration_by_animal <- early_dat %>%
+  join_duration_qc(epoch_duration_qc) %>%
+  distinct(AnimalNum, Group, Sex, CageChange, Phase, .keep_all = TRUE) %>%
+  group_by(AnimalNum, Group, Sex) %>%
+  summarise(
+    early_observed_bins = sum(observed_bins, na.rm = TRUE),
+    early_observation_hours = sum(total_observation_duration_hours, na.rm = TRUE),
+    min_duration_completeness_fraction = min(duration_completeness_fraction, na.rm = TRUE),
+    contains_short_duration_epoch = any(short_epoch %in% TRUE | cage_change_duration_class == "short", na.rm = TRUE),
+    .groups = "drop"
+  )
 
 feature_wide <- feature_long %>%
   pivot_wider(
@@ -359,14 +392,17 @@ feature_wide <- feature_long %>%
     SocialWithdrawal_mean = -safe_scale(Proximity_mean) + safe_scale(Movement_mean),
     PassiveIsolation_mean = -safe_scale(Proximity_mean) - safe_scale(Movement_mean),
     SocialEngagement_mean = safe_scale(Proximity_mean) + safe_scale(Movement_mean)
-  )
+  ) %>%
+  left_join(early_duration_by_animal, by = c("AnimalNum", "Group", "Sex"))
 
 write_table(feature_long, file.path(output_dir, "tables", "early_behavior_features_long.csv"))
 write_table(feature_wide, file.path(output_dir, "tables", "early_behavior_features.csv"))
+write_table(feature_wide %>% filter(!contains_short_duration_epoch %in% TRUE), file.path(output_dir, "tables", "early_behavior_features_excluding_short_duration.csv"))
 
 feature_value_cols <- feature_wide %>%
   select(where(is.numeric)) %>%
-  names()
+  names() %>%
+  setdiff(c("early_observed_bins", "early_observation_hours", "min_duration_completeness_fraction"))
 
 feature_group_summary <- make_dynamics_group_summary(
   feature_wide,
@@ -523,7 +559,8 @@ write_table(model_dat, file.path(output_dir, "tables", "early_prediction_model_i
 feature_cols <- model_dat %>%
   select(where(is.numeric)) %>%
   select(-outcome) %>%
-  names()
+  names() %>%
+  setdiff(c("early_observed_bins", "early_observation_hours", "min_duration_completeness_fraction"))
 
 feature_qc_tbl <- make_feature_qc(model_dat, feature_cols) %>%
   mutate(BinLevel = bin_level, ProximityInput = proximity_col)
@@ -645,6 +682,39 @@ write_table(pca_loading_tbl, file.path(output_dir, "tables", "early_feature_pca_
 # ------------------------------------------------
 
 if (requireNamespace("glmnet", quietly = TRUE)) {
+  run_duration_subset_elastic_net <- function(dat, feature_cols, label) {
+    if (nrow(dat) < 8 || length(feature_cols) < 2) {
+      return(list(predictions = tibble(), performance = tibble(DurationAnalysisSet = label, status = "skipped_low_n")))
+    }
+    x_subset <- impute_feature_matrix(dat, feature_cols)
+    y_subset <- dat$outcome
+    loo_pred_subset <- rep(NA_real_, length(y_subset))
+    set.seed(123)
+    for (i in seq_along(y_subset)) {
+      train_idx <- setdiff(seq_along(y_subset), i)
+      fit <- glmnet::cv.glmnet(
+        x_subset[train_idx, , drop = FALSE],
+        y_subset[train_idx],
+        alpha = 0.5,
+        standardize = TRUE,
+        nfolds = min(5, length(train_idx))
+      )
+      loo_pred_subset[i] <- as.numeric(predict(fit, newx = x_subset[i, , drop = FALSE], s = "lambda.min"))
+    }
+    pred_subset <- dat %>%
+      transmute(
+        AnimalNum, Group, Sex, BinLevel, ProximityInput,
+        observed = outcome,
+        predicted = loo_pred_subset,
+        residual = observed - predicted,
+        abs_residual = abs(residual),
+        DurationAnalysisSet = label
+      )
+    perf_subset <- make_prediction_summary(pred_subset, outcome_col = outcome_col, n_perm = n_prediction_permutations) %>%
+      mutate(BinLevel = bin_level, ProximityInput = proximity_col, Model = "LOO elastic-net alpha=0.5", DurationAnalysisSet = label, status = "fit")
+    list(predictions = pred_subset, performance = perf_subset)
+  }
+
   x <- x_imputed
   y <- model_dat$outcome
   loo_pred <- rep(NA_real_, length(y))
@@ -694,6 +764,21 @@ if (requireNamespace("glmnet", quietly = TRUE)) {
   write_table(coef_tbl, file.path(output_dir, "tables", "leave_one_animal_out_model_coefficients.csv"))
   write_table(lambda_tbl, file.path(output_dir, "tables", "leave_one_animal_out_lambda_diagnostics.csv"))
   write_table(coefficient_summary_tbl, file.path(output_dir, "tables", "elastic_net_coefficient_stability.csv"))
+
+  no_short_model_dat <- model_dat %>% filter(!contains_short_duration_epoch %in% TRUE)
+  duration_prediction_full <- list(
+    predictions = pred_tbl %>% mutate(DurationAnalysisSet = "full"),
+    performance = perf_tbl %>% mutate(DurationAnalysisSet = "full", status = "fit")
+  )
+  duration_prediction_no_short <- run_duration_subset_elastic_net(no_short_model_dat, usable_feature_cols, "excluding_short_duration")
+  duration_prediction_perf <- bind_rows(duration_prediction_full$performance, duration_prediction_no_short$performance) %>%
+    mutate(
+      delta_cv_r2_vs_full = cross_validated_r2_vs_mean - cross_validated_r2_vs_mean[DurationAnalysisSet == "full"][1],
+      delta_pearson_r_vs_full = loo_pearson_r - loo_pearson_r[DurationAnalysisSet == "full"][1],
+      delta_rmse_vs_full = loo_rmse - loo_rmse[DurationAnalysisSet == "full"][1]
+    )
+  write_table(bind_rows(duration_prediction_full$predictions, duration_prediction_no_short$predictions), file.path(output_dir, "tables", "leave_one_animal_out_predictions_duration_sensitivity.csv"))
+  write_table(duration_prediction_perf, file.path(output_dir, "tables", "leave_one_animal_out_performance_duration_sensitivity.csv"))
 
   p_pred <- pred_tbl %>%
     ggplot(aes(observed, predicted, colour = Group, fill = Group)) +
