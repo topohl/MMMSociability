@@ -40,6 +40,7 @@ suppressPackageStartupMessages({
 })
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -80,9 +81,20 @@ if (use_multicore && requireNamespace("furrr", quietly = TRUE) && requireNamespa
 # Leave NULL if Group and Sex are unavailable at this stage.
 metadata_file <- NULL
 
-ensure_dir(output_dir)
-ensure_dir(file.path(output_dir, "tables"))
-ensure_dir(file.path(output_dir, "figures"))
+output_dirs <- analysis_output_dirs(output_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "05_build_dyadic_rfid_contacts.R",
+  analysis_name = "dyadic RFID contact table",
+  primary_tables = c(
+    "tables/dyadic_contacts_by_bin.csv",
+    "tables/dyadic_contacts_interval_level.csv",
+    "tables/dyadic_network_ready.csv",
+    "tables/dyadic_contact_qc_by_file.csv",
+    "tables/epoch_duration_qc.csv"
+  ),
+  notes = c("Canonical output folders are tables/, stats_tables/, qc/, and figures/{publication_panels,supplementary,qc,exploratory}.")
+)
 
 # ------------------------------------------------
 # POSITION GEOMETRY
@@ -324,8 +336,11 @@ aggregate_dyads_by_bin <- function(interval_tbl) {
       .groups = "drop"
     ) %>%
     mutate(
+      BinSizeSec = bin_size_sec,
       same_position_fraction = same_position_seconds / observation_seconds,
       adjacent_fraction = adjacent_seconds / observation_seconds,
+      same_position_seconds_per_hour = same_position_seconds / pmax(observation_seconds / 3600, 1e-9),
+      adjacent_seconds_per_hour = adjacent_seconds / pmax(observation_seconds / 3600, 1e-9),
       contact_fraction = case_when(
         contact_definition == "same_position" ~ same_position_fraction,
         contact_definition == "same_or_adjacent" ~ (same_position_seconds + adjacent_seconds) / observation_seconds,
@@ -422,6 +437,13 @@ message("Aggregating dyads to ", bin_size_sec, "-second bins...")
 
 dyad_bin_tbl <- aggregate_dyads_by_bin(interval_tbl)
 
+write_epoch_duration_qc(
+  dyad_bin_tbl %>% rename(AnimalNum = Focal),
+  output_dir,
+  metric_source = "05_dyadic_rfid_contacts",
+  bin_size_sec = bin_size_sec
+)
+
 write_table(
   dyad_bin_tbl,
   file.path(output_dir, "tables", "dyadic_contacts_by_bin.csv")
@@ -443,9 +465,12 @@ network_ready_tbl <- dyad_bin_tbl %>%
     CageChange,
     Batch,
     System,
+    BinSizeSec,
     observation_seconds,
     same_position_fraction,
     adjacent_fraction,
+    same_position_seconds_per_hour,
+    adjacent_seconds_per_hour,
     mean_grid_distance,
     n_intervals,
     n_long_gaps
