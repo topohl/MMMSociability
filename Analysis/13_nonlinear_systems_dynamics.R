@@ -295,12 +295,34 @@ impute_scale <- function(dat, cols) {
 # Load data
 # -----------------------------
 ensure_dir(output_dir)
+output_dirs <- analysis_output_dirs(output_dir)
+ensure_dir(file.path(output_dir, "tables"))
+ensure_dir(file.path(output_dir, "stats_tables"))
+ensure_dir(file.path(output_dir, "figures/publication_panels"))
 ensure_dir(data_dir)
 ensure_dir(stats_dir)
 ensure_dir(figure_dir)
 ensure_dir(overview_figure_dir)
 ensure_dir(first_active_figure_dir)
 ensure_dir(longitudinal_figure_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "13_nonlinear_systems_dynamics.R",
+  analysis_name = "nonlinear systems dynamics",
+  primary_tables = c(
+    "derived_data/early_active_group_recurrence_similarity_maps.csv",
+    "derived_data/distance_to_sex_matched_control_manifold.csv",
+    "statistical_results",
+    "tables"
+  ),
+  primary_figures = c(
+    "figures/manuscript_panels",
+    "figures/overview",
+    "figures/first_cage_change_active_12h",
+    "figures/phase_sex_cage_change_trajectories"
+  ),
+  notes = c("Nonlinear visualizations are exploratory; script 12 imports only interpretable robust features.")
+)
 
 raw <- read_any(input_file)
 if (is.null(raw)) stop("Missing input file. Run 03_build_multiscale_behavior_metrics.R first.", call. = FALSE)
