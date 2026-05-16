@@ -27,6 +27,7 @@ suppressPackageStartupMessages({
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_stats_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -254,9 +255,28 @@ ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
+output_dirs <- analysis_output_dirs(output_dir)
 ensure_dir(file.path(output_dir, "figures", "publication"))
 ensure_dir(file.path(output_dir, "figures", "publication", "panels"))
 ensure_dir(file.path(output_dir, "figures", "publication", "overview"))
+write_output_manifest(
+  output_dir,
+  script_name = "07_behavioral_state_space.R",
+  analysis_name = "behavioral state-space and switching",
+  primary_tables = c(
+    "tables/state_assignments.csv",
+    "tables/state_diversity_metrics.csv",
+    "tables/state_switching_metrics.csv",
+    "stats_tables/state_switching_duration_sensitivity_group_contrasts.csv"
+  ),
+  primary_figures = c(
+    "figures/publication/panels",
+    "figures/publication/overview"
+  ),
+  notes = c("Use normalized/rate state-switching outputs for inference when cage-change duration differs.")
+)
+
+epoch_duration_qc <- write_epoch_duration_qc(behav, output_dir, metric_source = "07_behavioral_state_space", bin_size_sec = infer_bin_size_sec(behav))
 
 # ------------------------------------------------
 # STATE FEATURES
@@ -352,13 +372,20 @@ occupancy_tbl <- state_dat %>%
   count(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, CageChangeIndex, AnimalNum, State, StateLabel, name = "n_bins_state") %>%
   group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, CageChangeIndex, AnimalNum) %>%
   mutate(frac_time = n_bins_state / sum(n_bins_state)) %>%
-  ungroup()
+  ungroup() %>%
+  join_duration_qc(epoch_duration_qc)
 
 state_diversity_tbl <- occupancy_tbl %>%
   group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, CageChangeIndex, AnimalNum) %>%
   summarise(
+    observed_bins = first(observed_bins),
+    total_observation_duration_hours = first(total_observation_duration_hours),
+    duration_completeness_fraction = first(duration_completeness_fraction),
+    cage_change_duration_class = first(cage_change_duration_class),
     state_entropy = -sum(frac_time * log(frac_time + 1e-9)),
     normalized_state_entropy = state_entropy / log(n_states),
+    entropy_rate = if_else(is.finite(total_observation_duration_hours) & total_observation_duration_hours > 0,
+                           state_entropy / total_observation_duration_hours, NA_real_),
     n_observed_states = sum(frac_time > 0),
     max_state_fraction = max(frac_time, na.rm = TRUE),
     dominant_state = as.character(StateLabel[which.max(frac_time)]),
@@ -375,11 +402,29 @@ occupancy_stats <- write_stats_package(
   by_cols = c("BinLevel", "ProximityInput", "StateLabel", "Sex", "Phase", "CageChange"),
   summary_group_cols = c("BinLevel", "ProximityInput", "StateLabel", "Sex", "Phase", "CageChange", "Group")
 )
+write_duration_sensitivity_statistics(
+  occupancy_tbl,
+  epoch_duration_qc,
+  output_dir,
+  analysis_name = "state_occupancy",
+  value_cols = "frac_time",
+  by_cols = c("BinLevel", "ProximityInput", "StateLabel", "Sex", "Phase", "CageChange"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "StateLabel", "Sex", "Phase", "CageChange", "Group")
+)
 
 diversity_stats <- write_stats_package(
   state_diversity_tbl,
   analysis_name = "state_diversity",
-  value_cols = c("state_entropy", "normalized_state_entropy", "n_observed_states", "max_state_fraction"),
+  value_cols = c("normalized_state_entropy", "entropy_rate", "n_observed_states", "max_state_fraction"),
+  by_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange", "Group")
+)
+write_duration_sensitivity_statistics(
+  state_diversity_tbl,
+  epoch_duration_qc,
+  output_dir,
+  analysis_name = "state_diversity",
+  value_cols = c("normalized_state_entropy", "entropy_rate", "n_observed_states", "max_state_fraction"),
   by_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange"),
   summary_group_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange", "Group")
 )
@@ -408,12 +453,14 @@ transition_tbl <- transition_events %>%
 switch_tbl <- transition_events %>%
   group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, CageChangeIndex, AnimalNum) %>%
   summarise(
-    switch_rate = mean(StateSwitch, na.rm = TRUE),
+    switch_rate = if_else(n() >= 3, mean(StateSwitch, na.rm = TRUE), NA_real_),
     stay_rate = 1 - switch_rate,
     n_switches = sum(StateSwitch, na.rm = TRUE),
     n_transitions = n(),
     .groups = "drop"
-  )
+  ) %>%
+  join_duration_qc(epoch_duration_qc) %>%
+  normalize_counts_to_rates(c("n_switches", "n_transitions"))
 
 transition_summary_tbl <- transition_tbl %>%
   group_by(BinLevel, ProximityInput, Group, Sex, Phase, CageChange, CageChangeIndex, StateLabel, NextStateLabel) %>%
@@ -431,10 +478,22 @@ write_table(switch_tbl, file.path(output_dir, "tables", "state_switching_metrics
 switch_stats <- write_stats_package(
   switch_tbl,
   analysis_name = "state_switching",
-  value_cols = c("switch_rate", "stay_rate", "n_switches"),
+  value_cols = c("switch_rate", "stay_rate", "n_switches_per_hour", "n_transitions_per_hour"),
   by_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange"),
   summary_group_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange", "Group")
 )
+write_duration_sensitivity_statistics(
+  switch_tbl,
+  epoch_duration_qc,
+  output_dir,
+  analysis_name = "state_switching",
+  value_cols = c("switch_rate", "stay_rate", "n_switches_per_hour", "n_transitions_per_hour"),
+  by_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange", "Group")
+)
+
+generate_duration_sensitivity_outputs(state_diversity_tbl, epoch_duration_qc, output_dir, "state_diversity_metrics")
+generate_duration_sensitivity_outputs(switch_tbl, epoch_duration_qc, output_dir, "state_switching_metrics")
 
 # ------------------------------------------------
 # PCA LANDSCAPE
@@ -651,7 +710,11 @@ save_plot_svg_pdf(p_occ_heat, file.path(output_dir, "figures", "publication", "o
 switch_effect_tbl <- switch_stats$contrasts %>%
   filter(contrast %in% pairwise_contrasts, status == "tested") %>%
   mutate(
-    Outcome = factor(Outcome, levels = c("switch_rate", "stay_rate", "n_switches"), labels = c("Switch rate", "Stay rate", "N switches")),
+    Outcome = factor(
+      Outcome,
+      levels = c("switch_rate", "stay_rate", "n_switches_per_hour", "n_transitions_per_hour"),
+      labels = c("Switch rate", "Stay rate", "Switches/hour", "Transitions/hour")
+    ),
     CagePhase = paste(as.character(CageChange), Phase, sep = "\n"),
     CagePhase = factor(CagePhase, levels = unique(CagePhase[order(CageChange, Phase)])),
     contrast = factor(contrast, levels = pairwise_contrasts),
