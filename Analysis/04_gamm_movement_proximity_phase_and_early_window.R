@@ -90,6 +90,20 @@ base_results_dir <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/
 if (!dir.exists(base_results_dir)) dir.create(base_results_dir, recursive = TRUE)
 dir_create_safe <- function(path) { if (!dir.exists(path)) dir.create(path, recursive = TRUE, showWarnings = FALSE) }
 
+duration_helper_candidates <- c(
+  file.path("Functions", "duration_normalization_helpers.R"),
+  file.path("..", "Functions", "duration_normalization_helpers.R")
+)
+duration_helper_path <- duration_helper_candidates[file.exists(duration_helper_candidates)][1]
+if (!is.na(duration_helper_path)) source(duration_helper_path)
+
+shared_helper_candidates <- c(
+  file.path("Functions", "behavioral_dynamics_helpers.R"),
+  file.path("..", "Functions", "behavioral_dynamics_helpers.R")
+)
+shared_helper_path <- shared_helper_candidates[file.exists(shared_helper_candidates)][1]
+if (!is.na(shared_helper_path)) source(shared_helper_path)
+
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -170,6 +184,21 @@ if (all(file.exists(data_file, data_file_activity, sus_file))) {
   cat("Missing ActivityIndex values:", sum(is.na(data_filtered_agg$ActivityIndex)), "\n")
   cat("Final Group distribution:\n")
   print(table(data_filtered_agg$Group))
+
+  if (exists("write_epoch_duration_qc")) {
+    gamm_duration_input <- data_filtered_agg %>%
+      dplyr::mutate(
+        CageChange = as.character(Change),
+        BinLevel = "30min",
+        BinSizeSec = 1800
+      )
+    epoch_duration_qc <- write_epoch_duration_qc(
+      gamm_duration_input,
+      base_results_dir,
+      metric_source = "04_gamm_movement_proximity_phase_and_early_window",
+      bin_size_sec = 1800
+    )
+  }
   
 } else {
   stop("Check paths: One or more files (data, activity, or sus_list) are missing.")
@@ -5172,6 +5201,7 @@ if (RUN_ANALYSES) {
 
   analyses_dir <- file.path(base_results_dir, "analyses")
   dir_create_safe(analyses_dir)
+  if (exists("analysis_output_dirs")) analysis_output_dirs(analyses_dir)
   nat_dirs <- list(
     # Spline analyses (lmer and AR1)
     splines_lmer_tables = file.path(analyses_dir, "splines", "lmer", "tables"),
@@ -5187,6 +5217,26 @@ if (RUN_ANALYSES) {
     artifacts = file.path(analyses_dir, "artifacts")
   )
   invisible(lapply(nat_dirs, dir_create_safe))
+  if (exists("write_output_manifest")) {
+    write_output_manifest(
+      analyses_dir,
+      script_name = "04_gamm_movement_proximity_phase_and_early_window.R",
+      analysis_name = "GAMM/LME movement-proximity phase and early-window analyses",
+      primary_tables = c(
+        "splines/lmer/tables/model_summary_all.xlsx",
+        "splines/lmer/tables/auc_summary_all.xlsx",
+        "gamm/tables/summary_all.xlsx",
+        "gamm/tables/auc_individual_animals_all.csv",
+        "tables/contrast_stability_data_*.xlsx"
+      ),
+      primary_figures = c(
+        "splines/lmer/plots",
+        "gamm/plots",
+        "plots"
+      ),
+      notes = c("Legacy output folders are retained; canonical folders are also created for cross-script consistency.")
+    )
+  }
 
   # ------------------------------------------------------------------
   # Helper: re-read phase contrast xlsx with full CI/SE/d columns
@@ -5518,6 +5568,12 @@ if (RUN_ANALYSES) {
     ord <- order(x)
     x <- x[ord]; y <- y[ord]
     sum(diff(x) * (head(y, -1) + tail(y, -1)) / 2)
+  }
+
+  auc_per_hour_from_halfhour_grid <- function(x, auc_value) {
+    x <- x[is.finite(x)]
+    duration_hours <- if (length(x) >= 2) (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)) * 0.5 else NA_real_
+    ifelse(is.finite(duration_hours) && duration_hours > 0, auc_value / duration_hours, NA_real_)
   }
 
   # ---- Helper: Extract and format fixed effects with interpretation ----
@@ -7439,6 +7495,7 @@ if (RUN_ANALYSES) {
           window = window,
           AUC = auc_i,
           AUC_norm = ifelse(is.finite(th_range_i) && th_range_i > 0, auc_i / th_range_i, NA_real_),
+          AUC_per_hour = auc_per_hour_from_halfhour_grid(x_i, auc_i),
           prediction_type = "subject_specific_gamm_observed_grid",
           n_grid = length(x_i),
           halfhour_min = min(x_i, na.rm = TRUE),
@@ -7663,9 +7720,11 @@ if (RUN_ANALYSES) {
             # AUC per group (trapezoidal)
             auc_gam <- lapply(grp_levels, function(g) {
               sub <- pred_df_gam %>% dplyr::filter(Group == g)
+              auc_val <- trapz_auc(sub$HalfHourWithinCC0, sub$predicted)
               tibble::tibble(
                 Group  = g,
-                AUC    = trapz_auc(sub$HalfHourWithinCC0, sub$predicted),
+                AUC    = auc_val,
+                AUC_per_hour = auc_per_hour_from_halfhour_grid(sub$HalfHourWithinCC0, auc_val),
                 metric = metric,
                 Change = as.character(ch), Sex = as.character(sx), Phase = as.character(ph)
               )
@@ -7788,6 +7847,7 @@ if (RUN_ANALYSES) {
                 pair = paste0(g1, "-", g0),
                 AUC_diff = auc_diff,
                 AUC_diff_norm = auc_diff_norm,
+                AUC_diff_per_hour = auc_per_hour_from_halfhour_grid(th_seq, auc_diff),
                 AUC_ci_low = auc_ci_low,
                 AUC_ci_high = auc_ci_high,
                 p_AUC_raw = p_AUC_raw,
@@ -8635,9 +8695,11 @@ if (RUN_ANALYSES) {
 
               auc_gam <- lapply(grp_levels, function(g) {
                 sub <- pred_df_gam %>% dplyr::filter(Group == g)
+                auc_val <- trapz_auc(sub$HalfHourWithinCC0, sub$predicted)
                 tibble::tibble(
                   Group = g,
-                  AUC = trapz_auc(sub$HalfHourWithinCC0, sub$predicted),
+                  AUC = auc_val,
+                  AUC_per_hour = auc_per_hour_from_halfhour_grid(sub$HalfHourWithinCC0, auc_val),
                   metric = metric,
                   Change = as.character(ch),
                   Sex = as.character(sx),
@@ -8762,6 +8824,7 @@ if (RUN_ANALYSES) {
                   pair = paste0(g1, "-", g0),
                   AUC_diff = auc_diff,
                   AUC_diff_norm = auc_diff_norm,
+                  AUC_diff_per_hour = auc_per_hour_from_halfhour_grid(th_seq, auc_diff),
                   AUC_ci_low = auc_ci_low,
                   AUC_ci_high = auc_ci_high,
                   p_AUC_raw = p_AUC_raw,
