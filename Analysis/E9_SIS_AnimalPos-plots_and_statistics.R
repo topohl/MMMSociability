@@ -60,6 +60,18 @@ lapply(dirs, function(dir) {
 
 # Load external functions from a separate script
 source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R"))
+source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R"))
+
+legacy_group_colors <- c("con" = mmm_group_colors[["CON"]], "res" = mmm_group_colors[["RES"]], "sus" = mmm_group_colors[["SUS"]])
+legacy_system_colors <- c("#2F4858", "#4D908E", "#7E9F35", "#F2A65A", "#B23A48", "#6D597A")
+legacy_publication_theme <- function(base_size = 9) {
+  make_nature_theme(base_size = base_size) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "top"
+    )
+}
 
 # General definitions and data loading ###########################################################
 
