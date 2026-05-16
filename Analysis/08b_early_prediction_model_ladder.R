@@ -34,6 +34,7 @@ suppressPackageStartupMessages({
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_stats_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -270,6 +271,25 @@ ensure_dir_safe(output_dir)
 ensure_dir_safe(file.path(output_dir, "tables"))
 ensure_dir_safe(file.path(output_dir, "figures"))
 ensure_dir_safe(file.path(output_dir, "figures", "publication"))
+output_dirs <- analysis_output_dirs(output_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "08b_early_prediction_model_ladder.R",
+  analysis_name = "early prediction model ladder",
+  primary_tables = c(
+    "tables/model_ladder_performance.csv",
+    "tables/model_ladder_performance_duration_sensitivity.csv",
+    "tables/model_ladder_incremental_summary.csv",
+    "tables/primary_movement_entropyacf1_associations.csv"
+  ),
+  primary_figures = c(
+    "figures/publication/model_ladder_cv_r2.svg",
+    "figures/publication/primary_movement_entropyacf1_vs_combz.svg"
+  ),
+  notes = c("Main prediction claim should use the ladder performance plus duration-sensitivity companion table.")
+)
+
+epoch_duration_qc <- write_epoch_duration_qc(behav, output_dir, metric_source = "08b_early_prediction_model_ladder", bin_size_sec = infer_bin_size_sec(behav))
 
 # ------------------------------------------------
 # EARLY WINDOW: FIRST CAGE CHANGE, FIRST 12 h ACTIVE PHASE
@@ -298,6 +318,7 @@ early_dat <- early_dat %>%
   mutate(BinLevel = bin_level, ProximityInput = proximity_col)
 
 write_table(early_dat, file.path(output_dir, "tables", "early_window_rows_used.csv"))
+write_table(filter_short_duration_epochs(early_dat, epoch_duration_qc), file.path(output_dir, "tables", "early_window_rows_used_excluding_short_duration.csv"))
 
 window_design_tbl <- early_dat %>%
   group_by(AnimalNum, Group, Sex, Phase) %>%
@@ -327,6 +348,18 @@ feature_long <- early_dat %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   summarise(calc_instability_metrics(Value), .groups = "drop")
 
+early_duration_by_animal <- early_dat %>%
+  join_duration_qc(epoch_duration_qc) %>%
+  distinct(AnimalNum, Group, Sex, CageChange, Phase, .keep_all = TRUE) %>%
+  group_by(AnimalNum, Group, Sex) %>%
+  summarise(
+    early_observed_bins = sum(observed_bins, na.rm = TRUE),
+    early_observation_hours = sum(total_observation_duration_hours, na.rm = TRUE),
+    min_duration_completeness_fraction = min(duration_completeness_fraction, na.rm = TRUE),
+    contains_short_duration_epoch = any(short_epoch %in% TRUE | cage_change_duration_class == "short", na.rm = TRUE),
+    .groups = "drop"
+  )
+
 feature_wide <- feature_long %>%
   pivot_wider(
     id_cols = c(AnimalNum, Group, Sex),
@@ -341,10 +374,12 @@ feature_wide <- feature_long %>%
     Movement_z = safe_scale(Movement_mean),
     EntropyACF1_z = safe_scale(Entropy_acf1),
     Movement_x_EntropyACF1 = Movement_z * EntropyACF1_z
-  )
+  ) %>%
+  left_join(early_duration_by_animal, by = c("AnimalNum", "Group", "Sex"))
 
 write_table(feature_long, file.path(output_dir, "tables", "early_behavior_features_long.csv"))
 write_table(feature_wide, file.path(output_dir, "tables", "early_behavior_features_wide.csv"))
+write_table(feature_wide %>% filter(!contains_short_duration_epoch %in% TRUE), file.path(output_dir, "tables", "early_behavior_features_wide_excluding_short_duration.csv"))
 
 # ------------------------------------------------
 # ENDPOINT HANDLING
@@ -479,6 +514,86 @@ ladder_performance <- ladder_predictions %>%
   ) %>%
   arrange(desc(cv_r2_vs_mean), rmse)
 
+run_ladder_duration_set <- function(dat, analysis_set) {
+  if (nrow(dat) < 8 || sum(is.finite(dat$outcome)) < 8) {
+    return(list(
+      predictions = tibble(),
+      coefficients = tibble(),
+      performance = tibble(
+        Model = names(model_specs),
+        n = sum(is.finite(dat$outcome)),
+        pearson_r = NA_real_,
+        spearman_rho = NA_real_,
+        rmse = NA_real_,
+        mae = NA_real_,
+        cv_r2_vs_mean = NA_real_,
+        prediction_permutation_p = NA_real_,
+        BinLevel = bin_level,
+        Outcome = outcome_col,
+        DurationAnalysisSet = analysis_set,
+        DurationSensitivityStatus = "skipped_too_few_animals"
+      )
+    ))
+  }
+
+  dat_imp <- impute_numeric(dat, numeric_predictors)
+  fits <- imap(model_specs, ~loo_lm_predict(dat_imp, .x, .y))
+  preds <- map_dfr(fits, "predictions") %>% mutate(DurationAnalysisSet = analysis_set)
+  coefs <- map_dfr(fits, "coefficients") %>% mutate(DurationAnalysisSet = analysis_set)
+  perf <- preds %>%
+    group_by(Model) %>%
+    group_modify(~prediction_metrics(.x$observed, .x$predicted)) %>%
+    ungroup() %>%
+    mutate(
+      prediction_permutation_p = map_dbl(Model, ~{
+        pdat <- preds %>% filter(Model == .x)
+        permutation_prediction_p(pdat$observed, pdat$predicted, n_prediction_permutations, seed = 123)
+      }),
+      BinLevel = bin_level,
+      Outcome = outcome_col,
+      DurationAnalysisSet = analysis_set,
+      DurationSensitivityStatus = "fit"
+    ) %>%
+    arrange(desc(cv_r2_vs_mean), rmse)
+
+  list(predictions = preds, coefficients = coefs, performance = perf)
+}
+
+full_duration_ladder <- list(
+  predictions = ladder_predictions %>% mutate(DurationAnalysisSet = "full"),
+  coefficients = ladder_coefficients %>% mutate(DurationAnalysisSet = "full"),
+  performance = ladder_performance %>%
+    mutate(DurationAnalysisSet = "full", DurationSensitivityStatus = "fit")
+)
+
+no_short_model_dat <- model_dat %>%
+  filter(!contains_short_duration_epoch %in% TRUE)
+no_short_duration_ladder <- run_ladder_duration_set(no_short_model_dat, "excluding_short_duration")
+
+ladder_predictions_duration_sensitivity <- bind_rows(
+  full_duration_ladder$predictions,
+  no_short_duration_ladder$predictions
+)
+ladder_coefficients_duration_sensitivity <- bind_rows(
+  full_duration_ladder$coefficients,
+  no_short_duration_ladder$coefficients
+)
+ladder_performance_duration_sensitivity <- bind_rows(
+  full_duration_ladder$performance,
+  no_short_duration_ladder$performance
+) %>%
+  group_by(Model) %>%
+  mutate(
+    full_cv_r2 = cv_r2_vs_mean[DurationAnalysisSet == "full"][1],
+    full_pearson_r = pearson_r[DurationAnalysisSet == "full"][1],
+    full_rmse = rmse[DurationAnalysisSet == "full"][1],
+    delta_cv_r2_vs_full = cv_r2_vs_mean - full_cv_r2,
+    delta_pearson_r_vs_full = pearson_r - full_pearson_r,
+    delta_rmse_vs_full = rmse - full_rmse
+  ) %>%
+  ungroup() %>%
+  select(-full_cv_r2, -full_pearson_r, -full_rmse)
+
 baseline_rmse <- ladder_performance %>% filter(Model == "Mean only") %>% pull(rmse)
 movement_rmse <- ladder_performance %>% filter(Model == "Movement only") %>% pull(rmse)
 combined_rmse <- ladder_performance %>% filter(Model == "Movement + Entropy ACF1") %>% pull(rmse)
@@ -499,6 +614,9 @@ write_table(ladder_predictions, file.path(output_dir, "tables", "model_ladder_lo
 write_table(ladder_coefficients, file.path(output_dir, "tables", "model_ladder_loo_coefficients.csv"))
 write_table(ladder_performance, file.path(output_dir, "tables", "model_ladder_performance.csv"))
 write_table(incremental_summary, file.path(output_dir, "tables", "model_ladder_incremental_summary.csv"))
+write_table(ladder_predictions_duration_sensitivity, file.path(output_dir, "tables", "model_ladder_loo_predictions_duration_sensitivity.csv"))
+write_table(ladder_coefficients_duration_sensitivity, file.path(output_dir, "tables", "model_ladder_loo_coefficients_duration_sensitivity.csv"))
+write_table(ladder_performance_duration_sensitivity, file.path(output_dir, "tables", "model_ladder_performance_duration_sensitivity.csv"))
 
 # ------------------------------------------------
 # FIGURES
