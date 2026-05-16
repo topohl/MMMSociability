@@ -29,6 +29,7 @@ suppressPackageStartupMessages({
 
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R")
 source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_stats_helpers.R")
+source("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/duration_normalization_helpers.R")
 
 # ------------------------------------------------
 # USER INPUT
@@ -64,6 +65,7 @@ pairwise_contrasts <- c("RES-CON", "SUS-CON", "SUS-RES")
 animal_social_outcomes <- c(
   "mean_proximity", "proximity_rmssd", "proximity_acf1",
   "contact_fraction", "contact_switch_rate", "contact_entropy",
+  "contact_switch_count_per_hour",
   "active_isolation", "passive_isolation", "social_engagement"
 )
 
@@ -315,9 +317,29 @@ ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
+output_dirs <- analysis_output_dirs(output_dir)
 ensure_dir(file.path(output_dir, "figures", "publication"))
 ensure_dir(file.path(output_dir, "figures", "publication", "overview"))
 ensure_dir(file.path(output_dir, "figures", "publication", "panels"))
+write_output_manifest(
+  output_dir,
+  script_name = "09_dynamic_social_networks.R",
+  analysis_name = "dynamic social-network topology",
+  primary_tables = c(
+    "tables/animal_level_social_dynamics.csv",
+    "tables/dyadic_pair_summary.csv",
+    "tables/dyadic_node_summary.csv",
+    "tables/dyadic_graph_period_summary.csv",
+    "stats_tables/animal_social_dynamics_duration_sensitivity_group_contrasts.csv"
+  ),
+  primary_figures = c(
+    "figures/publication/panels",
+    "figures/publication/overview"
+  ),
+  notes = c("Separate social withdrawal, unstable engagement, and fragmented topology in reporting.")
+)
+
+epoch_duration_qc <- write_epoch_duration_qc(behav, output_dir, metric_source = "09_dynamic_social_networks", bin_size_sec = infer_bin_size_sec(behav))
 
 # ------------------------------------------------
 # ANIMAL-LEVEL SOCIAL CONNECTEDNESS / FRAGMENTATION
@@ -361,19 +383,32 @@ animal_social <- behav %>%
     proximity_rmssd = calc_rmssd(Proximity),
     proximity_acf1 = calc_acf1(Proximity),
     contact_fraction = mean(social_contact_bin, na.rm = TRUE),
-    contact_switch_rate = mean(social_contact_bin != lag(social_contact_bin), na.rm = TRUE),
+    contact_switch_rate = if_else(n() >= 3, mean(social_contact_bin != lag(social_contact_bin), na.rm = TRUE), NA_real_),
+    contact_switch_count = sum(social_contact_bin != lag(social_contact_bin), na.rm = TRUE),
     contact_entropy = contact_entropy(social_contact_bin),
     active_isolation = mean(ActiveIsolation, na.rm = TRUE),
     passive_isolation = mean(PassiveIsolation, na.rm = TRUE),
     social_engagement = mean(SocialEngagement, na.rm = TRUE),
     n_bins = n(),
     .groups = "drop"
-  )
+  ) %>%
+  join_duration_qc(epoch_duration_qc) %>%
+  normalize_counts_to_rates(c("contact_switch_count"))
 
 write_table(animal_social, file.path(output_dir, "tables", "animal_level_social_dynamics.csv"))
+generate_duration_sensitivity_outputs(animal_social, epoch_duration_qc, output_dir, "animal_level_social_dynamics")
 
 animal_stats <- write_stats_package(
   animal_social,
+  analysis_name = "animal_level_social_dynamics",
+  value_cols = animal_social_outcomes,
+  by_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange"),
+  summary_group_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange", "Group")
+)
+write_duration_sensitivity_statistics(
+  animal_social,
+  epoch_duration_qc,
+  output_dir,
   analysis_name = "animal_level_social_dynamics",
   value_cols = animal_social_outcomes,
   by_cols = c("BinLevel", "ProximityInput", "Sex", "Phase", "CageChange"),
@@ -391,6 +426,7 @@ animal_social_long <- animal_social %>%
       proximity_acf1 = "Proximity ACF1",
       contact_fraction = "Contact fraction",
       contact_switch_rate = "Contact switching",
+      contact_switch_count_per_hour = "Contact switches/hour",
       contact_entropy = "Contact entropy",
       active_isolation = "Active isolation",
       passive_isolation = "Passive isolation",
@@ -477,6 +513,7 @@ animal_effect_tbl <- make_effect_heatmap_data(
     proximity_acf1 = "Proximity ACF1",
     contact_fraction = "Contact fraction",
     contact_switch_rate = "Contact switching",
+    contact_switch_count_per_hour = "Contact switches/hour",
     contact_entropy = "Contact entropy",
     active_isolation = "Active isolation",
     passive_isolation = "Passive isolation",
@@ -608,6 +645,10 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
         weight_rmssd = calc_rmssd(Weight),
         contact_bin_fraction = mean(Contact, na.rm = TRUE),
         total_observation_seconds = sum(observation_seconds, na.rm = TRUE),
+        total_observation_hours = total_observation_seconds / 3600,
+        contact_bins = sum(Contact, na.rm = TRUE),
+        contact_bins_per_hour = if_else(is.finite(total_observation_hours) & total_observation_hours > 0,
+                                        contact_bins / total_observation_hours, NA_real_),
         n_bins = n(),
         .groups = "drop"
       )
@@ -691,7 +732,8 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
           fragmentation_index = safe_graph_mean(fragmentation_index),
           n_time_bins = n(),
           .groups = "drop"
-        )
+        ) %>%
+        mutate(n_time_bins_per_hour = if_else(is.finite(n_time_bins) & n_time_bins > 0, n_time_bins / pmax(n_time_bins * infer_bin_size_sec(.) / 3600, 1e-9), NA_real_))
 
       write_table(graph_period_summary, file.path(output_dir, "tables", "dyadic_graph_period_summary.csv"))
 
@@ -701,6 +743,16 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
         value_cols = graph_outcomes,
         by_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange"),
         summary_group_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange", "Group")
+      )
+      write_duration_sensitivity_statistics(
+        graph_period_summary,
+        epoch_duration_qc,
+        output_dir,
+        analysis_name = "dyadic_graph_period",
+        value_cols = graph_outcomes,
+        by_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange"),
+        summary_group_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange", "Group"),
+        join_by_cols = c("Group", "Sex", "CageChange", "Phase")
       )
 
       node_metrics <- edge_tbl %>%
@@ -745,6 +797,15 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
 
       node_stats <- write_stats_package(
         node_summary,
+        analysis_name = "dyadic_node_centrality",
+        value_cols = node_outcomes,
+        by_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange"),
+        summary_group_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange", "Group")
+      )
+      write_duration_sensitivity_statistics(
+        node_summary,
+        epoch_duration_qc,
+        output_dir,
         analysis_name = "dyadic_node_centrality",
         value_cols = node_outcomes,
         by_cols = c("BinLevel", "DyadWeightInput", "Sex", "Phase", "CageChange"),
