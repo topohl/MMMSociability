@@ -51,6 +51,8 @@ write_output_manifest(
   primary_tables = c(
     "tables/gamm_trajectory_features.csv",
     "tables/gamm_model_qc.csv",
+    "tables/gamm_trajectory_robustness_summary.csv",
+    "tables/gamm_trajectory_interpretation_guide.csv",
     "tables/epoch_duration_qc.csv"
   ),
   notes = c("Use auc_per_hour rather than raw auc when comparing unequal-duration cage changes.")
@@ -161,5 +163,33 @@ for (metric in metric_names) {
 combined_features <- bind_rows(all_features)
 write_table(combined_features, file.path(output_dir, "tables", "combined_gamm_features.csv"))
 write_table(bind_rows(model_qc), file.path(output_dir, "tables", "gamm_model_qc.csv"))
+
+trajectory_robustness_summary <- combined_features %>%
+  group_by(Metric, BinLevel, ProximityInput, Sex, Phase, CageChange) %>%
+  summarise(
+    full_data_effect = mean(auc_per_hour, na.rm = TRUE),
+    excluding_short_duration_effect = mean(auc_per_hour[!short_epoch %in% TRUE & (is.na(cage_change_duration_class) | cage_change_duration_class != "short")], na.rm = TRUE),
+    delta_estimate = excluding_short_duration_effect - full_data_effect,
+    delta_cohen_d = NA_real_,
+    direction_stable = sign(full_data_effect) == sign(excluding_short_duration_effect) | abs(full_data_effect) < .Machine$double.eps,
+    StableForMainText = direction_stable %in% TRUE & (is.na(delta_cohen_d) | abs(delta_cohen_d) < 0.30),
+    .groups = "drop"
+  )
+
+trajectory_interpretation_guide <- tibble(
+  Feature = c("auc_per_hour", "dynamic_range", "time_to_peak", "rmssd_pred", "acf1_pred"),
+  BiologicalInterpretation = c(
+    "Duration-normalized integrated trajectory magnitude.",
+    "Amplitude of longitudinal adaptation trajectory.",
+    "Timing of peak response after regrouping.",
+    "Smoothed trajectory instability.",
+    "Smoothed trajectory inertia/persistence."
+  ),
+  ReviewerRisk = c("medium", "low", "low", "medium", "medium"),
+  PreferredLanguage = c("trajectory burden per hour", "trajectory dynamic range", "peak timing", "trajectory instability", "trajectory persistence")
+)
+
+write_table(trajectory_robustness_summary, file.path(output_dir, "tables", "gamm_trajectory_robustness_summary.csv"))
+write_table(trajectory_interpretation_guide, file.path(output_dir, "tables", "gamm_trajectory_interpretation_guide.csv"))
 
 message("GAMM trajectory-feature extraction complete.")
