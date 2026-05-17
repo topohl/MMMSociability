@@ -34,6 +34,20 @@ output_dir <- "analysis_ready/06_behavioral_dynamics/proteomics_integration"
 ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "figures"))
+analysis_output_dirs(output_dir)
+write_output_manifest(
+  output_dir,
+  script_name = "12_behavior_proteomics_integration.R",
+  analysis_name = "low-dimensional behavior-proteomics systems alignment",
+  primary_tables = c(
+    "tables/behavioral_latent_axes.csv",
+    "tables/proteomic_latent_axes.csv",
+    "tables/latent_axis_associations.csv",
+    "tables/curated_behavior_proteomics_models.csv"
+  ),
+  primary_figures = c("figures/latent_behavior_proteomics_relationship.svg"),
+  notes = c("Use curated low-dimensional axes; feature-explosion correlations are retained only as exploratory supplements.")
+)
 
 if (!file.exists(behavior_file)) {
   stop("Behavior feature file not found: ", behavior_file)
@@ -55,6 +69,74 @@ prot <- prot %>% rename(AnimalNum = all_of(prot_animal_col))
 merged <- beh %>% inner_join(prot, by = "AnimalNum")
 
 write_table(merged, file.path(output_dir, "tables", "behavior_proteomics_merged.csv"))
+
+make_axis <- function(dat, regex_pattern, axis_name) {
+  cols <- names(dat)[str_detect(names(dat), regex(regex_pattern, ignore_case = TRUE))]
+  cols <- cols[sapply(dat[cols], is.numeric)]
+  if (length(cols) == 0) return(tibble(AnimalNum = dat$AnimalNum, !!axis_name := NA_real_, n_features = 0L))
+  tibble(
+    AnimalNum = dat$AnimalNum,
+    !!axis_name := rowMeans(as.data.frame(lapply(dat[cols], z_within_metric)), na.rm = TRUE),
+    n_features = length(cols)
+  )
+}
+
+behavior_axis_specs <- tibble(
+  Axis = c("locomotor_adaptation_axis", "temporal_organization_axis", "phase_organization_axis", "social_organization_axis", "inactivity_quiescence_axis"),
+  Regex = c("movement|locomotor|adaptation|recovery|slope|half_life", "rmssd|acf1|entropy|instability|volatility|persistence", "phase|active_minus_inactive|phase_contrast|timing", "social|proximity|partner|network|degree|strength|fragmentation", "inactive|inactivity|quiescence|rest_like|bout")
+)
+
+proteomic_axis_specs <- tibble(
+  Axis = c("RNA_RNP_splicing_axis", "translation_ribosome_axis", "mitochondrial_OXPHOS_axis", "proteostasis_endolysosomal_axis", "synaptic_plasticity_axis"),
+  Regex = c("rna|rnp|splice|splicing", "translation|ribosome|rpl|rps|eif", "mitochond|oxphos|respirat|electron", "proteostasis|lysosom|endosom|ubiquitin|proteasom", "synap|plastic|vesicle|glutamate|gaba")
+)
+
+behavioral_latent_axes <- reduce(
+  map2(behavior_axis_specs$Regex, behavior_axis_specs$Axis, ~make_axis(beh, .x, .y) %>% select(-n_features)),
+  full_join,
+  by = "AnimalNum"
+)
+
+proteomic_latent_axes <- reduce(
+  map2(proteomic_axis_specs$Regex, proteomic_axis_specs$Axis, ~make_axis(prot, .x, .y) %>% select(-n_features)),
+  full_join,
+  by = "AnimalNum"
+)
+
+axis_feature_inventory <- bind_rows(
+  map2_dfr(behavior_axis_specs$Regex, behavior_axis_specs$Axis, ~tibble(Modality = "behavior", Axis = .y, Feature = names(beh)[str_detect(names(beh), regex(.x, ignore_case = TRUE))])),
+  map2_dfr(proteomic_axis_specs$Regex, proteomic_axis_specs$Axis, ~tibble(Modality = "proteomics", Axis = .y, Feature = names(prot)[str_detect(names(prot), regex(.x, ignore_case = TRUE))]))
+)
+
+axis_merged <- behavioral_latent_axes %>%
+  inner_join(proteomic_latent_axes, by = "AnimalNum")
+
+behavior_axis_cols <- setdiff(names(behavioral_latent_axes), "AnimalNum")
+proteomic_axis_cols <- setdiff(names(proteomic_latent_axes), "AnimalNum")
+
+latent_axis_associations <- expand_grid(BehaviorAxis = behavior_axis_cols, ProteomicAxis = proteomic_axis_cols) %>%
+  mutate(
+    n = map2_int(BehaviorAxis, ProteomicAxis, ~sum(is.finite(axis_merged[[.x]]) & is.finite(axis_merged[[.y]]))),
+    spearman_rho = map2_dbl(BehaviorAxis, ProteomicAxis, ~safe_cor(axis_merged[[.x]], axis_merged[[.y]], "spearman")),
+    pearson_r = map2_dbl(BehaviorAxis, ProteomicAxis, ~safe_cor(axis_merged[[.x]], axis_merged[[.y]], "pearson")),
+    EvidenceUse = if_else(n < 12, "exploratory_effect_size_small_n", "exploratory_association")
+  ) %>%
+  arrange(desc(abs(spearman_rho)))
+
+curated_behavior_proteomics_models <- latent_axis_associations %>%
+  mutate(
+    BiologicalModel = paste(BehaviorAxis, "aligned_with", ProteomicAxis),
+    ClaimType = "associative",
+    AllowedInterpretation = "Behavioral adaptation axis covaries with a curated hippocampal proteomic module axis.",
+    ReviewerRisk = if_else(n < 12, "high_small_n", "medium_exploratory"),
+    StableForMainText = FALSE
+  )
+
+write_table(behavioral_latent_axes, file.path(output_dir, "tables", "behavioral_latent_axes.csv"))
+write_table(proteomic_latent_axes, file.path(output_dir, "tables", "proteomic_latent_axes.csv"))
+write_table(latent_axis_associations, file.path(output_dir, "tables", "latent_axis_associations.csv"))
+write_table(curated_behavior_proteomics_models, file.path(output_dir, "tables", "curated_behavior_proteomics_models.csv"))
+write_table(axis_feature_inventory, file.path(output_dir, "tables", "latent_axis_feature_inventory.csv"))
 
 beh_num <- merged %>%
   select(where(is.numeric))
