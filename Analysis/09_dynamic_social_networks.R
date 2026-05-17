@@ -327,9 +327,13 @@ write_output_manifest(
   analysis_name = "dynamic social-network topology",
   primary_tables = c(
     "tables/animal_level_social_dynamics.csv",
+    "tables/animal_level_social_threshold_sensitivity.csv",
     "tables/dyadic_pair_summary.csv",
+    "tables/dyadic_partner_instability_jaccard.csv",
+    "tables/dyadic_partner_threshold_sensitivity.csv",
     "tables/dyadic_node_summary.csv",
     "tables/dyadic_graph_period_summary.csv",
+    "tables/social_reorganization_interpretation_guide.csv",
     "stats_tables/animal_social_dynamics_duration_sensitivity_group_contrasts.csv"
   ),
   primary_figures = c(
@@ -362,6 +366,26 @@ animal_threshold_tbl <- tibble(
 )
 
 write_table(animal_threshold_tbl, file.path(output_dir, "tables", "animal_level_contact_threshold.csv"))
+
+threshold_sensitivity_grid <- c(0.60, 0.70, 0.75, 0.80)
+animal_threshold_sensitivity <- map_dfr(threshold_sensitivity_grid, function(q) {
+  thr <- if (proximity_is_distance) {
+    quantile(behav$Proximity, probs = 1 - q, na.rm = TRUE)
+  } else {
+    quantile(behav$Proximity, probs = q, na.rm = TRUE)
+  }
+  behav %>%
+    mutate(Contact = if (proximity_is_distance) Proximity <= thr else Proximity >= thr) %>%
+    group_by(BinLevel = bin_level, ProximityInput = proximity_col, ContactQuantile = q, Group, Sex, Phase, CageChange, AnimalNum) %>%
+    arrange(TimeIndex, .by_group = TRUE) %>%
+    summarise(
+      contact_fraction = mean(Contact, na.rm = TRUE),
+      contact_switch_rate = if_else(n() >= 3, mean(Contact != lag(Contact), na.rm = TRUE), NA_real_),
+      contact_entropy = contact_entropy(Contact),
+      .groups = "drop"
+    )
+})
+write_table(animal_threshold_sensitivity, file.path(output_dir, "tables", "animal_level_social_threshold_sensitivity.csv"))
 
 animal_social <- behav %>%
   mutate(
@@ -636,6 +660,31 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
 
     write_table(edge_tbl, file.path(output_dir, "tables", "dyadic_edges_network_input.csv"))
 
+    dyadic_threshold_sensitivity <- map_dfr(threshold_sensitivity_grid, function(q) {
+      thr <- if (use_positive_dyad_weight) {
+        0
+      } else if (proximity_is_distance) {
+        quantile(dyad$Weight, probs = 1 - q, na.rm = TRUE)
+      } else {
+        quantile(dyad$Weight, probs = q, na.rm = TRUE)
+      }
+      dyad %>%
+        mutate(Contact = if (use_positive_dyad_weight) Weight > 0 else if (proximity_is_distance) Weight <= thr else Weight >= thr) %>%
+        group_by(BinLevel, DyadWeightInput, ContactQuantile = q, Group, Sex, Phase, CageChange, CageChangeIndex, Batch, System, Focal) %>%
+        arrange(TimeIndex, Partner, .by_group = TRUE) %>%
+        summarise(
+          n_partners = n_distinct(Partner[Contact %in% TRUE]),
+          partner_entropy = {
+            partner_counts <- table(Partner[Contact %in% TRUE])
+            p <- as.numeric(partner_counts) / sum(partner_counts)
+            if (length(p) == 0 || !is.finite(sum(p))) NA_real_ else -sum(p * log2(p))
+          },
+          social_contact_fraction = mean(Contact, na.rm = TRUE),
+          .groups = "drop"
+        )
+    })
+    write_table(dyadic_threshold_sensitivity, file.path(output_dir, "tables", "dyadic_partner_threshold_sensitivity.csv"))
+
     dyad_summary <- edge_tbl %>%
       group_by(BinLevel, DyadWeightInput, Group, Sex, Phase, CageChange, CageChangeIndex, Batch, System, Focal, Partner) %>%
       summarise(
@@ -674,6 +723,31 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
       )
 
     write_table(dyad_preference, file.path(output_dir, "tables", "dyadic_partner_preference_summary.csv"))
+
+    dyadic_partner_instability <- edge_tbl %>%
+      filter(Contact %in% TRUE) %>%
+      group_by(BinLevel, DyadWeightInput, Group, Sex, Phase, CageChange, CageChangeIndex, Batch, System, Focal, TimeIndex) %>%
+      summarise(partner_set = list(sort(unique(as.character(Partner)))), .groups = "drop") %>%
+      arrange(Focal, CageChangeIndex, Phase, TimeIndex) %>%
+      group_by(BinLevel, DyadWeightInput, Group, Sex, Phase, CageChange, CageChangeIndex, Batch, System, Focal) %>%
+      mutate(
+        prev_partner_set = lag(partner_set),
+        jaccard_partner_similarity = map2_dbl(partner_set, prev_partner_set, function(a, b) {
+          if (is.null(b) || length(b) == 0) return(NA_real_)
+          union_n <- length(union(a, b))
+          if (union_n == 0) return(NA_real_)
+          length(intersect(a, b)) / union_n
+        })
+      ) %>%
+      summarise(
+        AnimalNum = first(Focal),
+        mean_jaccard_partner_similarity = mean(jaccard_partner_similarity, na.rm = TRUE),
+        partner_instability_index = 1 - mean_jaccard_partner_similarity,
+        social_predictability = mean_jaccard_partner_similarity,
+        .groups = "drop"
+      )
+
+    write_table(dyadic_partner_instability, file.path(output_dir, "tables", "dyadic_partner_instability_jaccard.csv"))
 
     preference_stats <- write_stats_package(
       dyad_preference,
@@ -1059,5 +1133,36 @@ if (!is.null(dyad_file) && file.exists(dyad_file)) {
   message("Run Analysis/05_build_dyadic_rfid_contacts.R first to enable true graph metrics.")
   message("Wrote animal-level social dynamics only.")
 }
+
+social_reorganization_interpretation_guide <- tibble(
+  Construct = c("Proximity/co-occupancy proxy", "Partner instability", "Preferred-partner persistence", "Social fragmentation", "Phase-specific social organization", "Threshold sensitivity"),
+  PrimaryOutputs = c(
+    "animal_level_social_dynamics.csv",
+    "dyadic_partner_instability_jaccard.csv",
+    "dyadic_partner_preference_summary.csv",
+    "dyadic_graph_period_summary.csv",
+    "animal_level_social_dynamics.csv; dyadic_node_summary.csv",
+    "animal_level_social_threshold_sensitivity.csv; dyadic_partner_threshold_sensitivity.csv"
+  ),
+  AllowedInterpretation = c(
+    "Animal-level social engagement or withdrawal proxy.",
+    "Turnover in the set of contact partners across time bins.",
+    "Concentration of contact weight onto a top partner.",
+    "Network-level separation into weaker or smaller connected components.",
+    "Active-vs-inactive differences in social organization.",
+    "Whether social findings depend on the edge/contact threshold."
+  ),
+  ReviewerRisk = c("medium", "medium", "medium", "high_if_dyadic_identity_unavailable", "medium", "low_when_direction_stable"),
+  Caveat = c(
+    "Do not call graph topology if only animal-level proximity is available.",
+    "Requires dyadic identity.",
+    "Requires dyadic identity.",
+    "Requires true dyadic edges and sufficient animals per system.",
+    "Interpret as behavioral phase structure, not circadian mechanism.",
+    "Main claims should be robust across 0.60, 0.70, 0.75 and 0.80 thresholds."
+  )
+)
+
+write_table(social_reorganization_interpretation_guide, file.path(output_dir, "tables", "social_reorganization_interpretation_guide.csv"))
 
 message("Dynamic social network analysis complete. Animal-level and available dyadic network reports written.")
