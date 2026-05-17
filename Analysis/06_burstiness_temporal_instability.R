@@ -1615,6 +1615,51 @@ pub_delta_heat_tbl <- delta_stats$contrasts %>%
 
 write_table(pub_delta_heat_tbl, file.path(output_dir, "tables", "publication_delta_effect_size_heatmap_data.csv"))
 
+# ------------------------------------------------
+# MANUSCRIPT INTERPRETATION LAYER
+# ------------------------------------------------
+
+temporal_domain_dictionary <- tibble(
+  TemporalDomain = c("Magnitude", "Variability", "Persistence", "Fragmentation", "Recovery", "Temporal predictability"),
+  PrimaryMetrics = c("Movement_mean", "Movement_cv; Movement_fano", "Movement_acf1; Entropy_acf1", "RMSSD; rolling RMSSD; phase/bout fragmentation outputs", "delta_rmssd; rolling instability slopes", "ACF1 and entropy persistence"),
+  BiologicalInterpretation = c(
+    "Overall locomotor output or spatial exploration level.",
+    "Amplitude dispersion around the animal's typical output.",
+    "Short-timescale inertia or persistence of behavioral organization.",
+    "How often behavior breaks into unstable or interrupted bouts.",
+    "Whether instability decays or stabilizes after regrouping.",
+    "How much near-future behavior is constrained by recent behavior."
+  ),
+  MainTextCaution = c(
+    "Do not interpret movement magnitude alone as resilience or susceptibility.",
+    "Report alongside mean to avoid mistaking scale effects for temporal organization.",
+    "ACF1 can be unstable in short epochs and should use duration safeguards.",
+    "Use ethological phase/inactivity modules for stronger bout-level interpretation.",
+    "Recovery language is descriptive unless tied to prospective endpoint prediction.",
+    "Predictability is not cognition; phrase as behavioral temporal organization."
+  ),
+  PreferredLanguage = c(
+    "locomotor output",
+    "temporal variability",
+    "temporal persistence",
+    "behavioral fragmentation",
+    "post-regrouping stabilization",
+    "temporal organization"
+  )
+)
+
+temporal_maintext_feature_set <- tibble(
+  Feature = c("Movement_mean", "Movement_rmssd", "Movement_acf1", "Entropy_acf1", "delta_rmssd", "rolling_rmssd"),
+  BiologicalDomain = c("Magnitude", "Fragmentation/volatility", "Persistence", "Entropy persistence", "Recovery/stabilization", "Recovery/stabilization"),
+  EvidenceTier = c("Tier 1", "Tier 1", "Tier 2", "Tier 1", "Tier 2", "Tier 2"),
+  ClaimType = c("descriptive/predictive", "descriptive/predictive", "descriptive", "predictive", "descriptive", "descriptive"),
+  ReviewerRisk = c("low", "medium", "medium", "medium", "medium", "medium"),
+  StableForMainTextRule = "Require same direction after excluding short-duration epochs and abs(delta_cohen_d) < 0.30 when a matched duration-sensitivity contrast is available."
+)
+
+write_table(temporal_domain_dictionary, file.path(output_dir, "tables", "temporal_organization_interpretation_guide.csv"))
+write_table(temporal_maintext_feature_set, file.path(output_dir, "tables", "temporal_maintext_feature_set.csv"))
+
 p_pub_delta_heat <- ggplot(pub_delta_heat_tbl, aes(CagePhase, Outcome, fill = cohen_d)) +
   geom_tile(colour = "white", linewidth = 0.35) +
   geom_text(aes(label = SigLabel), size = 2.4, colour = "black") +
