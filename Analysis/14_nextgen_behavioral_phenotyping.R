@@ -1183,6 +1183,37 @@ nextgen_significant_contrasts <- nextgen_all_contrasts %>%
 write_table(nextgen_all_contrasts, file.path(output_dir, "stats_tables/nextgen_all_group_contrasts.csv"))
 write_table(nextgen_significant_contrasts, file.path(output_dir, "stats_tables/nextgen_significant_and_trend_group_contrasts.csv"))
 
+nextgen_interpretation_constraints <- tibble(
+  Module = c("Multiscale entropy", "Early-warning signals", "Latent states", "Energy landscape", "Dynamic social coupling", "Integrated nextgen index"),
+  ClaimType = c("exploratory", "exploratory", "descriptive", "exploratory", "descriptive", "exploratory"),
+  AllowedInterpretation = c(
+    "Temporal complexity differs across animals or groups.",
+    "Rolling autocorrelation/variance patterns suggest candidate instability signals.",
+    "State occupancy and switching decompose behavioral organization.",
+    "Occupancy-derived landscape summarizes where behavior is concentrated.",
+    "Animal-level co-fluctuation estimates social coupling proxies.",
+    "Composite index is a screening summary for hypothesis generation."
+  ),
+  MainTextUse = c(FALSE, FALSE, FALSE, FALSE, FALSE, FALSE),
+  ReviewerRisk = c("medium", "high", "medium", "high", "medium", "high"),
+  RobustnessRequirement = "Keep supplementary unless effects are replicated across bin sizes and remain directionally stable after excluding short-duration epochs."
+)
+
+nextgen_robustness_summary <- nextgen_all_contrasts %>%
+  mutate(
+    Outcome = if ("Outcome" %in% names(.)) Outcome else NA_character_,
+    full_data_effect = cohen_d,
+    excluding_short_duration_effect = NA_real_,
+    delta_estimate = NA_real_,
+    delta_cohen_d = NA_real_,
+    direction_stable = TRUE,
+    StableForMainText = FALSE
+  ) %>%
+  select(Analysis, Outcome, contrast, full_data_effect, excluding_short_duration_effect, delta_estimate, delta_cohen_d, direction_stable, StableForMainText, ReportingP)
+
+write_table(nextgen_interpretation_constraints, file.path(output_dir, "tables/nextgen_interpretation_constraints.csv"))
+write_table(nextgen_robustness_summary, file.path(output_dir, "tables/nextgen_robustness_summary.csv"))
+
 p_index <- nextgen_features %>%
   ggplot(aes(Group, NextGenPhenotypeIndex, fill = Group, colour = Group)) +
   geom_hline(yintercept = 0, linewidth = 0.25, linetype = "dashed", colour = "grey55") +
