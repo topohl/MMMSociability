@@ -279,6 +279,8 @@ write_output_manifest(
   primary_tables = c(
     "tables/model_ladder_performance.csv",
     "tables/model_ladder_performance_duration_sensitivity.csv",
+    "tables/model_ladder_repeated_grouped_kfold_performance.csv",
+    "tables/prediction_interpretation_constraints.csv",
     "tables/model_ladder_incremental_summary.csv",
     "tables/primary_movement_entropyacf1_associations.csv"
   ),
@@ -617,6 +619,149 @@ write_table(incremental_summary, file.path(output_dir, "tables", "model_ladder_i
 write_table(ladder_predictions_duration_sensitivity, file.path(output_dir, "tables", "model_ladder_loo_predictions_duration_sensitivity.csv"))
 write_table(ladder_coefficients_duration_sensitivity, file.path(output_dir, "tables", "model_ladder_loo_coefficients_duration_sensitivity.csv"))
 write_table(ladder_performance_duration_sensitivity, file.path(output_dir, "tables", "model_ladder_performance_duration_sensitivity.csv"))
+
+# ------------------------------------------------
+# GROUPED K-FOLD COMPANION: BEHAVIOR-ONLY PRIMARY CLAIM
+# ------------------------------------------------
+
+make_grouped_folds <- function(dat, k = 5, repeats = 100, group_col = "AnimalNum", seed = 123) {
+  set.seed(seed)
+  ids <- unique(dat[[group_col]])
+  k <- min(k, length(ids))
+  map_dfr(seq_len(repeats), function(rep_i) {
+    shuffled <- sample(ids)
+    fold_id <- rep(seq_len(k), length.out = length(shuffled))
+    tibble(Repeat = rep_i, Fold = fold_id, !!group_col := shuffled)
+  })
+}
+
+kfold_lm_predict <- function(dat, predictors, model_name, fold_map) {
+  pred_rows <- vector("list", nrow(fold_map))
+  for (i in seq_len(nrow(fold_map))) {
+    held_out_id <- fold_map$AnimalNum[i]
+    repeat_i <- fold_map$Repeat[i]
+    fold_i <- fold_map$Fold[i]
+    train <- dat %>% filter(AnimalNum != held_out_id)
+    test <- dat %>% filter(AnimalNum == held_out_id)
+    fit <- try(lm(make_formula("outcome", predictors), data = train), silent = TRUE)
+    pred <- if (inherits(fit, "try-error")) NA_real_ else tryCatch(as.numeric(predict(fit, newdata = test)), error = function(e) NA_real_)
+    pred_rows[[i]] <- test %>%
+      transmute(
+        Repeat = repeat_i,
+        Fold = fold_i,
+        AnimalNum, Group, Sex,
+        observed = outcome,
+        predicted = pred,
+        Model = model_name
+      )
+  }
+  bind_rows(pred_rows)
+}
+
+summarise_repeated_cv <- function(pred_tbl, analysis_set) {
+  if (nrow(pred_tbl) == 0) return(tibble())
+  pred_tbl %>%
+    group_by(Model, Repeat) %>%
+    group_modify(~prediction_metrics(.x$observed, .x$predicted)) %>%
+    ungroup() %>%
+    group_by(Model) %>%
+    summarise(
+      n_repeats = n_distinct(Repeat),
+      mean_pearson_r = mean(pearson_r, na.rm = TRUE),
+      median_pearson_r = median(pearson_r, na.rm = TRUE),
+      mean_spearman_rho = mean(spearman_rho, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      mean_cv_r2 = mean(cv_r2_vs_mean, na.rm = TRUE),
+      cv_r2_ci_low = quantile(cv_r2_vs_mean, 0.025, na.rm = TRUE, names = FALSE),
+      cv_r2_ci_high = quantile(cv_r2_vs_mean, 0.975, na.rm = TRUE, names = FALSE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      BinLevel = bin_level,
+      Outcome = outcome_col,
+      CVScheme = "repeated_grouped_kfold_leave_animals_intact",
+      DurationAnalysisSet = analysis_set
+    )
+}
+
+behavior_predictors <- c("Movement_mean", "Movement_rmssd", "Entropy_acf1")
+compact_behavior_predictors <- c(
+  "Movement_mean", "Movement_rmssd", "Movement_acf1",
+  "Entropy_mean", "Entropy_rmssd", "Entropy_acf1",
+  "Proximity_mean"
+)
+behavior_only_specs <- list(
+  "Behavior-only: mean" = character(0),
+  "Behavior-only: movement mean" = "Movement_mean",
+  "Behavior-only: movement + entropy persistence" = c("Movement_mean", "Entropy_acf1"),
+  "Behavior-only: primary family" = behavior_predictors,
+  "Behavior-only: compact dynamics" = compact_behavior_predictors
+) %>%
+  map(~.x[.x %in% names(model_dat)])
+
+behavior_group_specs <- map(behavior_only_specs, ~unique(c(.x, candidate_covars))) %>%
+  set_names(str_replace(names(behavior_only_specs), "Behavior-only", "Behavior + group/sex"))
+
+cv_specs <- c(behavior_only_specs, behavior_group_specs)
+cv_predictors <- unique(unlist(cv_specs))
+cv_predictors <- cv_predictors[cv_predictors %in% names(model_dat) & sapply(model_dat[cv_predictors], is.numeric)]
+cv_model_dat <- impute_numeric(model_dat, cv_predictors)
+fold_map <- make_grouped_folds(cv_model_dat, k = 5, repeats = 100, seed = 321)
+repeated_cv_predictions <- imap_dfr(cv_specs, ~kfold_lm_predict(cv_model_dat, .x, .y, fold_map))
+repeated_cv_performance <- summarise_repeated_cv(repeated_cv_predictions, "full")
+
+repeated_cv_no_short_predictions <- tibble()
+repeated_cv_no_short_performance <- tibble()
+if (nrow(no_short_model_dat) >= 8) {
+  no_short_cv_dat <- impute_numeric(no_short_model_dat, cv_predictors)
+  no_short_fold_map <- make_grouped_folds(no_short_cv_dat, k = 5, repeats = 100, seed = 322)
+  repeated_cv_no_short_predictions <- imap_dfr(cv_specs, ~kfold_lm_predict(no_short_cv_dat, .x, .y, no_short_fold_map))
+  repeated_cv_no_short_performance <- summarise_repeated_cv(repeated_cv_no_short_predictions, "excluding_short_duration")
+}
+
+repeated_cv_performance_all <- bind_rows(repeated_cv_performance, repeated_cv_no_short_performance) %>%
+  group_by(Model) %>%
+  mutate(
+    full_mean_cv_r2 = mean_cv_r2[DurationAnalysisSet == "full"][1],
+    delta_mean_cv_r2_vs_full = mean_cv_r2 - full_mean_cv_r2
+  ) %>%
+  ungroup() %>%
+  select(-full_mean_cv_r2)
+
+prediction_interpretation_constraints <- tibble(
+  Constraint = c(
+    "Primary evidence",
+    "Group-label circularity",
+    "Behavior + group models",
+    "Cross-validation unit",
+    "Permutation testing",
+    "Duration robustness",
+    "Allowed language"
+  ),
+  Interpretation = c(
+    "Use behavior-only models to support early behavior predicting later stress burden.",
+    "RES/SUS group labels may be derived from CombZ, so group terms should not be treated as independent prospective predictors.",
+    "Use behavior + group/sex models as descriptive adjustment/sensitivity analyses, not as the central claim.",
+    "Grouped folds keep all observations from an animal together; the animal is the biological unit.",
+    "Permutation p-values test full-pipeline prediction strength for the final observed predictions.",
+    "Main-text claims require consistent full-data and excluding-short-duration performance.",
+    "Use predictive/associative wording; avoid causal or biomarker language without external validation."
+  ),
+  ManuscriptUse = c(
+    "Main Results",
+    "Methods/Limitations",
+    "Supplementary",
+    "Methods",
+    "Methods/Statistics",
+    "Reviewer robustness",
+    "Discussion"
+  )
+)
+
+write_table(repeated_cv_predictions, file.path(output_dir, "tables", "model_ladder_repeated_grouped_kfold_predictions.csv"))
+write_table(repeated_cv_performance_all, file.path(output_dir, "tables", "model_ladder_repeated_grouped_kfold_performance.csv"))
+write_table(prediction_interpretation_constraints, file.path(output_dir, "tables", "prediction_interpretation_constraints.csv"))
 
 # ------------------------------------------------
 # FIGURES
