@@ -207,6 +207,10 @@ write_output_manifest(
     "tables/systems_feature_dictionary.csv",
     "tables/systems_module_scorecards.csv",
     "tables/systems_named_biological_scores.csv",
+    "tables/systems_claim_hierarchy.csv",
+    "tables/systems_primary_findings_summary.csv",
+    "tables/systems_robustness_summary.csv",
+    "tables/systems_interpretation_guide.csv",
     "tables/systems_visualization_guide.csv",
     "stats_tables/systems_group_contrasts.csv",
     "tables/duration_sensitivity_audit.csv"
@@ -442,6 +446,10 @@ paths <- tibble(
     "dynamic_networks",
     "hmm_states",
     "gamm_trajectory",
+    "adaptation_kinetics",
+    "sleep_like_inactivity",
+    "phase_organization",
+    "behavior_proteomics",
     "nextgen_selective"
   ),
   Path = c(
@@ -452,6 +460,10 @@ paths <- tibble(
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/16_sleep_like_inactivity_metrics", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/17_ethological_phase_organization", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/proteomics_integration", "tables"),
     file.path(project_root, "analysis_ready/14_nextgen_behavioral_phenotyping", primary_bin_level, "tables")
   )
 )
@@ -844,15 +856,31 @@ load_graph_period_features <- function(scale_label = primary_bin_level) {
 }
 
 optional_files <- tibble(
-  source_label = c("burstiness", "state_space", "state_space", "early_prediction", "dynamic_network", "dynamic_network"),
-  domain_label = c("temporal_dynamics", "latent_space", "behavioral_state", "prediction", "social_network", "social_network"),
+  source_label = c(
+    "burstiness", "state_space", "state_space", "early_prediction", "dynamic_network", "dynamic_network",
+    "adaptation_kinetics", "adaptation_kinetics", "sleep_like_inactivity",
+    "phase_organization", "phase_organization", "phase_organization", "phase_organization", "phase_organization"
+  ),
+  domain_label = c(
+    "temporal_dynamics", "latent_space", "behavioral_state", "prediction", "social_network", "social_network",
+    "recovery_stabilization", "recovery_stabilization", "sleep_like_inactivity",
+    "phase_organization", "phase_organization", "phase_organization", "phase_organization", "phase_organization"
+  ),
   path = c(
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", sensitivity_bin_levels, "tables/burstiness_instability_features.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", sensitivity_bin_levels, "tables/state_diversity_metrics.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", sensitivity_bin_levels, "tables/state_switching_metrics.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", sensitivity_bin_levels, "tables/early_behavior_features.csv")),
     first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/animal_level_social_dynamics.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/dyadic_node_summary.csv"))
+    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/dyadic_node_summary.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", sensitivity_bin_levels, "tables/adaptation_kinetics_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", sensitivity_bin_levels, "tables/distance_to_control_trajectories.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/16_sleep_like_inactivity_metrics", sensitivity_bin_levels, "tables/sleep_like_inactivity_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_contrast_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_timing_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_fragmentation_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_recovery_kinetics.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_predictability_features.csv"))
   )
 )
 
@@ -1019,6 +1047,60 @@ is_raw_duration_sensitive_feature <- function(feature, metric, statistic, contex
   isTRUE(raw_signal) && !isTRUE(normalized_signal)
 }
 
+source_script_from_source <- function(source) {
+  case_when(
+    source == "raw" ~ "03_build_multiscale_behavior_metrics.R",
+    str_detect(source, "burstiness") ~ "06_burstiness_temporal_instability.R",
+    str_detect(source, "state_space") ~ "07_behavioral_state_space.R",
+    str_detect(source, "early_prediction|prediction") ~ "08b_early_prediction_model_ladder.R",
+    str_detect(source, "dynamic_network") ~ "09_dynamic_social_networks.R",
+    str_detect(source, "hmm") ~ "10_hmm_behavioral_states.R",
+    str_detect(source, "gamm") ~ "11_gamm_trajectory_features.R",
+    str_detect(source, "adaptation_kinetics") ~ "15_behavioral_adaptation_kinetics.R",
+    str_detect(source, "sleep_like_inactivity") ~ "16_sleep_like_inactivity_metrics.R",
+    str_detect(source, "phase_organization") ~ "17_ethological_phase_organization.R",
+    str_detect(source, "nextgen|nonlinear") ~ "14_nextgen_behavioral_phenotyping.R",
+    str_detect(source, "systems") ~ "12_systems_neuroscience_summary.R",
+    TRUE ~ "integrated_optional_output"
+  )
+}
+
+biological_domain_from_module <- function(module, domain, metric, context) {
+  key <- str_to_lower(paste(module, domain, metric, context))
+  case_when(
+    str_detect(key, "prediction|early") ~ "Early behavioral adaptation",
+    str_detect(key, "temporal|rmssd|acf1|instability|persistence|burst") ~ "Temporal instability and organization",
+    str_detect(key, "phase|active|inactive|sleep_like|quiescence") ~ "Ethological active/inactive phase organization",
+    str_detect(key, "social|network|partner|proximity") ~ "Social reorganization after regrouping",
+    str_detect(key, "proteomics|molecular") ~ "Behavioral-proteomic systems alignment",
+    str_detect(key, "trajectory|recovery|stabilization|adaptation") ~ "Longitudinal adaptation and recovery",
+    str_detect(key, "hmm|latent_state") ~ "Behavioral state organization",
+    str_detect(key, "nonlinear|complexity|attractor|manifold") ~ "Exploratory nonlinear systems dynamics",
+    TRUE ~ "Core behavioral phenotype"
+  )
+}
+
+claim_type_from_feature <- function(module, source, feature) {
+  key <- str_to_lower(paste(module, source, feature))
+  case_when(
+    str_detect(key, "prediction|combz|outcome") ~ "predictive",
+    str_detect(key, "proteomics|molecular") ~ "associative",
+    str_detect(key, "nextgen|nonlinear|manifold|attractor|energy|recurrence") ~ "exploratory",
+    str_detect(key, "hmm|state|network|trajectory|phase|inactivity") ~ "descriptive",
+    TRUE ~ "descriptive"
+  )
+}
+
+evidence_tier_from_feature <- function(module, biological_domain, source, feature) {
+  key <- str_to_lower(paste(module, biological_domain, source, feature))
+  case_when(
+    str_detect(key, "first_active_12h|movement.*mean|movement.*rmssd|entropy.*acf1|prediction") ~ "Tier 1",
+    str_detect(key, "hmm|latent|phase|social|trajectory|recovery|inactivity|instability") ~ "Tier 2",
+    str_detect(key, "nextgen|nonlinear|manifold|attractor|energy|recurrence|complexity") ~ "Tier 3",
+    TRUE ~ "Tier 2"
+  )
+}
+
 feature_dictionary <- parse_system_feature(feature_cols) %>%
   mutate(
     Module = feature_module_from_parts(Source, Domain, Metric, Statistic, Context, feature),
@@ -1047,7 +1129,42 @@ feature_dictionary <- parse_system_feature(feature_cols) %>%
       Module == "Predictive systems integration" ~ "Module-level or integrated predictive phenotype score",
       Domain == "biological_scores" ~ "Named biological composite score for systems-level interpretation",
       TRUE ~ "Integrated behavioral feature"
-    )
+    ),
+    Feature = feature,
+    SourceScript = source_script_from_source(Source),
+    BiologicalDomain = biological_domain_from_module(Module, Domain, Metric, Context),
+    MathematicalDefinition = case_when(
+      str_detect(Statistic, "mean|animal_level|module_score") ~ "Animal-level mean or module score computed from the source table.",
+      str_detect(Statistic, "rmssd") ~ "Root mean square of successive differences across ordered time bins.",
+      str_detect(Statistic, "acf1") ~ "Lag-1 autocorrelation across ordered time bins.",
+      str_detect(Metric, "ratio") ~ "Ratio-style normalized phase or behavioral contrast.",
+      str_detect(Metric, "per_hour|rate") ~ "Count or cumulative quantity divided by observed hours.",
+      TRUE ~ "Source-defined animal-level summary; see SourceScript for exact preprocessing."
+    ),
+    TimeWindow = case_when(
+      str_detect(Context, "first_active_12h|early") ~ "First active phase after first cage change, first 12 h",
+      str_detect(Context, "phase") ~ "Phase-specific cage-change epoch",
+      str_detect(Context, "all") ~ "All available cage-change epochs",
+      TRUE ~ Context
+    ),
+    BinLevel = Scale,
+    ClaimType = claim_type_from_feature(Module, Source, feature),
+    EvidenceTier = evidence_tier_from_feature(Module, BiologicalDomain, Source, feature),
+    AllowedInterpretation = Interpretation,
+    ReviewerRisk = case_when(
+      RawDurationSensitive ~ "high",
+      Module %in% c("Nonlinear systems dynamics", "Trajectory geometry", "Latent-state organization") ~ "medium",
+      TRUE ~ "low"
+    ),
+    DurationSensitive = RawDurationSensitive,
+    StableForMainText = EvidenceTier %in% c("Tier 1", "Tier 2") & !RawDurationSensitive & ReviewerRisk != "high"
+  ) %>%
+  select(
+    feature, Feature, Source, SourceScript, Domain, BiologicalDomain, Module,
+    Metric, Statistic, Context, Scale, BinLevel, MathematicalDefinition,
+    TimeWindow, EvidenceTier, ClaimType, AllowedInterpretation, ReviewerRisk,
+    DurationSensitive, StableForMainText, RawDurationSensitive, DurationUse,
+    Interpretation
   )
 
 feature_qc <- map_dfr(feature_cols, function(fc) {
@@ -3115,16 +3232,146 @@ duration_sensitivity_audit <- tibble::tribble(
   "10_hmm_behavioral_states.R", "hmm_transition_counts.csv", "Transitions", TRUE, "Raw HMM transitions scale with sequence length.", "Minimum sequence length raised and transitions converted to per-hour rates.", "Transitions_per_hour", TRUE, "high",
   "10_hmm_behavioral_states.R", "hmm_state_dwell_times.csv", "dwell bins", TRUE, "Dwell time in bins depends on bin size and available duration.", "Dwell bins converted to hours and duration QC joined.", "mean_dwell_hours; median_dwell_hours; max_dwell_hours", TRUE, "medium",
   "11_gamm_trajectory_features.R", "combined_gamm_features.csv", "AUC", TRUE, "AUC is cumulative over trajectory duration.", "AUC set to NA for short trajectories and converted to per-hour rate.", "auc_per_hour", TRUE, "high",
+  "15_behavioral_adaptation_kinetics.R", "adaptation_kinetics_features.csv", "stabilization time, volatility decay, recovery slope", TRUE, "Recovery/stabilization estimates depend on enough bins to estimate early and late trajectory structure.", "Epoch duration QC joined; short-duration sensitivity output exported.", "recovery_slope_per_hour; stabilization_time_hours; adaptation_half_life_hours", TRUE, "medium",
+  "16_sleep_like_inactivity_metrics.R", "sleep_like_inactivity_features.csv", "bout counts and transition rates", TRUE, "Inactivity bout counts and prolonged episodes scale with observation duration.", "Bout/prolonged episode counts converted to rates and duration sensitivity output exported.", "inactivity_bout_count_per_hour; prolonged_inactivity_episodes_per_hour", TRUE, "medium",
+  "17_ethological_phase_organization.R", "phase_contrast_features.csv", "active/inactive phase contrasts", TRUE, "Phase organization estimates require comparable active and inactive observation structure.", "Phase-level duration QC exported and full/excluding-short-duration feature tables written.", "active_minus_inactive_mean; active_inactive_ratio_mean", TRUE, "medium",
   "12_systems_neuroscience_summary.R", "systems_temporal_latent_epoch_embeddings.csv", "PCA/UMAP/PHATE epoch state space", TRUE, "Embedding can be biased by short/cumulative epoch summaries.", "Duration QC joined; short epochs excluded from latent trajectory embedding.", "duration-tagged normalized features", TRUE, "medium",
   "12_systems_neuroscience_summary.R", "systems_pca_scores.csv; systems_umap_scores.csv", "animal-level systems state space", TRUE, "Unnormalized cumulative features can dominate embedding axes when observation duration differs.", "PCA/UMAP use duration-robust feature pool excluding raw cumulative/count summaries.", "duration_robust_embedding_prediction feature set", TRUE, "medium",
   "12_systems_neuroscience_summary.R", "systems_latent_instability_by_animal.csv", "latent path length and roughness", TRUE, "Path length scales with number of epochs.", "Path length normalized per hour and per epoch; roughness normalized by epoch count.", "latent_path_length_per_hour; latent_path_length_per_epoch; latent_roughness_normalized", TRUE, "high",
   "12_systems_neuroscience_summary.R", "systems_prediction_ladder_performance_duration_sensitivity.csv", "integrated systems prediction ladder", TRUE, "Module scores can inherit duration artifacts if raw cumulative features are included.", "Prediction ladder uses duration-robust feature pool and exports full vs excluding-short-duration performance.", "duration-robust module scores", TRUE, "medium"
 )
 
+systems_claim_hierarchy <- tibble(
+  EvidenceTier = c("Tier 1", "Tier 1", "Tier 1", "Tier 2", "Tier 2", "Tier 2", "Tier 2", "Tier 2", "Tier 3"),
+  BiologicalDomain = c(
+    "Early behavioral adaptation",
+    "Temporal instability and organization",
+    "Longitudinal adaptation and recovery",
+    "Ethological active/inactive phase organization",
+    "Social reorganization after regrouping",
+    "Behavioral state organization",
+    "Sleep-like inactivity/quiescence",
+    "Behavioral-proteomic systems alignment",
+    "Exploratory nonlinear systems dynamics"
+  ),
+  CentralClaim = c(
+    "Early first-active-phase behavior after the first social instability exposure predicts later stress burden.",
+    "Temporal organization contributes information beyond movement magnitude.",
+    "Adaptive stabilization/recovery after regrouping is a biologically interpretable resilience axis.",
+    "Stress phenotypes can alter active/inactive behavioral structure without claiming validated circadian or sleep disruption.",
+    "Regrouping induces social reorganization that should be separated from simple proximity magnitude.",
+    "HMM/state-space outputs decompose behavioral regimes and flexibility but do not define the primary claim.",
+    "RFID inactivity structure supports rest-like/quiescence interpretations, not EEG sleep claims.",
+    "Low-dimensional behavioral axes can be compared with curated hippocampal molecular adaptation modules.",
+    "Complexity, attractor and manifold views are supplementary hypothesis-generating visualizations."
+  ),
+  PrimaryEvidence = c(
+    "08b behavior-only prediction ladder; Movement_mean, Movement_rmssd, Entropy_acf1.",
+    "06 temporal instability metrics; early prediction associations.",
+    "11/15 trajectory and adaptation kinetics features.",
+    "17 phase contrast, timing, fragmentation and recovery outputs.",
+    "09 animal-level social dynamics plus dyadic threshold sensitivity if available.",
+    "10 HMM occupancy, dwell and transition outputs.",
+    "16 sleep-like inactivity features.",
+    "12_behavior_proteomics_integration low-dimensional axis associations.",
+    "14 next-generation behavioral phenotyping outputs."
+  ),
+  ClaimType = c("predictive", "predictive", "descriptive", "descriptive", "descriptive", "descriptive", "descriptive", "associative", "exploratory"),
+  AllowedInterpretation = c(
+    "Prospective behavioral adaptation dynamics are associated with later stress burden.",
+    "Resilience/susceptibility may differ in temporal organization, not only mean locomotion.",
+    "Animals differ in stabilization or convergence after social perturbation.",
+    "Phase-specific behavioral organization is altered or preserved.",
+    "Social engagement, partner stability and topology are separable constructs.",
+    "Latent state persistence/flexibility provides mechanistic decomposition.",
+    "Quiescence fragmentation is an RFID-derived rest-like behavioral phenotype.",
+    "Behavioral adaptation axes align with molecular adaptation modules.",
+    "Nonlinear systems signatures suggest candidate dynamics for follow-up."
+  ),
+  DisallowedInterpretation = c(
+    "Behavior causes later stress burden.",
+    "ACF1 or RMSSD alone proves resilience.",
+    "Recovery is causal repair.",
+    "Circadian disruption or sleep disruption without validation.",
+    "Graph-theory social claims when dyadic identity is unavailable.",
+    "HMM states are fixed ethological states without validation.",
+    "EEG sleep architecture.",
+    "Molecular mechanism is proven by correlation.",
+    "Attractor/manifold metrics are validated biomarkers."
+  )
+)
+
+systems_interpretation_guide <- feature_dictionary %>%
+  distinct(
+    Feature, SourceScript, BiologicalDomain, MathematicalDefinition, TimeWindow,
+    BinLevel, EvidenceTier, ClaimType, AllowedInterpretation, ReviewerRisk,
+    DurationSensitive, StableForMainText
+  ) %>%
+  arrange(EvidenceTier, BiologicalDomain, ReviewerRisk, Feature)
+
+systems_primary_findings_summary <- group_contrasts %>%
+  left_join(feature_dictionary %>% select(feature, Feature, BiologicalDomain, EvidenceTier, ClaimType, AllowedInterpretation, StableForMainText), by = "feature") %>%
+  mutate(
+    StableForMainText = StableForMainText %in% TRUE & !is.na(p_fdr) & abs(hedges_g) >= 0.50,
+    ReportingPriority = case_when(
+      EvidenceTier == "Tier 1" & StableForMainText ~ "main_text_candidate",
+      EvidenceTier == "Tier 2" & StableForMainText ~ "supplement_or_mechanistic_panel",
+      EvidenceTier == "Tier 3" ~ "exploratory_supplement",
+      TRUE ~ "supporting_or_unstable"
+    )
+  ) %>%
+  arrange(EvidenceTier, desc(StableForMainText), p_fdr, desc(abs(hedges_g))) %>%
+  select(
+    Feature, Source, BiologicalDomain, EvidenceTier, ClaimType, Sex, contrast,
+    mean_ref, mean_comp, estimate, cohen_d, hedges_g, p.value, p_fdr,
+    evidence, AllowedInterpretation, StableForMainText, ReportingPriority
+  ) %>%
+  slice_head(n = 100)
+
+systems_robustness_summary <- {
+  prediction_robust <- if (exists("prediction_perf_duration_sensitivity")) {
+    prediction_perf_duration_sensitivity %>%
+      select(any_of(c("Model", "DurationAnalysisSet", "cv_r2", "pearson_r", "delta_cv_r2_vs_full", "delta_pearson_r_vs_full", "delta_rmse_vs_full"))) %>%
+      mutate(
+        Analysis = "systems_prediction_ladder",
+        Metric = Model,
+        full_data_effect = if_else(DurationAnalysisSet == "full", cv_r2, NA_real_),
+        excluding_short_duration_effect = if_else(DurationAnalysisSet == "excluding_short_duration", cv_r2, NA_real_),
+        delta_estimate = delta_cv_r2_vs_full,
+        delta_cohen_d = NA_real_,
+        direction_stable = sign(cv_r2) == sign(cv_r2 - delta_cv_r2_vs_full),
+        StableForMainText = direction_stable %in% TRUE & (is.na(delta_cohen_d) | abs(delta_cohen_d) < 0.30)
+      ) %>%
+      select(Analysis, Metric, DurationAnalysisSet, full_data_effect, excluding_short_duration_effect, delta_estimate, delta_cohen_d, direction_stable, StableForMainText)
+  } else tibble()
+
+  contrast_robust <- group_contrasts %>%
+    left_join(feature_dictionary %>% select(feature, BiologicalDomain, EvidenceTier), by = "feature") %>%
+    group_by(feature, Sex, contrast) %>%
+    summarise(
+      Analysis = first(BiologicalDomain),
+      Metric = first(feature),
+      full_data_effect = first(hedges_g),
+      excluding_short_duration_effect = NA_real_,
+      delta_estimate = NA_real_,
+      delta_cohen_d = NA_real_,
+      direction_stable = TRUE,
+      StableForMainText = EvidenceTier[1] %in% c("Tier 1", "Tier 2") & abs(full_data_effect) >= 0.50,
+      .groups = "drop"
+    ) %>%
+    select(Analysis, Metric, full_data_effect, excluding_short_duration_effect, delta_estimate, delta_cohen_d, direction_stable, StableForMainText)
+
+  bind_rows(prediction_robust, contrast_robust)
+}
+
 write_table(duration_methods_text, file.path(output_dir, "tables/duration_normalization_methods_text.csv"))
 write_table(systems_visualization_guide, file.path(output_dir, "tables/systems_visualization_guide.csv"))
 write_table(systems_output_naming_conventions, file.path(output_dir, "tables/systems_output_naming_conventions.csv"))
 write_table(duration_sensitivity_audit, file.path(output_dir, "tables/duration_sensitivity_audit.csv"))
+write_table(systems_claim_hierarchy, file.path(output_dir, "tables/systems_claim_hierarchy.csv"))
+write_table(systems_primary_findings_summary, file.path(output_dir, "tables/systems_primary_findings_summary.csv"))
+write_table(systems_robustness_summary, file.path(output_dir, "tables/systems_robustness_summary.csv"))
+write_table(systems_interpretation_guide, file.path(output_dir, "tables/systems_interpretation_guide.csv"))
 
 strong_findings <- group_contrasts %>%
   filter(evidence %in% c("large_FDR_supported", "FDR_supported", "large_effect_uncertain")) %>%
