@@ -59,8 +59,23 @@ lapply(dirs, function(dir) {
 })
 
 # Load external functions from a separate script
-source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R"))
-source(paste0("C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R"))
+script_file <- tryCatch(sys.frames()[[1]]$ofile, error = function(e) NULL)
+script_dir <- if (!is.null(script_file)) dirname(script_file) else getwd()
+repo_root <- normalizePath(file.path(script_dir, ".."), mustWork = FALSE)
+function_candidates <- c(
+  file.path(repo_root, "Functions", "E9_SIS_AnimalPos-functions.R"),
+  file.path("Functions", "E9_SIS_AnimalPos-functions.R"),
+  file.path("..", "Functions", "E9_SIS_AnimalPos-functions.R"),
+  "C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/E9_SIS_AnimalPos-functions.R"
+)
+shared_helper_candidates <- c(
+  file.path(repo_root, "Functions", "behavioral_dynamics_helpers.R"),
+  file.path("Functions", "behavioral_dynamics_helpers.R"),
+  file.path("..", "Functions", "behavioral_dynamics_helpers.R"),
+  "C:/Users/topohl/Documents/GitHub/MMMSociability/Functions/behavioral_dynamics_helpers.R"
+)
+source(function_candidates[file.exists(function_candidates)][1])
+source(shared_helper_candidates[file.exists(shared_helper_candidates)][1])
 
 legacy_group_colors <- c("con" = mmm_group_colors[["CON"]], "res" = mmm_group_colors[["RES"]], "sus" = mmm_group_colors[["SUS"]])
 legacy_system_colors <- c("#2F4858", "#4D908E", "#7E9F35", "#F2A65A", "#B23A48", "#6D597A")
@@ -306,14 +321,8 @@ for (i in seq_along(consec_tibbles)) {
   value <- values[i]  # Current data category
   color_by <- ifelse(value == "CageEntropy", "System", "Group")
   ifelse(value == "CageEntropy",
-    color_palette <- c("forestgreen",
-                       "goldenrod",
-                       "steelblue",
-                       "firebrick",
-                       "darkorchid"),
-    color_palette <- c("sus" = "#E63946",
-                       "res" = "grey60",
-                       "con" = "#457B9D")
+    color_palette <- legacy_system_colors,
+    color_palette <- legacy_group_colors
   )
 
   message(value)  # Log the current data category being processed
@@ -355,7 +364,7 @@ for (i in seq_along(consec_tibbles)) {
       scale_y_continuous(paste(value)) +
       scale_x_discrete(name = consec_phase) +
       facet_grid(Sex ~ .) +
-      theme_minimal(base_size = 14) +
+      legacy_publication_theme(base_size = 9) +
       theme(
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -619,7 +628,7 @@ for (i in c(1, 2, 3, 4)) {
 }
 
  # color_by <- ifelse(value == "CageEntropy", "System", "Group")
- # ifelse(value == "CageEntropy", color_palette <- c("forestgreen", "goldenrod", "steelblue", "firebrick", "darkorchid"), color_palette <- c("con" = "#1e3791", "res" = "#8aacdb", "sus" = "#f49620"))
+# ifelse(value == "CageEntropy", color_palette <- legacy_system_colors, color_palette <- legacy_group_colors)
 
 #----------------------------------------------
 # STATISTICS AND PLOTS FOR CAGE CHANGE (CC) TIBBLES
@@ -643,14 +652,8 @@ for (i in seq_along(cage_change_datas)) {
   value <- values[i]  # Current data category
   color_by <- ifelse(value == "CageEntropy", "System", "Group")
   ifelse(value == "CageEntropy",
-         color_palette <- c("forestgreen",
-                            "goldenrod",
-                            "steelblue",
-                            "firebrick",
-                            "darkorchid"),
-         color_palette <- c("con" = "#1e3791",
-                            "res" = "#8aacdb",
-                            "sus" = "#f49620"))
+         color_palette <- legacy_system_colors,
+         color_palette <- legacy_group_colors)
 
   message(value)  # Log the current data category being processed
 
@@ -686,7 +689,7 @@ for (i in seq_along(cage_change_datas)) {
       scale_y_continuous(paste(value)) +
       scale_x_discrete(name = "Cage Change") +
       facet_grid(Sex ~ .) +
-      theme_minimal(base_size = 14) +
+      legacy_publication_theme(base_size = 9) +
       theme(panel.grid.major = element_blank(),
             panel.grid.minor = element_blank(),
             plot.title = element_text(hjust = 0.5,
@@ -750,9 +753,7 @@ for (i in seq_along(cage_change_datas)) {
         scale_y_discrete("Rank", limits = c("1", "2", "3", "4")) +
         labs(title = paste("Median rank of each individual"),
              subtitle = paste(value, "-", phase)) +
-        scale_color_manual(values = c("con" = "#1e3791",
-                                      "res" = "#8aacdb",
-                                      "sus" = "#f49620")) +
+        scale_color_manual(values = legacy_group_colors) +
         stat_summary(
           fun.min = function(z) {quantile(z, 0.25)},  # Lower quartile
           fun.max = function(z) {quantile(z, 0.75)},  # Upper quartile
@@ -761,7 +762,7 @@ for (i in seq_along(cage_change_datas)) {
           size = 0.8,
           shape = 16) +
         facet_grid(Sex ~ .) +
-        theme_minimal(base_size = 14) +
+        legacy_publication_theme(base_size = 9) +
         theme(panel.grid.major = element_blank(),
               panel.grid.minor = element_blank(),
               plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
