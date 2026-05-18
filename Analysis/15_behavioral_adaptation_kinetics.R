@@ -47,6 +47,30 @@ primary_metrics <- c("Movement", "Entropy", "Proximity")
 early_fraction <- 0.25
 late_fraction <- 0.25
 
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  mean(x)
+}
+
+safe_median <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  median(x)
+}
+
+safe_min <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  min(x)
+}
+
+safe_max <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  max(x)
+}
+
 output_dirs <- analysis_output_dirs(output_dir)
 write_output_manifest(
   output_dir,
@@ -94,16 +118,16 @@ long_dat <- behav %>%
 control_profile <- long_dat %>%
   filter(as.character(Group) == "CON") %>%
   group_by(CageChange, PhaseClass, Metric, WithinEpochRank) %>%
-  summarise(control_mean = mean(Value, na.rm = TRUE), .groups = "drop")
+  summarise(control_mean = safe_mean(Value), .groups = "drop")
 
 distance_to_control <- long_dat %>%
   left_join(control_profile, by = c("CageChange", "PhaseClass", "Metric", "WithinEpochRank")) %>%
   mutate(abs_distance_to_control = abs(Value - control_mean)) %>%
   group_by(BinLevel, AnimalNum, Group, Sex, CageChange, CageChangeIndex, PhaseClass, Metric) %>%
   summarise(
-    mean_distance_to_control = mean(abs_distance_to_control, na.rm = TRUE),
-    early_distance_to_control = mean(abs_distance_to_control[EpochFraction <= early_fraction], na.rm = TRUE),
-    late_distance_to_control = mean(abs_distance_to_control[EpochFraction >= 1 - late_fraction], na.rm = TRUE),
+    mean_distance_to_control = safe_mean(abs_distance_to_control),
+    early_distance_to_control = safe_mean(abs_distance_to_control[EpochFraction <= early_fraction]),
+    late_distance_to_control = safe_mean(abs_distance_to_control[EpochFraction >= 1 - late_fraction]),
     control_convergence = early_distance_to_control - late_distance_to_control,
     .groups = "drop"
   )
@@ -112,18 +136,18 @@ adaptation_features <- long_dat %>%
   group_by(BinLevel, AnimalNum, Group, Sex, CageChange, CageChangeIndex, PhaseClass, Metric) %>%
   summarise(
     n_bins = n(),
-    mean_value = mean(Value, na.rm = TRUE),
-    early_mean = mean(Value[EpochFraction <= early_fraction], na.rm = TRUE),
-    late_mean = mean(Value[EpochFraction >= 1 - late_fraction], na.rm = TRUE),
+    mean_value = safe_mean(Value),
+    early_mean = safe_mean(Value[EpochFraction <= early_fraction]),
+    late_mean = safe_mean(Value[EpochFraction >= 1 - late_fraction]),
     early_late_shift = late_mean - early_mean,
-    rebound_magnitude = max(Value, na.rm = TRUE) - early_mean,
+    rebound_magnitude = safe_max(Value) - early_mean,
     volatility_early = calc_rmssd(Value[EpochFraction <= 0.50]),
     volatility_late = calc_rmssd(Value[EpochFraction > 0.50]),
     volatility_decay = volatility_early - volatility_late,
     recovery_slope = if (sum(is.finite(Value)) >= 6) unname(coef(lm(Value ~ EpochHour))[2]) else NA_real_,
     stabilization_time_bins = {
-      baseline <- median(Value[EpochFraction >= 0.75], na.rm = TRUE)
-      tol <- sd(Value, na.rm = TRUE) * 0.50
+      baseline <- safe_median(Value[EpochFraction >= 0.75])
+      tol <- sd(Value[is.finite(Value)]) * 0.50
       stable_idx <- which(abs(Value - baseline) <= tol)
       if (length(stable_idx) == 0 || !is.finite(tol)) NA_real_ else min(stable_idx)
     },
@@ -131,8 +155,10 @@ adaptation_features <- long_dat %>%
       start <- early_mean
       target <- late_mean
       half_target <- start + 0.5 * (target - start)
-      idx <- which(abs(Value - half_target) == min(abs(Value - half_target), na.rm = TRUE))[1]
-      if (length(idx) == 0) NA_real_ else idx
+      distance_to_half <- abs(Value - half_target)
+      min_distance <- safe_min(distance_to_half)
+      idx <- which(distance_to_half == min_distance)[1]
+      if (length(idx) == 0 || !is.finite(min_distance)) NA_real_ else idx
     },
     .groups = "drop"
   ) %>%
