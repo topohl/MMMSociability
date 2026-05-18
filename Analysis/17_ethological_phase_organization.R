@@ -68,8 +68,8 @@ behav <- standardize_behavior_columns(raw_dat, proximity_col = proximity_col) %>
   mutate(
     Group = factor(as.character(Group), levels = unique(c(mmm_group_levels, sort(unique(as.character(Group)))))),
     PhaseClass = case_when(
-      str_detect(str_to_lower(as.character(Phase)), "active|dark|night") ~ "Active",
       str_detect(str_to_lower(as.character(Phase)), "inactive|light|day") ~ "Inactive",
+      str_detect(str_to_lower(as.character(Phase)), "active|dark|night") ~ "Active",
       TRUE ~ as.character(Phase)
     ),
     CageChangeIndex = suppressWarnings(as.integer(str_extract(as.character(CageChange), "\\d+"))),
@@ -107,6 +107,15 @@ phase_summary <- long_dat %>%
     .groups = "drop"
   ) %>%
   join_duration_qc(epoch_duration_qc, by_cols = c("AnimalNum", "Group", "Sex", "CageChange"))
+
+missing_phase_classes <- setdiff(c("Active", "Inactive"), unique(as.character(phase_summary$PhaseClass)))
+if (length(missing_phase_classes) > 0) {
+  stop(
+    "Phase contrast analysis requires both Active and Inactive phases. Missing: ",
+    paste(missing_phase_classes, collapse = ", "),
+    call. = FALSE
+  )
+}
 
 phase_contrast_features <- phase_summary %>%
   select(BinLevel, AnimalNum, Group, Sex, CageChange, CageChangeIndex, PhaseClass, Metric, phase_mean, phase_rmssd, phase_acf1) %>%
