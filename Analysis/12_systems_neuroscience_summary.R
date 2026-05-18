@@ -366,6 +366,24 @@ standardize_id_columns <- function(dat) {
     )
 }
 
+collapse_to_animal_rows <- function(dat) {
+  if (is.null(dat) || nrow(dat) == 0 || !"AnimalNum" %in% names(dat)) return(dat)
+  dat %>%
+    group_by(AnimalNum) %>%
+    summarise(
+      across(where(is.numeric), ~ mean(.x, na.rm = TRUE)),
+      across(
+        where(~ !is.numeric(.x)),
+        ~ {
+          vals <- .x[!is.na(.x) & as.character(.x) != ""]
+          if (length(vals) == 0) NA else vals[1]
+        }
+      ),
+      .groups = "drop"
+    ) %>%
+    mutate(across(where(is.numeric), ~ ifelse(is.nan(.x), NA_real_, .x)))
+}
+
 make_feature_name <- function(source, domain, scale, metric, statistic, context = "global") {
   paste(
     safe_name(source),
@@ -405,13 +423,17 @@ dominant_state_by_profile <- function(state_summary, prefer = c("inactive", "exp
       Movement_z = safe_numeric(.data[["Movement_z"]]),
       Entropy_z = safe_numeric(.data[["Entropy_z"]]),
       Proximity_z = safe_numeric(.data[["Proximity_z"]]),
-      state_score = case_when(
-        prefer == "inactive" ~ -Movement_z - Entropy_z,
-        prefer == "explore" ~ Entropy_z + Movement_z - Proximity_z,
-        prefer == "burst" ~ Movement_z,
-        prefer == "social" ~ Proximity_z,
-        TRUE ~ NA_real_
-      )
+      state_score = if (prefer == "inactive") {
+        -Movement_z - Entropy_z
+      } else if (prefer == "explore") {
+        Entropy_z + Movement_z - Proximity_z
+      } else if (prefer == "burst") {
+        Movement_z
+      } else if (prefer == "social") {
+        Proximity_z
+      } else {
+        NA_real_
+      }
     ) %>%
     filter(is.finite(state_score))
   if (nrow(prof) == 0) return(NA_character_)
@@ -904,6 +926,7 @@ optional_wide <- if (nrow(optional_long) > 0) {
 }
 
 systems_features <- full_join(core_feature_wide, optional_wide, by = c("AnimalNum", "Group", "Sex")) %>%
+  collapse_to_animal_rows() %>%
   mutate(
     Group = factor(as.character(Group), levels = group_levels),
     Sex = factor(as.character(Sex), levels = unique(c(sex_levels, sort(unique(as.character(Sex))))))
@@ -917,8 +940,10 @@ endpoint_dat <- read_any_table(endpoint_file, sheet = endpoint_sheet)
 if (!is.null(endpoint_dat)) {
   endpoint_dat <- standardize_id_columns(endpoint_dat)
   endpoint_keep <- intersect(endpoint_cols, names(endpoint_dat))
-  endpoint_dat <- endpoint_dat %>% select(AnimalNum, all_of(endpoint_keep))
-  systems_features <- left_join(systems_features, endpoint_dat, by = "AnimalNum")
+  endpoint_dat <- endpoint_dat %>%
+    select(AnimalNum, all_of(endpoint_keep)) %>%
+    collapse_to_animal_rows()
+  systems_features <- left_join(systems_features, endpoint_dat, by = "AnimalNum", relationship = "one-to-one")
 }
 
 proteomics_dat <- read_any_table(proteomics_module_file)
@@ -928,8 +953,9 @@ if (!is.null(proteomics_dat)) {
   proteomics_numeric <- setdiff(proteomics_numeric, "AnimalNum")
   proteomics_dat <- proteomics_dat %>%
     select(AnimalNum, all_of(proteomics_numeric)) %>%
-    rename_with(~ paste0("proteomics_module__", safe_name(.x)), all_of(proteomics_numeric))
-  systems_features <- left_join(systems_features, proteomics_dat, by = "AnimalNum")
+    rename_with(~ paste0("proteomics_module__", safe_name(.x)), all_of(proteomics_numeric)) %>%
+    collapse_to_animal_rows()
+  systems_features <- left_join(systems_features, proteomics_dat, by = "AnimalNum", relationship = "one-to-one")
 }
 
 make_named_biological_scores <- function(dat) {
@@ -1028,7 +1054,7 @@ make_named_biological_scores <- function(dat) {
 }
 
 named_biological_scores <- make_named_biological_scores(systems_features)
-systems_features <- left_join(systems_features, named_biological_scores, by = "AnimalNum")
+systems_features <- left_join(systems_features, named_biological_scores, by = "AnimalNum", relationship = "one-to-one")
 
 feature_cols <- systems_features %>% select(where(is.numeric)) %>% names()
 feature_cols <- setdiff(feature_cols, c("AnimalNum", endpoint_cols))
@@ -1492,7 +1518,12 @@ if (nrow(named_biological_scores_long) > 0) {
         xaxis = list(title = "Composite score"),
         yaxis = list(title = "")
       )
-    htmlwidgets::saveWidget(interactive_named, file.path(output_dir, "figures/interactive/systems_named_biological_scores.html"), selfcontained = TRUE)
+    pandoc_available <- requireNamespace("rmarkdown", quietly = TRUE) && rmarkdown::pandoc_available()
+    htmlwidgets::saveWidget(
+      interactive_named,
+      file.path(output_dir, "figures/interactive/systems_named_biological_scores.html"),
+      selfcontained = pandoc_available
+    )
   }
 }
 
@@ -1647,6 +1678,13 @@ latent_feature_cols <- latent_epoch_features %>%
   names()
 latent_feature_cols <- setdiff(latent_feature_cols, c("CageChangeIndex", "n_bins"))
 latent_feature_cols <- setdiff(latent_feature_cols, c("observed_bins", "expected_bins", "total_observation_duration_hours", "active_duration_hours", "inactive_duration_hours", "duration_completeness_fraction", "cage_change_duration_fraction"))
+latent_feature_cols <- latent_feature_cols[
+  map_lgl(latent_feature_cols, function(fc) {
+    x <- safe_numeric(latent_epoch_features[[fc]])
+    finite_x <- x[is.finite(x)]
+    length(finite_x) >= 4 && isTRUE(sd(finite_x) > 0)
+  })
+]
 
 latent_embedding_tbl <- tibble()
 latent_trajectory_summary <- tibble()
@@ -1656,7 +1694,7 @@ p_umap_traj <- NULL
 p_phate_traj <- NULL
 p_instability <- NULL
 
-if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
+if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 2) {
   latent_mat <- latent_epoch_features %>%
     select(all_of(latent_feature_cols)) %>%
     mutate(across(everything(), ~ replace_na(.x, median(.x, na.rm = TRUE)))) %>%
@@ -1687,7 +1725,10 @@ if (nrow(latent_epoch_features) >= 20 && length(latent_feature_cols) >= 3) {
     latent_embedding_tbl <- latent_embedding_tbl %>%
       mutate(UMAP1 = NA_real_, UMAP2 = NA_real_)
   }
-  if (requireNamespace("phateR", quietly = TRUE) && nrow(latent_mat_scaled) >= 30) {
+  phate_available <- requireNamespace("phateR", quietly = TRUE) &&
+    requireNamespace("reticulate", quietly = TRUE) &&
+    isTRUE(reticulate::py_module_available("phate"))
+  if (phate_available && nrow(latent_mat_scaled) >= 30) {
     set.seed(3)
     temporal_phate <- try(
       phateR::phate(
@@ -2122,15 +2163,16 @@ social_score_tbl <- named_biological_scores_long %>%
 
 if (nrow(social_score_tbl) > 0 && all(c("social_withdrawal_score", "social_fragmentation_score") %in% names(social_score_tbl))) {
   p_social_map <- social_score_tbl %>%
+    mutate(flexibility_plot_size = replace_na(abs(exploratory_flexibility_score), 0)) %>%
     ggplot(aes(social_withdrawal_score, social_fragmentation_score, colour = Group, fill = Group)) +
     geom_hline(yintercept = 0, linewidth = 0.18, colour = "grey80") +
     geom_vline(xintercept = 0, linewidth = 0.18, colour = "grey80") +
-    geom_point(aes(size = abs(exploratory_flexibility_score)), alpha = 0.82, stroke = 0.25) +
+    geom_point(aes(size = flexibility_plot_size), alpha = 0.82, stroke = 0.25) +
     stat_ellipse(aes(group = Group), linewidth = 0.35, alpha = 0.45, show.legend = FALSE) +
     facet_grid(. ~ Sex) +
     scale_colour_manual(values = group_colors, drop = FALSE) +
     scale_fill_manual(values = group_colors, drop = FALSE) +
-    scale_size_continuous(range = c(1.4, 4.0), na.value = 1.4) +
+    scale_size_continuous(range = c(1.4, 4.0)) +
     labs(
       title = "Social phenotype map",
       subtitle = "Separates withdrawal from fragmented topology; point size reflects exploratory flexibility",
@@ -2151,15 +2193,16 @@ trajectory_score_tbl <- named_biological_scores_long %>%
 
 if (nrow(trajectory_score_tbl) > 0 && all(c("trajectory_recovery_score", "behavioral_rigidity_score") %in% names(trajectory_score_tbl))) {
   p_adaptation <- trajectory_score_tbl %>%
+    mutate(adaptation_plot_size = replace_na(stress_adaptation_index, 0)) %>%
     ggplot(aes(behavioral_rigidity_score, trajectory_recovery_score, colour = Group, fill = Group)) +
     geom_hline(yintercept = 0, linewidth = 0.18, colour = "grey80") +
     geom_vline(xintercept = 0, linewidth = 0.18, colour = "grey80") +
-    geom_point(aes(size = stress_adaptation_index), alpha = 0.84, stroke = 0.25) +
+    geom_point(aes(size = adaptation_plot_size), alpha = 0.84, stroke = 0.25) +
     geom_smooth(method = "lm", se = TRUE, colour = "grey25", fill = "grey70", linewidth = 0.35, alpha = 0.14) +
     facet_grid(. ~ Sex) +
     scale_colour_manual(values = group_colors, drop = FALSE) +
     scale_fill_manual(values = group_colors, drop = FALSE) +
-    scale_size_continuous(range = c(1.4, 4.2), na.value = 1.6) +
+    scale_size_continuous(range = c(1.4, 4.2)) +
     labs(
       title = "Adaptation phase portrait",
       subtitle = "Recovery dynamics plotted against behavioral rigidity",
@@ -2504,7 +2547,8 @@ if (length(available_outcomes) > 0) {
   p_out_heat <- top_outcome_features %>%
     mutate(DisplayFeature = paste(Metric, Statistic, Context, sep = " | "),
            DisplayFeature = str_replace_all(DisplayFeature, "_", " "),
-           DisplayFeature = factor(str_trunc(DisplayFeature, 52), levels = rev(str_trunc(DisplayFeature, 52))),
+           DisplayFeature = make.unique(str_trunc(DisplayFeature, 52)),
+           DisplayFeature = factor(DisplayFeature, levels = rev(DisplayFeature)),
            StatLabel = paste(rho_label(spearman_rho), q_label(spearman_fdr), sep = "\n"),
            LabelX = if_else(spearman_rho >= 0, pmin(spearman_rho + 0.04, 0.96), pmax(spearman_rho - 0.04, -0.96)),
            LabelHJust = if_else(spearman_rho >= 0, 0, 1)) %>%
@@ -2535,7 +2579,8 @@ if (length(available_outcomes) > 0) {
     p_prosp_heat <- top_prospective_features %>%
       mutate(DisplayFeature = paste(Metric, Statistic, Context, sep = " | "),
              DisplayFeature = str_replace_all(DisplayFeature, "_", " "),
-             DisplayFeature = factor(str_trunc(DisplayFeature, 52), levels = rev(str_trunc(DisplayFeature, 52))),
+             DisplayFeature = make.unique(str_trunc(DisplayFeature, 52)),
+             DisplayFeature = factor(DisplayFeature, levels = rev(DisplayFeature)),
              StatLabel = paste(rho_label(spearman_rho), q_label(spearman_fdr), sep = "\n"),
              LabelX = if_else(spearman_rho >= 0, pmin(spearman_rho + 0.04, 0.96), pmax(spearman_rho - 0.04, -0.96)),
              LabelHJust = if_else(spearman_rho >= 0, 0, 1)) %>%
@@ -2574,7 +2619,8 @@ if (length(available_outcomes) > 0) {
       mutate(
         DisplayFeature = paste(Metric, Statistic, Context, sep = " | "),
         DisplayFeature = str_replace_all(DisplayFeature, "_", " "),
-        DisplayFeature = factor(str_trunc(DisplayFeature, 46), levels = unique(str_trunc(DisplayFeature, 46)))
+        DisplayFeature = make.unique(str_trunc(DisplayFeature, 46)),
+        DisplayFeature = factor(DisplayFeature, levels = unique(DisplayFeature))
       )
 
     prospective_scatter_stats <- prospective_scatter_tbl %>%
@@ -2644,9 +2690,9 @@ if (length(available_outcomes) > 0) {
   } else {
     skipped_perf <- prediction_ladder$performance %>%
       mutate(
-        across(c(n, n_features, pearson_r, spearman_rho, rmse, mae, cv_r2, permutation_p,
-                 pearson_ci_low, pearson_ci_high, spearman_ci_low, spearman_ci_high,
-                 delta_cv_r2_vs_previous, delta_cv_r2_vs_movement), ~ NA_real_),
+        across(any_of(c("n", "n_features", "pearson_r", "spearman_rho", "rmse", "mae", "cv_r2", "permutation_p",
+                        "pearson_ci_low", "pearson_ci_high", "spearman_ci_low", "spearman_ci_high",
+                        "delta_cv_r2_vs_previous", "delta_cv_r2_vs_movement")), ~ NA_real_),
         DurationAnalysisSet = "excluding_short_duration",
         DurationSensitivityStatus = "skipped_too_few_animals"
       )
@@ -2686,6 +2732,16 @@ if (length(available_outcomes) > 0) {
       ModelFamily = "Module-level linear model ladder, leave-one-animal-out cross-validation",
       Preprocessing = "Features are collapsed into biologically interpretable z-scored module scores before modeling"
     )
+  if (!"delta_cv_r2_vs_previous" %in% names(prediction_perf)) {
+    prediction_perf <- prediction_perf %>%
+      arrange(ModelOrder) %>%
+      mutate(delta_cv_r2_vs_previous = cv_r2 - lag(cv_r2))
+  }
+  if (!"delta_cv_r2_vs_movement" %in% names(prediction_perf)) {
+    prediction_perf <- prediction_perf %>%
+      arrange(ModelOrder) %>%
+      mutate(delta_cv_r2_vs_movement = cv_r2 - cv_r2[Model == "movement-only"][1])
+  }
   prediction_perf_integrated <- prediction_perf %>% filter(Model == "integrated systems model") %>% slice_head(n = 1)
   prediction_coef_tbl <- prediction_ladder$coefficients
   write_table(prediction_ladder$scores, file.path(output_dir, "tables/systems_prediction_module_scores.csv"))
@@ -2725,11 +2781,14 @@ if (length(available_outcomes) > 0) {
   write_table(prediction_module_delta_tbl, file.path(output_dir, "tables/systems_prediction_module_delta_waterfall.csv"))
 
   p_delta <- prediction_module_delta_tbl %>%
-    mutate(AddedModule = factor(AddedModule, levels = AddedModule)) %>%
+    mutate(
+      AddedModule = factor(AddedModule, levels = AddedModule),
+      DeltaLabelVJust = if_else(delta_cv_r2_vs_previous >= 0, -0.2, 1.15)
+    ) %>%
     ggplot(aes(AddedModule, delta_cv_r2_vs_previous, fill = delta_cv_r2_vs_previous)) +
     geom_hline(yintercept = 0, linewidth = 0.25, colour = "grey55") +
     geom_col(width = 0.68, colour = "white", linewidth = 0.18) +
-    geom_text(aes(label = formatC(delta_cv_r2_vs_previous, format = "f", digits = 2)), vjust = if_else(delta_cv_r2_vs_previous >= 0, -0.2, 1.15), size = 1.9) +
+    geom_text(aes(label = formatC(delta_cv_r2_vs_previous, format = "f", digits = 2), vjust = DeltaLabelVJust), size = 1.9) +
     scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey85") +
     labs(
       title = "Incremental predictive value by systems module",
