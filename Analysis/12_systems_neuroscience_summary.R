@@ -60,6 +60,7 @@ repo_root <- "C:/Users/topohl/Documents/GitHub/MMMSociability"
 # use 10min_based for lower noise and prediction sensitivity.
 primary_bin_level <- "5min_based"
 sensitivity_bin_levels <- c("10sec_based", "5min_based", "10min_based", "30min_based")
+optional_import_bin_levels <- unique(c(sensitivity_bin_levels, "1min_based"))
 
 # Main output root.
 output_dir <- file.path(project_root, "analysis_ready/12_systems_neuroscience_summary", primary_bin_level)
@@ -196,6 +197,8 @@ ensure_dir(file.path(output_dir, "tables"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
 ensure_dir(file.path(output_dir, "figures/publication_panels"))
+ensure_dir(file.path(output_dir, "figures/supplementary"))
+ensure_dir(file.path(output_dir, "figures/exploratory"))
 ensure_dir(file.path(output_dir, "figures/qc"))
 output_dirs <- analysis_output_dirs(output_dir)
 write_output_manifest(
@@ -205,6 +208,8 @@ write_output_manifest(
   primary_tables = c(
     "tables/systems_animal_feature_matrix.csv",
     "tables/systems_feature_dictionary.csv",
+    "tables/systems_computation_integration_audit.csv",
+    "tables/systems_robustness_audit.csv",
     "tables/systems_module_scorecards.csv",
     "tables/systems_named_biological_scores.csv",
     "tables/systems_claim_hierarchy.csv",
@@ -468,6 +473,7 @@ paths <- tibble(
     "dynamic_networks",
     "hmm_states",
     "gamm_trajectory",
+    "nonlinear_systems_dynamics",
     "adaptation_kinetics",
     "sleep_like_inactivity",
     "phase_organization",
@@ -482,10 +488,11 @@ paths <- tibble(
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", primary_bin_level, "tables"),
+    file.path(project_root, "analysis_ready/13_nonlinear_systems_dynamics", primary_bin_level, "derived_data"),
     file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/16_sleep_like_inactivity_metrics", primary_bin_level, "tables"),
     file.path(project_root, "analysis_ready/17_ethological_phase_organization", primary_bin_level, "tables"),
-    file.path(project_root, "analysis_ready/06_behavioral_dynamics/proteomics_integration", "tables"),
+    file.path(project_root, "analysis_ready/12_behavior_proteomics_integration", "tables"),
     file.path(project_root, "analysis_ready/14_nextgen_behavioral_phenotyping", primary_bin_level, "tables")
   )
 )
@@ -880,29 +887,37 @@ load_graph_period_features <- function(scale_label = primary_bin_level) {
 optional_files <- tibble(
   source_label = c(
     "burstiness", "state_space", "state_space", "early_prediction", "dynamic_network", "dynamic_network",
-    "adaptation_kinetics", "adaptation_kinetics", "sleep_like_inactivity",
+    "nonlinear_systems", "adaptation_kinetics", "adaptation_kinetics", "sleep_like_inactivity",
     "phase_organization", "phase_organization", "phase_organization", "phase_organization", "phase_organization"
   ),
   domain_label = c(
     "temporal_dynamics", "latent_space", "behavioral_state", "prediction", "social_network", "social_network",
-    "recovery_stabilization", "recovery_stabilization", "sleep_like_inactivity",
+    "nonlinear_dynamics", "recovery_stabilization", "recovery_stabilization", "sleep_like_inactivity",
     "phase_organization", "phase_organization", "phase_organization", "phase_organization", "phase_organization"
   ),
   path = c(
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", sensitivity_bin_levels, "tables/burstiness_instability_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", sensitivity_bin_levels, "tables/state_diversity_metrics.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", sensitivity_bin_levels, "tables/state_switching_metrics.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", sensitivity_bin_levels, "tables/early_behavior_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/animal_level_social_dynamics.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", sensitivity_bin_levels, "tables/dyadic_node_summary.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", sensitivity_bin_levels, "tables/adaptation_kinetics_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", sensitivity_bin_levels, "tables/distance_to_control_trajectories.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/16_sleep_like_inactivity_metrics", sensitivity_bin_levels, "tables/sleep_like_inactivity_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_contrast_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_timing_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_fragmentation_features.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_recovery_kinetics.csv")),
-    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", sensitivity_bin_levels, "tables/phase_predictability_features.csv"))
+    first_existing_path(c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", optional_import_bin_levels, "tables/temporal_instability_metrics_per_animal_all_metrics.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", optional_import_bin_levels, "tables/burstiness_instability_features.csv")
+    )),
+    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", optional_import_bin_levels, "tables/state_diversity_metrics.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", optional_import_bin_levels, "tables/state_switching_metrics.csv")),
+    first_existing_path(c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", optional_import_bin_levels, "tables/early_behavior_features_wide.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", optional_import_bin_levels, "tables/early_behavior_features.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction_model_ladder", optional_import_bin_levels, "tables/early_behavior_features_wide.csv")
+    )),
+    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", optional_import_bin_levels, "tables/animal_level_social_dynamics.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", optional_import_bin_levels, "tables/dyadic_node_summary.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/13_nonlinear_systems_dynamics", optional_import_bin_levels, "derived_data/animal_level_nonlinear_feature_matrix.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", optional_import_bin_levels, "tables/adaptation_kinetics_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", optional_import_bin_levels, "tables/distance_to_control_trajectories.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/16_sleep_like_inactivity_metrics", optional_import_bin_levels, "tables/sleep_like_inactivity_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", optional_import_bin_levels, "tables/phase_contrast_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", optional_import_bin_levels, "tables/phase_timing_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", optional_import_bin_levels, "tables/phase_fragmentation_features.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", optional_import_bin_levels, "tables/phase_recovery_kinetics.csv")),
+    first_existing_path(file.path(project_root, "analysis_ready/17_ethological_phase_organization", optional_import_bin_levels, "tables/phase_predictability_features.csv"))
   )
 )
 
@@ -910,10 +925,10 @@ optional_long <- pmap_dfr(optional_files, function(source_label, domain_label, p
   load_optional_animal_table(path, source_label, domain_label)
 }) %>%
   bind_rows(
-    map_dfr(sensitivity_bin_levels, load_hmm_system_features),
-    map_dfr(sensitivity_bin_levels, load_gamm_shape_features),
-    map_dfr(sensitivity_bin_levels, load_graph_period_features),
-    map_dfr(sensitivity_bin_levels, load_nextgen_selective_features)
+    map_dfr(optional_import_bin_levels, load_hmm_system_features),
+    map_dfr(optional_import_bin_levels, load_gamm_shape_features),
+    map_dfr(optional_import_bin_levels, load_graph_period_features),
+    map_dfr(optional_import_bin_levels, load_nextgen_selective_features)
   )
 
 optional_wide <- if (nrow(optional_long) > 0) {
@@ -1082,6 +1097,8 @@ source_script_from_source <- function(source) {
     str_detect(source, "dynamic_network") ~ "09_dynamic_social_networks.R",
     str_detect(source, "hmm") ~ "10_hmm_behavioral_states.R",
     str_detect(source, "gamm") ~ "11_gamm_trajectory_features.R",
+    str_detect(source, "behavior_proteomics") ~ "12_behavior_proteomics_integration.R",
+    str_detect(source, "nonlinear_systems") ~ "13_nonlinear_systems_dynamics.R",
     str_detect(source, "adaptation_kinetics") ~ "15_behavioral_adaptation_kinetics.R",
     str_detect(source, "sleep_like_inactivity") ~ "16_sleep_like_inactivity_metrics.R",
     str_detect(source, "phase_organization") ~ "17_ethological_phase_organization.R",
@@ -1260,11 +1277,226 @@ feature_sets <- tibble(
   )
 )
 
+path_status <- function(paths) {
+  paths <- paths[!is.na(paths)]
+  if (length(paths) == 0) return(FALSE)
+  any(file.exists(paths))
+}
+
+integration_audit_registry <- tibble(
+  feature_module_name = c(
+    "Core multiscale behavior",
+    "Temporal burstiness and instability",
+    "Behavioral state-space",
+    "Early prediction features and model ladder",
+    "Dynamic social networks",
+    "HMM latent behavioral states",
+    "GAMM trajectory geometry",
+    "Nonlinear systems dynamics",
+    "Next-generation nonlinear phenotyping",
+    "Behavioral adaptation kinetics",
+    "Sleep-like inactivity and quiescence",
+    "Ethological active/inactive phase organization",
+    "Behavior-proteomics integration",
+    "Chip-loss and low-observation QC"
+  ),
+  SourceScript = c(
+    "03_build_multiscale_behavior_metrics.R",
+    "06_burstiness_temporal_instability.R",
+    "07_behavioral_state_space.R",
+    "08b_early_prediction_model_ladder.R",
+    "09_dynamic_social_networks.R",
+    "10_hmm_behavioral_states.R",
+    "11_gamm_trajectory_features.R",
+    "13_nonlinear_systems_dynamics.R",
+    "14_nextgen_behavioral_phenotyping.R",
+    "15_behavioral_adaptation_kinetics.R",
+    "16_sleep_like_inactivity_metrics.R",
+    "17_ethological_phase_organization.R",
+    "12_behavior_proteomics_integration.R",
+    "00_tracking_qc_rfid_loss.R"
+  ),
+  expected_outputs = I(list(
+    file.path(project_root, "analysis_ready/03_derived_metrics", primary_bin_level, "all_behavior_metrics.csv"),
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/burstiness", primary_bin_level, "tables/temporal_instability_metrics_per_animal_all_metrics.csv"),
+    c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", c("1min_based", optional_import_bin_levels), "tables/state_diversity_metrics.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/state_space", c("1min_based", optional_import_bin_levels), "tables/state_switching_metrics.csv")
+    ),
+    c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", optional_import_bin_levels, "tables/early_behavior_features.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction_model_ladder", optional_import_bin_levels, "tables/early_behavior_features_wide.csv")
+    ),
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/social_networks", primary_bin_level, "tables/animal_level_social_dynamics.csv"),
+    file.path(project_root, "analysis_ready/06_behavioral_dynamics/hmm_states", optional_import_bin_levels, "tables/hmm_state_occupancy.csv"),
+    c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_trajectory_features", optional_import_bin_levels, "tables/combined_gamm_features.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/gamm_features", optional_import_bin_levels, "tables/combined_gamm_features.csv")
+    ),
+    file.path(project_root, "analysis_ready/13_nonlinear_systems_dynamics", primary_bin_level, "derived_data/animal_level_nonlinear_feature_matrix.csv"),
+    file.path(project_root, "analysis_ready/14_nextgen_behavioral_phenotyping", primary_bin_level, "tables/nextgen_behavioral_phenotype_matrix.csv"),
+    file.path(project_root, "analysis_ready/15_behavioral_adaptation_kinetics", primary_bin_level, "tables/adaptation_kinetics_features.csv"),
+    file.path(project_root, "analysis_ready/16_sleep_like_inactivity_metrics", primary_bin_level, "tables/sleep_like_inactivity_features.csv"),
+    file.path(project_root, "analysis_ready/17_ethological_phase_organization", primary_bin_level, "tables/phase_contrast_features.csv"),
+    c(
+      proteomics_module_file,
+      file.path(project_root, "analysis_ready/12_behavior_proteomics_integration", "tables/behavior_proteomics_merged.csv")
+    ),
+    c(
+      file.path(project_root, "analysis_ready/00_tracking_qc_rfid_loss", "tables/tracking_qc_by_animal.csv"),
+      file.path(dirname(project_root), "raw_tracking_qc_rfid_loss", "tables/raw_tracking_qc_by_animal.csv")
+    )
+  )),
+  expected_status = c(
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    "implemented",
+    if_else(is.null(proteomics_module_file), "optional_not_requested", "implemented_if_table_valid"),
+    "qc_available_if_upstream_run"
+  ),
+  reviewer_risk = c(
+    "low", "medium", "medium", "medium", "medium", "medium", "medium",
+    "high", "high", "medium", "medium", "medium", "medium", "high"
+  ),
+  suggested_figure_placement = c(
+    "Main dashboard panel A/state-space plus module summary",
+    "Main module summary; detailed temporal plots in supplement",
+    "Supplement unless central state-space claim is emphasized",
+    "Main dashboard prediction panel and robustness table",
+    "Supplement; summarize as social topology module in main table",
+    "Supplement; semantic state labels and transition differences only if stable",
+    "Supplement; use trajectory/recovery module summary in main table",
+    "Supplement/exploratory only",
+    "Supplement/exploratory only",
+    "Supplement; summarize recovery/stabilization module in main table",
+    "Supplement; avoid EEG sleep claims",
+    "Supplement; avoid circadian/sleep claims",
+    "Supplement/associative only, and only when proteomics module table is provided",
+    "QC/robustness table, not a biological figure"
+  )
+)
+
+main_dashboard_source_scripts <- c(
+  "03_build_multiscale_behavior_metrics.R",
+  "06_burstiness_temporal_instability.R",
+  "08b_early_prediction_model_ladder.R",
+  "12_systems_neuroscience_summary.R"
+)
+
+feature_import_summary <- feature_dictionary %>%
+  count(SourceScript, name = "n_imported_features") %>%
+  mutate(imported_into_dashboard = n_imported_features > 0)
+
+systems_computation_integration_audit <- integration_audit_registry %>%
+  mutate(
+    already_available = map_lgl(expected_outputs, path_status),
+    expected_output_path = map_chr(expected_outputs, ~ paste(.x[!is.na(.x)], collapse = "; "))
+  ) %>%
+  left_join(feature_import_summary, by = "SourceScript") %>%
+  mutate(
+    n_imported_features = replace_na(n_imported_features, 0L),
+    imported_into_dashboard = replace_na(imported_into_dashboard, FALSE),
+    used_in_main_figure = SourceScript %in% main_dashboard_source_scripts & imported_into_dashboard,
+    integration_status = case_when(
+      expected_status == "optional_not_requested" ~ "optional_not_requested",
+      !already_available ~ "missing_upstream_output",
+      already_available & imported_into_dashboard ~ "available_and_imported",
+      already_available & !imported_into_dashboard ~ "available_not_imported_or_qc_only",
+      TRUE ~ "needs_review"
+    ),
+    reviewer_action = case_when(
+      feature_module_name == "Behavior-proteomics integration" & is.null(proteomics_module_file) ~
+        "Do not interpret behavior-proteomics; set proteomics_module_file to an animal-level module table to enable.",
+      feature_module_name == "Chip-loss and low-observation QC" ~
+        "Use as exclusion/sensitivity evidence; do not treat QC flags as biological phenotypes.",
+      reviewer_risk == "high" ~
+        "Keep out of main dashboard unless supported by robustness and independent validation.",
+      TRUE ~ "Use source-specific statistics and robustness tables before main-text claims."
+    )
+  ) %>%
+  select(
+    feature_module_name, SourceScript, already_available, imported_into_dashboard,
+    n_imported_features, used_in_main_figure, integration_status, reviewer_risk,
+    suggested_figure_placement, reviewer_action, expected_output_path
+  )
+
+systems_robustness_audit <- tibble(
+  robustness_check = c(
+    "Permutation baseline",
+    "Bootstrap/CI for prediction or correlations",
+    "Cross-validation",
+    "Duration sensitivity",
+    "Chip-loss / detached-chip QC",
+    "Low-observation epoch QC",
+    "Proteomics module availability"
+  ),
+  dashboard_evidence = c(
+    file.path(output_dir, "tables/systems_prediction_ladder_performance.csv"),
+    file.path(output_dir, "tables/systems_prediction_ladder_performance.csv"),
+    file.path(output_dir, "tables/systems_prediction_ladder_loo_predictions.csv"),
+    file.path(output_dir, "tables/systems_prediction_ladder_performance_duration_sensitivity.csv"),
+    file.path(project_root, "analysis_ready/00_tracking_qc_rfid_loss", "tables/tracking_qc_by_animal.csv"),
+    file.path(output_dir, "tables/systems_duration_negative_control_by_animal.csv"),
+    if (is.null(proteomics_module_file)) NA_character_ else proteomics_module_file
+  ),
+  upstream_evidence = c(
+    first_existing_path(c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction_model_ladder", primary_bin_level, "tables/model_ladder_performance.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", primary_bin_level, "tables/model_ladder_performance.csv")
+    )),
+    first_existing_path(c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction_model_ladder", primary_bin_level, "tables/model_ladder_performance.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", primary_bin_level, "tables/model_ladder_performance.csv")
+    )),
+    first_existing_path(c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction_model_ladder", primary_bin_level, "tables/model_ladder_repeated_grouped_kfold_performance.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", primary_bin_level, "tables/model_ladder_repeated_grouped_kfold_performance.csv")
+    )),
+    first_existing_path(c(
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction_model_ladder", primary_bin_level, "tables/model_ladder_performance_duration_sensitivity.csv"),
+      file.path(project_root, "analysis_ready/06_behavioral_dynamics/early_prediction", primary_bin_level, "tables/model_ladder_performance_duration_sensitivity.csv")
+    )),
+    file.path(project_root, "analysis_ready/00_tracking_qc_rfid_loss", "tables/tracking_qc_by_animal.csv"),
+    file.path(output_dir, "tables/duration_sensitivity"),
+    file.path(project_root, "analysis_ready/12_behavior_proteomics_integration", "tables/behavior_proteomics_merged.csv")
+  ),
+  interpretation = c(
+    "Permutation p-values benchmark whether LOOCV performance exceeds label-shuffled baselines.",
+    "Prediction tables contain bootstrap/Fisher-z intervals when available; group contrasts carry effect-size CIs.",
+    "Main dashboard uses LOOCV; upstream 08b repeated grouped k-fold is an external robustness companion if present.",
+    "Main prediction ladder is rerun after excluding animals with short-duration epochs when enough animals remain.",
+    "RFID chip-loss QC is a data-validity guard, not a behavioral endpoint.",
+    "Duration and completeness screens reduce false positives from low-observation epochs.",
+    "Behavior-proteomics claims remain disabled unless an animal-level proteomics module table is configured."
+  )
+) %>%
+  mutate(
+    dashboard_available = !is.na(dashboard_evidence) & file.exists(dashboard_evidence),
+    upstream_available = !is.na(upstream_evidence) & file.exists(upstream_evidence),
+    status = case_when(
+      dashboard_available ~ "dashboard_available",
+      upstream_available ~ "upstream_available_not_dashboard_specific",
+      robustness_check == "Proteomics module availability" & is.null(proteomics_module_file) ~ "optional_not_requested",
+      TRUE ~ "missing_or_not_run"
+    )
+  )
+
 write_table(systems_features, file.path(output_dir, "tables/systems_animal_feature_matrix.csv"))
 write_table(feature_dictionary, file.path(output_dir, "tables/systems_feature_dictionary.csv"))
 write_table(feature_qc, file.path(output_dir, "tables/systems_feature_qc.csv"))
 write_table(feature_sets, file.path(output_dir, "tables/systems_feature_sets.csv"))
 write_table(module_feature_sets, file.path(output_dir, "tables/systems_module_feature_inventory.csv"))
+write_table(systems_computation_integration_audit, file.path(output_dir, "tables/systems_computation_integration_audit.csv"))
+write_table(systems_robustness_audit, file.path(output_dir, "tables/systems_robustness_audit.csv"))
 
 named_biological_scores_long <- systems_features %>%
   select(AnimalNum, Group, Sex, matches("^systems__biological_scores__")) %>%
@@ -3154,15 +3386,15 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
       theme_void()
   }
 
-  dashboard <- ((p_latent_dash | p_nonlinear_dash) / (p_pc1_outcome | p_pred_dash) / (p_instability_dash | p_heat_small)) +
-    patchwork::plot_layout(heights = c(1.05, 0.95, 1.20)) +
+  dashboard <- ((p_latent_dash | p_heat_small) / (p_pc1_outcome | p_pred_dash)) +
+    patchwork::plot_layout(heights = c(1.05, 0.95)) +
     patchwork::plot_annotation(
       title = "Behavioral dynamics of stress susceptibility",
-      subtitle = paste0("Temporal state-space trajectories, early prediction and multiscale modules; lower ", primary_outcome, " = worse endpoint"),
-      caption = "RES/SUS are CombZ-derived labels. Prediction uses first-active-window features only. Symbols denote BH FDR."
+      subtitle = paste0("Focused dashboard: integrated state space, module-level phenotype map and prospective prediction; lower ", primary_outcome, " = worse endpoint"),
+      caption = "RES/SUS are CombZ-derived labels. Prediction uses first-active-window features only. Nonlinear/HMM/social/phase/inactivity panels are exported as supplemental or exploratory outputs."
     )
 
-  save_plot_svg_pdf(dashboard, file.path(output_dir, "figures/Fig_integrated_systems_dashboard"), width = 225, height = 245)
+  save_plot_svg_pdf(dashboard, file.path(output_dir, "figures/Fig_integrated_systems_dashboard"), width = 210, height = 165)
 }
 
 # ------------------------------------------------
@@ -3182,6 +3414,7 @@ duration_methods_text <- tibble(
 
 systems_visualization_guide <- tibble(
   Figure = c(
+    "Fig_integrated_systems_dashboard",
     "Fig_systems_module_scorecard",
     "Fig_systems_named_biological_scores",
     "Fig_systems_hmm_transition_difference",
@@ -3194,6 +3427,7 @@ systems_visualization_guide <- tibble(
     "systems_named_biological_scores.html"
   ),
   PrimaryQuestion = c(
+    "What is the smallest coherent systems-neuroscience story supported by robust, integrated outputs?",
     "Which biological modules carry the strongest group effects and how duration-robust are they?",
     "How do animals distribute across named constructs such as rigidity, flexibility, withdrawal and recovery?",
     "Which latent-state transitions differ between SUS, RES and CON?",
@@ -3206,18 +3440,20 @@ systems_visualization_guide <- tibble(
     "Exploratory hoverable view of animal-level named scores"
   ),
   ManuscriptUse = c(
-    "Main or supplementary module overview",
-    "Main biological interpretation panel",
-    "Main HMM/latent-state panel",
+    "Main figure candidate",
+    "Main dashboard subpanel or compact supplement",
+    "Supplementary biological interpretation panel",
+    "Supplementary HMM/latent-state panel",
     "Supplementary or talk figure if ggalluvial is installed",
-    "Main social topology interpretation panel",
-    "Main trajectory adaptation panel",
-    "Main prediction ladder companion",
+    "Supplementary social topology interpretation panel",
+    "Supplementary trajectory adaptation panel",
+    "Main prediction ladder companion or reviewer supplement",
     "Reviewer robustness panel",
     "Supplementary systems architecture panel",
     "Lab meeting/exploration only"
   ),
   Caution = c(
+    "Keeps exploratory nonlinear and state-flow views outside the main composite unless independently central to the claim.",
     "Summarizes strongest effects; use detailed contrast table for exact statistics.",
     "Composite scores are interpretable indices, not independent raw measurements.",
     "Depends on HMM state labeling; semantic labels are data-derived.",
@@ -3545,3 +3781,4 @@ message("  - figures/publication_panels/Fig_systems_trajectory_adaptation_phase_
 message("  - figures/publication_panels/Fig_systems_prediction_delta_waterfall.svg")
 message("  - figures/publication_panels/Fig_systems_prediction_ladder.svg")
 message("  - figures/Fig_integrated_systems_dashboard.svg")
+
