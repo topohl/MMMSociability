@@ -88,6 +88,7 @@ n_prediction_bootstrap <- 1000
 # Optional proteomics module score file. Same expectation: one row per animal.
 # Useful columns could include RNP_module, Mito_module, Translation_module, etc.
 proteomics_module_file <- NULL
+preprocessed_position_dir <- file.path(project_root, "MMMSociability/preprocessed_data")
 
 # If TRUE, limits some plots to features that are easier to explain in a paper.
 publication_focus_only <- TRUE
@@ -194,6 +195,7 @@ if (!exists("cohens_d_pooled")) {
 
 ensure_dir(output_dir)
 ensure_dir(file.path(output_dir, "tables"))
+ensure_dir(file.path(output_dir, "tables/qc"))
 ensure_dir(file.path(output_dir, "stats_tables"))
 ensure_dir(file.path(output_dir, "figures"))
 ensure_dir(file.path(output_dir, "figures/publication_panels"))
@@ -210,6 +212,18 @@ write_output_manifest(
     "tables/systems_feature_dictionary.csv",
     "tables/systems_computation_integration_audit.csv",
     "tables/systems_robustness_audit.csv",
+    "tables/qc_chip_loss_flags.csv",
+    "tables/systems_batch_system_cage_audit.csv",
+    "tables/systems_primary_feature_set.csv",
+    "tables/systems_primary_claims_table.csv",
+    "tables/systems_sleep_like_inactivity_summary.csv",
+    "tables/systems_endpoint_leakage_audit.csv",
+    "tables/systems_leave_one_context_out_robustness.csv",
+    "tables/systems_bin_size_sensitivity_summary.csv",
+    "tables/systems_behavior_proteomics_bridge.csv",
+    "stats_tables/systems_group_sex_interaction_models.csv",
+    "tables/qc/chip_loss_downstream_feature_audit.csv",
+    "tables/qc/group_balance_by_batch_system.csv",
     "tables/systems_module_scorecards.csv",
     "tables/systems_named_biological_scores.csv",
     "tables/systems_claim_hierarchy.csv",
@@ -225,6 +239,16 @@ write_output_manifest(
     "figures/publication_panels/Fig_systems_effect_size_heatmap.svg",
     "figures/publication_panels/Fig_systems_module_scorecard.svg",
     "figures/publication_panels/Fig_systems_named_biological_scores.svg",
+    "figures/publication_panels/Fig_sleep_like_inactivity_by_group_sex.svg",
+    "figures/publication_panels/Fig_group_sex_interaction_effects.svg",
+    "figures/publication_panels/Fig_first_active_movement_trajectory_by_group_sex.svg",
+    "figures/publication_panels/Fig_first_active_entropy_acf1_or_instability.svg",
+    "figures/publication_panels/Fig_behavior_proteomics_bridge.svg",
+    "figures/qc/Fig_chip_loss_dropout_timeline.svg",
+    "figures/qc/Fig_chip_loss_movement_proximity_diagnostics.svg",
+    "figures/qc/Fig_batch_system_feature_bias.svg",
+    "figures/qc/Fig_group_balance_by_batch_system.svg",
+    "figures/qc/Fig_primary_feature_robustness.svg",
     "figures/publication_panels/Fig_systems_prediction_ladder.svg"
   ),
   notes = c("This is the publication-facing integration layer; use systems_visualization_guide.csv to choose panels.")
@@ -389,6 +413,35 @@ collapse_to_animal_rows <- function(dat) {
     mutate(across(where(is.numeric), ~ ifelse(is.nan(.x), NA_real_, .x)))
 }
 
+first_optional_col <- function(dat, candidates) {
+  hit <- candidates[candidates %in% names(dat)][1]
+  if (length(hit) == 0 || is.na(hit)) NA_character_ else hit
+}
+
+safe_model_p <- function(formula, dat, term_pattern) {
+  fit <- try(lm(formula, data = dat), silent = TRUE)
+  if (inherits(fit, "try-error")) return(NA_real_)
+  cf <- try(coef(summary(fit)), silent = TRUE)
+  if (inherits(cf, "try-error") || is.null(rownames(cf))) return(NA_real_)
+  rows <- str_detect(rownames(cf), term_pattern)
+  if (!any(rows)) return(NA_real_)
+  min(cf[rows, "Pr(>|t|)"], na.rm = TRUE)
+}
+
+bootstrap_cor_ci <- function(x, y, method = "spearman", n_boot = 500, seed = 1) {
+  ok <- is.finite(x) & is.finite(y)
+  if (sum(ok) < 6 || sd(x[ok]) == 0 || sd(y[ok]) == 0) return(c(low = NA_real_, high = NA_real_))
+  set.seed(seed)
+  xv <- x[ok]
+  yv <- y[ok]
+  vals <- replicate(n_boot, {
+    idx <- sample(seq_along(xv), replace = TRUE)
+    suppressWarnings(cor(xv[idx], yv[idx], method = method))
+  })
+  quantile(vals[is.finite(vals)], c(0.025, 0.975), na.rm = TRUE, names = FALSE) %>%
+    setNames(c("low", "high"))
+}
+
 make_feature_name <- function(source, domain, scale, metric, statistic, context = "global") {
   paste(
     safe_name(source),
@@ -539,12 +592,186 @@ epoch_duration_qc <- if (exists("write_epoch_duration_qc")) {
 }
 
 # ------------------------------------------------
+# RAW/PREPROCESSED RFID CHIP-LOSS / DEAD-TAG QC
+# ------------------------------------------------
+
+read_preprocessed_position_files <- function(position_dir, max_files = Inf) {
+  if (is.null(position_dir) || !dir.exists(position_dir)) return(tibble())
+  files <- list.files(position_dir, pattern = "preprocessed.*\\.csv$", full.names = TRUE, ignore.case = TRUE)
+  if (length(files) == 0) return(tibble())
+  files <- files[seq_len(min(length(files), max_files))]
+  map_dfr(files, function(path) {
+    dat <- try(readr::read_csv(path, show_col_types = FALSE, progress = FALSE), silent = TRUE)
+    if (inherits(dat, "try-error") || nrow(dat) == 0) return(tibble())
+    dat %>% mutate(SourceFile = basename(path))
+  })
+}
+
+raw_position_qc <- read_preprocessed_position_files(preprocessed_position_dir)
+
+qc_chip_loss_flags <- if (nrow(raw_position_qc) > 0) {
+  raw_id_col <- first_existing_col(raw_position_qc, c("AnimalNum", "AnimalID", "Animal", "MouseID", "RFID"), TRUE, "raw animal ID")
+  raw_time_col <- first_existing_col(raw_position_qc, c("DateTime", "Timestamp", "Time", "BinStart"), TRUE, "raw timestamp")
+  raw_position_col <- first_existing_col(raw_position_qc, c("PositionID", "Position", "Antenna", "AntennaID"), FALSE, "raw position")
+  raw_batch_col <- first_existing_col(raw_position_qc, c("Batch", "batch"), FALSE, "batch")
+  raw_system_col <- first_existing_col(raw_position_qc, c("System", "system", "Cage", "CageID"), FALSE, "system")
+  raw_cage_col <- first_existing_col(raw_position_qc, c("CageChange", "CC", "Regrouping"), FALSE, "cage-change")
+  raw_phase_col <- first_existing_col(raw_position_qc, c("Phase", "phase"), FALSE, "phase")
+
+  raw_norm <- raw_position_qc %>%
+    transmute(
+      AnimalNum = as.character(.data[[raw_id_col]]) %>% str_trim() %>% str_replace_all("\\s+", "") %>% str_to_upper(),
+      Time = suppressWarnings(as.POSIXct(.data[[raw_time_col]], tz = "UTC")),
+      PositionID = if (!is.na(raw_position_col)) as.character(.data[[raw_position_col]]) else NA_character_,
+      Batch = if (!is.na(raw_batch_col)) as.character(.data[[raw_batch_col]]) else NA_character_,
+      System = if (!is.na(raw_system_col)) as.character(.data[[raw_system_col]]) else NA_character_,
+      CageChange = if (!is.na(raw_cage_col)) as.character(.data[[raw_cage_col]]) else NA_character_,
+      Phase = if (!is.na(raw_phase_col)) as.character(.data[[raw_phase_col]]) else NA_character_
+    ) %>%
+    filter(!is.na(AnimalNum), !is.na(Time)) %>%
+    arrange(AnimalNum, Time)
+
+  raw_epoch <- raw_norm %>%
+    group_by(AnimalNum, Batch, System, CageChange, Phase) %>%
+    arrange(Time, .by_group = TRUE) %>%
+    summarise(
+      first_time = min(Time, na.rm = TRUE),
+      last_time = max(Time, na.rm = TRUE),
+      n_reads = n(),
+      n_positions = n_distinct(PositionID[!is.na(PositionID)]),
+      position_switch_rate = if_else(n() >= 3, mean(PositionID != lag(PositionID), na.rm = TRUE), NA_real_),
+      longest_gap_hours = {
+        gaps <- as.numeric(diff(Time), units = "hours")
+        if (length(gaps) == 0) NA_real_ else max(gaps, na.rm = TRUE)
+      },
+      .groups = "drop"
+    ) %>%
+    mutate(
+      expected_reads = pmax(1, ceiling(as.numeric(difftime(last_time, first_time, units = "mins")) / pmax(infer_bin_size_sec(base) / 60, 1)) + 1),
+      raw_observed_fraction = pmin(n_reads / expected_reads, 1)
+    )
+
+  base_epoch <- base %>%
+    group_by(AnimalNum, Group, Sex, CageChange, Phase) %>%
+    summarise(
+      movement_epoch_mean = mean(Movement, na.rm = TRUE),
+      proximity_epoch_mean = mean(Proximity, na.rm = TRUE),
+      observed_bins_base = n(),
+      .groups = "drop"
+    )
+
+  raw_epoch %>%
+    left_join(base_epoch, by = c("AnimalNum", "CageChange", "Phase")) %>%
+    group_by(AnimalNum) %>%
+    arrange(first_time, .by_group = TRUE) %>%
+    mutate(
+      baseline_movement = median(movement_epoch_mean[row_number() <= ceiling(n() / 2)], na.rm = TRUE),
+      baseline_proximity = median(proximity_epoch_mean[row_number() <= ceiling(n() / 2)], na.rm = TRUE),
+      sudden_sustained_loss = raw_observed_fraction < 0.55,
+      near_zero_movement_after_normal = is.finite(baseline_movement) & baseline_movement > 0.25 & movement_epoch_mean <= pmax(0.05, 0.15 * baseline_movement),
+      near_zero_proximity_after_normal = is.finite(baseline_proximity) & baseline_proximity > 0.02 & proximity_epoch_mean <= pmax(0.005, 0.15 * baseline_proximity),
+      long_flatline_immobile = n_positions <= 1 & position_switch_rate <= 0.01 & movement_epoch_mean <= 0.05,
+      expected_observed_mismatch = raw_observed_fraction < 0.70,
+      suspected_epoch = sudden_sustained_loss |
+        long_flatline_immobile |
+        (expected_observed_mismatch & (near_zero_movement_after_normal | near_zero_proximity_after_normal)),
+      first_suspected_dropout_time = if (any(suspected_epoch %in% TRUE)) min(first_time[suspected_epoch %in% TRUE], na.rm = TRUE) else as.POSIXct(NA),
+      last_valid_time = if_else(!is.na(first_suspected_dropout_time), first_suspected_dropout_time, last_time),
+      qc_epoch_class = case_when(
+        raw_observed_fraction < 0.10 | observed_bins_base < 4 ~ "insufficient_data",
+        suspected_epoch & first_time >= first_suspected_dropout_time ~ "exclude_after_dropout",
+        suspected_epoch ~ "suspected_chip_loss",
+        raw_observed_fraction < 0.50 ~ "partial_epoch_usable",
+        TRUE ~ "usable"
+      ),
+      movement_after_dropout = if_else(!is.na(first_suspected_dropout_time) & first_time >= first_suspected_dropout_time, movement_epoch_mean, NA_real_),
+      proximity_after_dropout = if_else(!is.na(first_suspected_dropout_time) & first_time >= first_suspected_dropout_time, proximity_epoch_mean, NA_real_),
+      recommended_action = case_when(
+        qc_epoch_class == "exclude_after_dropout" ~ "exclude post-dropout epoch; keep earlier valid epochs",
+        qc_epoch_class == "suspected_chip_loss" ~ "manual review; retain only if raw trace is biologically plausible",
+        qc_epoch_class == "insufficient_data" ~ "exclude epoch from primary analyses",
+        qc_epoch_class == "partial_epoch_usable" ~ "use with duration/missingness sensitivity",
+        TRUE ~ "usable"
+      )
+    ) %>%
+    ungroup() %>%
+    transmute(
+      AnimalNum, Group, Sex, Batch, System, CageChange, Phase,
+      first_suspected_dropout_time, last_valid_time,
+      observed_fraction = raw_observed_fraction,
+      movement_after_dropout, proximity_after_dropout,
+      recommended_action,
+      qc_epoch_class,
+      sudden_sustained_loss, near_zero_movement_after_normal,
+      near_zero_proximity_after_normal, long_flatline_immobile,
+      expected_observed_mismatch
+    )
+} else {
+  tibble(
+    AnimalNum = character(), Group = character(), Sex = character(), Batch = character(), System = character(),
+    CageChange = character(), Phase = character(), first_suspected_dropout_time = as.POSIXct(character()),
+    last_valid_time = as.POSIXct(character()), observed_fraction = numeric(),
+    movement_after_dropout = numeric(), proximity_after_dropout = numeric(),
+    recommended_action = character(), qc_epoch_class = character()
+  )
+}
+
+write_table(qc_chip_loss_flags, file.path(output_dir, "tables/qc_chip_loss_flags.csv"))
+
+chip_loss_epoch_classes <- qc_chip_loss_flags %>%
+  select(AnimalNum, CageChange, Phase, qc_epoch_class, recommended_action)
+
+if (nrow(chip_loss_epoch_classes) > 0) {
+  base <- base %>%
+    left_join(chip_loss_epoch_classes, by = c("AnimalNum", "CageChange", "Phase")) %>%
+    mutate(qc_epoch_class = coalesce(qc_epoch_class, "usable")) %>%
+    filter(!qc_epoch_class %in% c("exclude_after_dropout", "insufficient_data"))
+}
+
+if (nrow(qc_chip_loss_flags) > 0) {
+  chip_timeline <- qc_chip_loss_flags %>%
+    mutate(Epoch = paste(CageChange, Phase, sep = " | "), AnimalNum = factor(AnimalNum))
+  p_chip_timeline <- chip_timeline %>%
+    ggplot(aes(Epoch, AnimalNum, fill = qc_epoch_class)) +
+    geom_tile(colour = "white", linewidth = 0.12) +
+    scale_fill_manual(values = c(
+      usable = "#5aa469", partial_epoch_usable = "#d9b44a", suspected_chip_loss = "#d95f02",
+      exclude_after_dropout = "#b2182b", insufficient_data = "#777777"
+    ), drop = FALSE) +
+    labs(title = "RFID chip-loss/dropout QC timeline", x = NULL, y = "Animal", fill = "QC class") +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "right")
+  save_plot_svg_pdf(p_chip_timeline, file.path(output_dir, "figures/qc/Fig_chip_loss_dropout_timeline"), width = 175, height = 120)
+
+  p_chip_diag <- qc_chip_loss_flags %>%
+    mutate(qc_epoch_class = factor(qc_epoch_class, levels = c("usable", "partial_epoch_usable", "suspected_chip_loss", "exclude_after_dropout", "insufficient_data"))) %>%
+    ggplot(aes(movement_after_dropout, proximity_after_dropout, colour = qc_epoch_class)) +
+    geom_point(alpha = 0.75, size = 1.7) +
+    facet_grid(Sex ~ Group, scales = "free") +
+    scale_colour_manual(values = c(
+      usable = "#5aa469", partial_epoch_usable = "#d9b44a", suspected_chip_loss = "#d95f02",
+      exclude_after_dropout = "#b2182b", insufficient_data = "#777777"
+    ), drop = FALSE) +
+    labs(title = "Movement/proximity diagnostics after suspected dropout", x = "Movement after dropout", y = "Proximity after dropout", colour = "QC class") +
+    make_nature_theme(base_size = 6)
+  save_plot_svg_pdf(p_chip_diag, file.path(output_dir, "figures/qc/Fig_chip_loss_movement_proximity_diagnostics"), width = 145, height = 95)
+}
+
+# ------------------------------------------------
 # BUILD CORE ANIMAL-LEVEL FEATURE MATRIX
 # ------------------------------------------------
 
 calc_feature_set <- function(dat, context_name) {
   metric_cols <- intersect(c("Movement", "Entropy", "Proximity"), names(dat))
-  if (length(metric_cols) == 0 || nrow(dat) == 0) return(tibble())
+  if (length(metric_cols) == 0 || nrow(dat) == 0) {
+    return(tibble(
+      AnimalNum = character(),
+      Group = factor(levels = group_levels),
+      Sex = factor(levels = sex_levels),
+      feature = character(),
+      FeatureValue = numeric()
+    ))
+  }
 
   dat %>%
     select(AnimalNum, Group, Sex, all_of(metric_cols)) %>%
@@ -589,13 +816,80 @@ early_window_bins <- case_when(
 first_active <- base %>%
   filter(
     as.character(CageChange) == first_cage_change,
-    str_detect(str_to_lower(Phase), "active|dark|night")
+    PhaseClass == "Active" | str_detect(str_to_lower(Phase), "active|dark|night")
   ) %>%
   group_by(AnimalNum, Phase) %>%
   arrange(TimeIndex, .by_group = TRUE) %>%
   mutate(local_bin = row_number()) %>%
   filter(local_bin <= early_window_bins) %>%
   ungroup()
+
+if (nrow(first_active) == 0) {
+  first_active <- base %>%
+    filter(as.character(CageChange) == first_cage_change) %>%
+    group_by(AnimalNum, Phase) %>%
+    arrange(TimeIndex, .by_group = TRUE) %>%
+    mutate(local_bin = row_number()) %>%
+    filter(local_bin <= early_window_bins) %>%
+    ungroup()
+}
+
+if (nrow(first_active) > 0) {
+  first_active_plot_tbl <- first_active %>%
+    mutate(
+      local_hour = (local_bin - 1) * infer_bin_size_sec(base) / 3600,
+      AnimalNum = factor(AnimalNum)
+    )
+  first_active_summary_tbl <- first_active_plot_tbl %>%
+    group_by(Group, Sex, local_hour) %>%
+    summarise(
+      mean_movement = mean(Movement, na.rm = TRUE),
+      movement_ci_low = mean_ci(Movement)["low"],
+      movement_ci_high = mean_ci(Movement)["high"],
+      mean_entropy = mean(Entropy, na.rm = TRUE),
+      entropy_ci_low = mean_ci(Entropy)["low"],
+      entropy_ci_high = mean_ci(Entropy)["high"],
+      .groups = "drop"
+    )
+
+  p_first_active_movement <- ggplot(first_active_plot_tbl, aes(local_hour, Movement, group = AnimalNum, colour = Group)) +
+    geom_line(alpha = 0.16, linewidth = 0.18) +
+    geom_ribbon(
+      data = first_active_summary_tbl,
+      aes(x = local_hour, ymin = movement_ci_low, ymax = movement_ci_high, y = mean_movement, fill = Group, group = Group),
+      inherit.aes = FALSE,
+      alpha = 0.16,
+      colour = NA
+    ) +
+    geom_line(data = first_active_summary_tbl, aes(y = mean_movement, group = Group), linewidth = 0.55) +
+    geom_vline(xintercept = 12, linetype = "dashed", linewidth = 0.2, colour = "grey45") +
+    facet_grid(Sex ~ Group) +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    labs(title = "First active-phase movement trajectory", subtitle = paste0("Raw binned movement during first 12 h after ", first_cage_change), x = "Hours from active-phase onset", y = "Movement") +
+    make_nature_theme(base_size = 6) +
+    theme(legend.position = "none")
+  save_plot_svg_pdf(p_first_active_movement, file.path(output_dir, "figures/publication_panels/Fig_first_active_movement_trajectory_by_group_sex"), width = 175, height = 115)
+
+  p_first_active_entropy <- ggplot(first_active_plot_tbl, aes(local_hour, Entropy, group = AnimalNum, colour = Group)) +
+    geom_line(alpha = 0.16, linewidth = 0.18) +
+    geom_ribbon(
+      data = first_active_summary_tbl,
+      aes(x = local_hour, ymin = entropy_ci_low, ymax = entropy_ci_high, y = mean_entropy, fill = Group, group = Group),
+      inherit.aes = FALSE,
+      alpha = 0.16,
+      colour = NA
+    ) +
+    geom_line(data = first_active_summary_tbl, aes(y = mean_entropy, group = Group), linewidth = 0.55) +
+    geom_vline(xintercept = 12, linetype = "dashed", linewidth = 0.2, colour = "grey45") +
+    facet_grid(Sex ~ Group) +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    labs(title = "First active-phase entropy trajectory", subtitle = "Raw entropy trajectory; entropy ACF1/RMSSD summaries are used for primary claims", x = "Hours from active-phase onset", y = "Entropy") +
+    make_nature_theme(base_size = 6) +
+    theme(legend.position = "none")
+  save_plot_svg_pdf(p_first_active_entropy, file.path(output_dir, "figures/publication_panels/Fig_first_active_entropy_acf1_or_instability"), width = 175, height = 115)
+}
 
 base_first_active_features <- calc_feature_set(first_active, prospective_prediction_context)
 
@@ -973,6 +1267,56 @@ if (!is.null(proteomics_dat)) {
   systems_features <- left_join(systems_features, proteomics_dat, by = "AnimalNum", relationship = "one-to-one")
 }
 
+animal_context_metadata <- bind_rows(
+  base %>%
+    distinct(AnimalNum, Group, Sex) %>%
+    mutate(Batch = NA_character_, System = NA_character_),
+  qc_chip_loss_flags %>%
+    distinct(AnimalNum, Group, Sex, Batch, System)
+) %>%
+  mutate(across(any_of(c("Group", "Sex", "Batch", "System")), as.character)) %>%
+  group_by(AnimalNum) %>%
+  summarise(
+    Batch = {
+      vals <- na.omit(Batch)
+      if (length(vals) == 0) NA_character_ else names(sort(table(vals), decreasing = TRUE))[1]
+    },
+    System = {
+      vals <- na.omit(System)
+      if (length(vals) == 0) NA_character_ else names(sort(table(vals), decreasing = TRUE))[1]
+    },
+    .groups = "drop"
+  )
+
+chip_loss_animal_summary <- qc_chip_loss_flags %>%
+  group_by(AnimalNum) %>%
+  summarise(
+    qc__chip_loss__animal__any_suspected_chip_loss__indicator__all = as.numeric(any(qc_epoch_class %in% c("suspected_chip_loss", "exclude_after_dropout"), na.rm = TRUE)),
+    qc__chip_loss__animal__any_excluded_post_dropout__indicator__all = as.numeric(any(qc_epoch_class == "exclude_after_dropout", na.rm = TRUE)),
+    qc__chip_loss__animal__min_observed_fraction__value__all = min(observed_fraction, na.rm = TRUE),
+    qc__chip_loss__animal__n_affected_epochs__count__all = sum(qc_epoch_class %in% c("partial_epoch_usable", "suspected_chip_loss", "exclude_after_dropout", "insufficient_data"), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.infinite(.x) | is.nan(.x), NA_real_, .x)))
+
+if (nrow(animal_context_metadata) > 0) {
+  systems_features <- systems_features %>%
+    left_join(animal_context_metadata, by = "AnimalNum")
+}
+if (nrow(chip_loss_animal_summary) > 0) {
+  systems_features <- systems_features %>%
+    left_join(chip_loss_animal_summary, by = "AnimalNum")
+}
+
+chip_loss_feature_audit <- tibble(
+  qc_source = "raw/preprocessed animal-position files",
+  n_animals_with_any_suspected_chip_loss = if (nrow(chip_loss_animal_summary) > 0) sum(chip_loss_animal_summary$qc__chip_loss__animal__any_suspected_chip_loss__indicator__all %in% 1, na.rm = TRUE) else 0L,
+  n_animals_with_post_dropout_exclusion = if (nrow(chip_loss_animal_summary) > 0) sum(chip_loss_animal_summary$qc__chip_loss__animal__any_excluded_post_dropout__indicator__all %in% 1, na.rm = TRUE) else 0L,
+  n_epochs_flagged = if (nrow(qc_chip_loss_flags) > 0) sum(!qc_chip_loss_flags$qc_epoch_class %in% "usable", na.rm = TRUE) else 0L,
+  downstream_use = "post-dropout/insufficient epochs are removed before feature construction; animal-level QC indicators are retained as QC-only features"
+)
+write_table(chip_loss_feature_audit, file.path(output_dir, "tables/qc/chip_loss_downstream_feature_audit.csv"))
+
 make_named_biological_scores <- function(dat) {
   candidate_features <- dat %>% select(where(is.numeric)) %>% names()
   candidate_features <- setdiff(candidate_features, c("AnimalNum", endpoint_cols))
@@ -1033,6 +1377,26 @@ make_named_biological_scores <- function(dat) {
     "complexity|mse|permutation_entropy|manifold_occupancy|coupling|entropy.*mean",
     "criticalslowing|flickering|attractor.*depth|energy.*depth"
   )
+  sleep_like_fraction <- score_from_patterns(
+    "sleep_like|inactivity_fraction|quiescence|inactive_fraction|prolonged_inactivity_fraction",
+    "fragmentation|switch|bout_count|episodes"
+  )
+  sleep_bout_duration <- score_from_patterns(
+    "mean_inactivity_bout|min|max_inactivity_bout|median_inactivity_bout|bout_duration",
+    "fragmentation|switch|bout_count"
+  )
+  sleep_fragmentation <- score_from_patterns(
+    "inactivity_bout_count|fragmentation|state_switch|transition|prolonged_inactivity_episodes",
+    "fraction|duration|consolidation"
+  )
+  active_phase_quiescence <- score_from_patterns(
+    "active.*inactivity|active.*quiescence|active.*inactive|phase.*active",
+    "inactive_phase_consolidation"
+  )
+  inactive_phase_consolidation <- score_from_patterns(
+    "inactive.*consolidation|inactive.*bout|inactive.*fraction|inactive.*quiescence|prolonged_inactivity_fraction",
+    "fragmentation|switch"
+  )
 
   named <- tibble(
     AnimalNum = dat$AnimalNum,
@@ -1042,7 +1406,12 @@ make_named_biological_scores <- function(dat) {
     !!make_feature_name("systems", "biological_scores", primary_bin_level, "social_fragmentation_score", "module_score", "all") := fragmentation,
     !!make_feature_name("systems", "biological_scores", primary_bin_level, "trajectory_recovery_score", "module_score", "all") := recovery,
     !!make_feature_name("systems", "biological_scores", primary_bin_level, "resilient_state_bias_score", "module_score", "all") := resilience_bias,
-    !!make_feature_name("systems", "biological_scores", primary_bin_level, "nonlinear_adaptability_score", "module_score", "all") := nonlinear_adaptability
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "nonlinear_adaptability_score", "module_score", "all") := nonlinear_adaptability,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "sleep_like_fraction_score", "module_score", "all") := sleep_like_fraction,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "sleep_bout_duration_score", "module_score", "all") := sleep_bout_duration,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "sleep_fragmentation_score", "module_score", "all") := sleep_fragmentation,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "active_phase_quiescence_score", "module_score", "all") := active_phase_quiescence,
+    !!make_feature_name("systems", "biological_scores", primary_bin_level, "inactive_phase_consolidation_score", "module_score", "all") := inactive_phase_consolidation
   ) %>%
     mutate(
       !!make_feature_name("systems", "biological_scores", primary_bin_level, "stress_adaptation_index", "module_score", "all") := rowMeans(
@@ -1099,6 +1468,7 @@ source_script_from_source <- function(source) {
     str_detect(source, "gamm") ~ "11_gamm_trajectory_features.R",
     str_detect(source, "behavior_proteomics") ~ "12_behavior_proteomics_integration.R",
     str_detect(source, "nonlinear_systems") ~ "13_nonlinear_systems_dynamics.R",
+    str_detect(source, "qc|chip_loss") ~ "00_tracking_qc_rfid_loss.R",
     str_detect(source, "adaptation_kinetics") ~ "15_behavioral_adaptation_kinetics.R",
     str_detect(source, "sleep_like_inactivity") ~ "16_sleep_like_inactivity_metrics.R",
     str_detect(source, "phase_organization") ~ "17_ethological_phase_organization.R",
@@ -1116,6 +1486,7 @@ biological_domain_from_module <- function(module, domain, metric, context) {
     str_detect(key, "phase|active|inactive|sleep_like|quiescence") ~ "Ethological active/inactive phase organization",
     str_detect(key, "social|network|partner|proximity") ~ "Social reorganization after regrouping",
     str_detect(key, "proteomics|molecular") ~ "Behavioral-proteomic systems alignment",
+    str_detect(key, "chip_loss|dropout|qc|batch|system") ~ "Quality control and confound audit",
     str_detect(key, "trajectory|recovery|stabilization|adaptation") ~ "Longitudinal adaptation and recovery",
     str_detect(key, "hmm|latent_state") ~ "Behavioral state organization",
     str_detect(key, "nonlinear|complexity|attractor|manifold") ~ "Exploratory nonlinear systems dynamics",
@@ -1128,6 +1499,7 @@ claim_type_from_feature <- function(module, source, feature) {
   case_when(
     str_detect(key, "prediction|combz|outcome") ~ "predictive",
     str_detect(key, "proteomics|molecular") ~ "associative",
+    str_detect(key, "chip_loss|dropout|qc|batch|system") ~ "QC-only",
     str_detect(key, "nextgen|nonlinear|manifold|attractor|energy|recurrence") ~ "exploratory",
     str_detect(key, "hmm|state|network|trajectory|phase|inactivity") ~ "descriptive",
     TRUE ~ "descriptive"
@@ -1276,6 +1648,87 @@ feature_sets <- tibble(
     paste0("Uses raw first active 12 h after ", first_cage_change, " plus early composites; excludes GAMM/HMM/full-experiment and mixed-phase early-prediction module features.")
   )
 )
+
+pick_feature <- function(pattern, candidates = feature_qc$feature, require_robust = TRUE) {
+  pool <- candidates[str_detect(candidates, regex(pattern, ignore_case = TRUE))]
+  if (require_robust) pool <- intersect(pool, duration_robust_features)
+  if (length(pool) == 0) return(NA_character_)
+  pool[1]
+}
+
+primary_feature_registry <- tibble(
+  PrimaryFeatureLabel = c(
+    "First active 12 h Movement mean",
+    "First active 12 h Movement RMSSD",
+    "First active 12 h Entropy ACF1",
+    "First active 12 h Proximity mean / social withdrawal",
+    "Sleep-like inactivity fraction",
+    "Sleep-like bout duration",
+    "Sleep-like fragmentation",
+    "HMM rigidity/flexibility",
+    "Systems adaptation/resilience composite"
+  ),
+  feature = c(
+    early_movement_mean,
+    early_movement_rmssd,
+    make_feature_name("raw", "behavior", primary_bin_level, "Entropy", "acf1", prospective_prediction_context),
+    coalesce(
+      early_proximity_mean,
+      pick_feature("social_withdrawal_score|social_withdrawal")
+    ),
+    pick_feature("sleep_like_fraction_score|inactivity_fraction|quiescence"),
+    pick_feature("sleep_bout_duration_score|mean_inactivity_bout|bout_duration"),
+    pick_feature("sleep_fragmentation_score|fragmentation|inactivity_bout_count"),
+    pick_feature("behavioral_rigidity_score|exploratory_flexibility_score|rigidity_index|flexibility_index|state_switch_rate"),
+    pick_feature("stress_adaptation_index|systems_resilience_score")
+  ),
+  ClaimTier = c("primary", "primary", "primary", "primary", "primary", "primary", "primary", "secondary", "secondary"),
+  BiologicalClaim = c(
+    "Early locomotor output after first social instability exposure",
+    "Early locomotor volatility/adaptation",
+    "Early spatial entropy persistence/inertia",
+    "Early social engagement or withdrawal",
+    "Quiescence-like inactivity amount",
+    "Quiescence-like bout architecture",
+    "Quiescence-like fragmentation",
+    "Latent-state rigidity/flexibility",
+    "Integrated adaptation/resilience composite"
+  )
+) %>%
+  filter(!is.na(feature), feature %in% feature_qc$feature) %>%
+  distinct(feature, .keep_all = TRUE) %>%
+  left_join(feature_dictionary %>% select(feature, SourceScript, Module, ReviewerRisk, DurationSensitive, ClaimType), by = "feature") %>%
+  mutate(
+    FeatureUseClass = ClaimTier,
+    MainFigureEligible = ClaimTier %in% c("primary", "secondary") & !DurationSensitive %in% TRUE & ReviewerRisk != "high",
+    LeakageClass = if_else(str_detect(feature, prospective_prediction_context), "safe_for_prediction", "descriptive_group_contrast")
+  )
+
+feature_dictionary <- feature_dictionary %>%
+  left_join(primary_feature_registry %>% select(feature, FeatureUseClass, PrimaryFeatureLabel, BiologicalClaim, LeakageClass), by = "feature") %>%
+  mutate(
+    FeatureUseClass = coalesce(FeatureUseClass, case_when(
+      Source == "qc" | BiologicalDomain == "Quality control and confound audit" ~ "QC-only",
+      EvidenceTier == "Tier 3" ~ "exploratory",
+      TRUE ~ "secondary"
+    )),
+    LeakageClass = coalesce(LeakageClass, case_when(
+      str_detect(Context, prospective_prediction_context) & Source %in% c("raw", "systems") ~ "safe_for_prediction",
+      ClaimType == "predictive" & !str_detect(Context, prospective_prediction_context) ~ "leaky_not_for_prediction",
+      ClaimType == "associative" ~ "prospective_endpoint_association",
+      TRUE ~ "descriptive_group_contrast"
+    )),
+    PrimaryFeatureLabel = coalesce(PrimaryFeatureLabel, Feature),
+    BiologicalClaim = coalesce(BiologicalClaim, AllowedInterpretation)
+  )
+
+feature_qc <- feature_qc %>%
+  select(-any_of(c("FeatureUseClass", "PrimaryFeatureLabel", "BiologicalClaim", "LeakageClass"))) %>%
+  left_join(feature_dictionary %>% select(feature, FeatureUseClass, PrimaryFeatureLabel, BiologicalClaim, LeakageClass), by = "feature")
+
+primary_claim_features <- primary_feature_registry %>% filter(ClaimTier == "primary") %>% pull(feature)
+secondary_claim_features <- primary_feature_registry %>% filter(ClaimTier == "secondary") %>% pull(feature)
+main_dashboard_features <- primary_feature_registry %>% filter(MainFigureEligible %in% TRUE) %>% pull(feature)
 
 path_status <- function(paths) {
   paths <- paths[!is.na(paths)]
@@ -1495,6 +1948,7 @@ write_table(feature_dictionary, file.path(output_dir, "tables/systems_feature_di
 write_table(feature_qc, file.path(output_dir, "tables/systems_feature_qc.csv"))
 write_table(feature_sets, file.path(output_dir, "tables/systems_feature_sets.csv"))
 write_table(module_feature_sets, file.path(output_dir, "tables/systems_module_feature_inventory.csv"))
+write_table(primary_feature_registry, file.path(output_dir, "tables/systems_primary_feature_set.csv"))
 write_table(systems_computation_integration_audit, file.path(output_dir, "tables/systems_computation_integration_audit.csv"))
 write_table(systems_robustness_audit, file.path(output_dir, "tables/systems_robustness_audit.csv"))
 
@@ -1607,6 +2061,212 @@ group_contrasts <- systems_long %>%
 
 write_table(group_summary, file.path(output_dir, "stats_tables/systems_group_summary.csv"))
 write_table(group_contrasts, file.path(output_dir, "stats_tables/systems_group_contrasts.csv"))
+
+# ------------------------------------------------
+# PRIMARY CLAIMS, CONFOUND AUDIT AND GROUP x SEX MODELS
+# ------------------------------------------------
+
+systems_primary_claims_table <- primary_feature_registry %>%
+  left_join(
+    group_contrasts %>%
+      filter(feature %in% primary_feature_registry$feature) %>%
+      group_by(feature) %>%
+      summarise(
+        strongest_abs_hedges_g = max(abs(hedges_g), na.rm = TRUE),
+        min_group_q = min(p_fdr, na.rm = TRUE),
+        strongest_contrast = contrast[which.max(abs(hedges_g))][1],
+        .groups = "drop"
+      ),
+    by = "feature"
+  ) %>%
+  mutate(
+    strongest_abs_hedges_g = ifelse(is.infinite(strongest_abs_hedges_g), NA_real_, strongest_abs_hedges_g),
+    min_group_q = ifelse(is.infinite(min_group_q), NA_real_, min_group_q),
+    ClaimStatus = case_when(
+      ClaimTier == "primary" & !is.na(min_group_q) & min_group_q < 0.10 ~ "primary_descriptive_signal",
+      ClaimTier == "primary" ~ "primary_feature_no_strong_group_signal",
+      ClaimTier == "secondary" ~ "secondary_composite_or_mechanistic_context",
+      TRUE ~ "exploratory"
+    ),
+    InterpretationRule = "RES/SUS group contrasts are descriptive because groups are post-paradigm CombZ-derived; prospective claims require pre-endpoint features only."
+  )
+write_table(systems_primary_claims_table, file.path(output_dir, "tables/systems_primary_claims_table.csv"))
+
+primary_model_dat <- systems_features %>%
+  select(AnimalNum, Group, Sex, any_of(c("Batch", "System")), all_of(unique(primary_feature_registry$feature))) %>%
+  mutate(
+    Group = factor(as.character(Group), levels = group_levels),
+    Sex = factor(as.character(Sex), levels = sex_levels),
+    Batch = factor(if_else(is.na(Batch) | Batch == "", "unknown_batch", as.character(Batch))),
+    System = factor(if_else(is.na(System) | System == "", "unknown_system", as.character(System)))
+  )
+
+group_balance_by_batch_system <- systems_features %>%
+  distinct(AnimalNum, Group, Sex, Batch, System) %>%
+  mutate(
+    Batch = if_else(is.na(Batch) | Batch == "", "unknown_batch", as.character(Batch)),
+    System = if_else(is.na(System) | System == "", "unknown_system", as.character(System))
+  ) %>%
+  count(Batch, System, Sex, Group, name = "n")
+write_table(group_balance_by_batch_system, file.path(output_dir, "tables/qc/group_balance_by_batch_system.csv"))
+
+if (nrow(group_balance_by_batch_system) > 0) {
+  p_group_balance <- group_balance_by_batch_system %>%
+    ggplot(aes(Group, n, fill = Group)) +
+    geom_col(width = 0.7, colour = "white", linewidth = 0.18) +
+    facet_grid(Sex + Batch ~ System, scales = "free_y") +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    labs(title = "Group balance by batch and system", x = NULL, y = "Animals") +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "none")
+  save_plot_svg_pdf(p_group_balance, file.path(output_dir, "figures/qc/Fig_group_balance_by_batch_system"), width = 170, height = 125)
+}
+
+batch_system_cage_audit <- map_dfr(unique(primary_feature_registry$feature), function(fc) {
+  dat <- primary_model_dat %>% filter(is.finite(.data[[fc]]), !is.na(Group), !is.na(Sex))
+  fd <- primary_feature_registry %>% filter(feature == fc) %>% slice_head(n = 1)
+  if (nrow(dat) < 8 || n_distinct(dat$Group) < 2 || n_distinct(dat$Sex) < 1) {
+    return(tibble(feature = fc, PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1], n = nrow(dat), model_used = "not_estimable", group_p_uncovariate = NA_real_, group_p_covariate = NA_real_, batch_p = NA_real_, system_p = NA_real_, effect_size_without_covariates = NA_real_, effect_size_with_covariates = NA_real_, percent_change = NA_real_, interpretation_flag = "not_estimable"))
+  }
+  formula_uncov <- as.formula(paste0("`", fc, "` ~ Group * Sex"))
+  use_system <- n_distinct(dat$System) > 1 && min(table(dat$System)) >= 2
+  use_batch <- n_distinct(dat$Batch) > 1 && min(table(dat$Batch)) >= 2
+  covars <- c(if (use_batch) "Batch", if (use_system) "System")
+  formula_cov <- as.formula(paste0("`", fc, "` ~ Group * Sex", if (length(covars) > 0) paste0(" + ", paste(covars, collapse = " + ")) else ""))
+  fit0 <- try(lm(formula_uncov, data = dat), silent = TRUE)
+  fit1 <- try(lm(formula_cov, data = dat), silent = TRUE)
+  eta_group <- function(fit) {
+    if (inherits(fit, "try-error")) return(NA_real_)
+    a <- try(anova(fit), silent = TRUE)
+    if (inherits(a, "try-error") || !"Group" %in% rownames(a)) return(NA_real_)
+    a["Group", "Sum Sq"] / sum(a[, "Sum Sq"], na.rm = TRUE)
+  }
+  eff0 <- eta_group(fit0)
+  eff1 <- eta_group(fit1)
+  tibble(
+    feature = fc,
+    PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1],
+    n = nrow(dat),
+    model_used = deparse(formula_cov),
+    group_p_uncovariate = safe_model_p(formula_uncov, dat, "^Group"),
+    group_p_covariate = safe_model_p(formula_cov, dat, "^Group"),
+    batch_p = if (use_batch) safe_model_p(formula_cov, dat, "^Batch") else NA_real_,
+    system_p = if (use_system) safe_model_p(formula_cov, dat, "^System") else NA_real_,
+    effect_size_without_covariates = eff0,
+    effect_size_with_covariates = eff1,
+    percent_change = 100 * (eff1 - eff0) / pmax(abs(eff0), 1e-9),
+    interpretation_flag = case_when(
+      nrow(dat) < 12 ~ "underpowered",
+      is.finite(batch_p) & batch_p < 0.10 & abs(percent_change) > 30 ~ "possibly_batch-confounded",
+      is.finite(system_p) & system_p < 0.10 & abs(percent_change) > 30 ~ "possibly_batch-confounded",
+      is.finite(percent_change) & abs(percent_change) <= 30 ~ "robust",
+      TRUE ~ "not_estimable"
+    )
+  )
+}) %>%
+  mutate(
+    group_q_covariate = p.adjust(group_p_covariate, method = "BH"),
+    batch_q = p.adjust(batch_p, method = "BH"),
+    system_q = p.adjust(system_p, method = "BH")
+  )
+write_table(batch_system_cage_audit, file.path(output_dir, "tables/systems_batch_system_cage_audit.csv"))
+
+if (nrow(batch_system_cage_audit) > 0) {
+  p_batch_bias <- batch_system_cage_audit %>%
+    mutate(
+      PlotFeatureLabel = make.unique(str_trunc(PrimaryFeatureLabel, 42)),
+      PlotFeatureLabel = factor(PlotFeatureLabel, levels = rev(PlotFeatureLabel))
+    ) %>%
+    ggplot(aes(percent_change, PlotFeatureLabel, fill = interpretation_flag)) +
+    geom_vline(xintercept = c(-30, 30), linewidth = 0.2, linetype = "dashed", colour = "grey45") +
+    geom_col(width = 0.65, colour = "white", linewidth = 0.15) +
+    labs(title = "Batch/system sensitivity of primary feature group effects", x = "% change in group effect after covariates", y = NULL, fill = "Flag") +
+    make_nature_theme(base_size = 6)
+  save_plot_svg_pdf(p_batch_bias, file.path(output_dir, "figures/qc/Fig_batch_system_feature_bias"), width = 150, height = 95)
+}
+
+interaction_models <- map_dfr(unique(primary_feature_registry$feature), function(fc) {
+  dat <- primary_model_dat %>% filter(is.finite(.data[[fc]]), !is.na(Group), !is.na(Sex))
+  fd <- primary_feature_registry %>% filter(feature == fc) %>% slice_head(n = 1)
+  if (nrow(dat) < 8 || n_distinct(dat$Group) < 2 || n_distinct(dat$Sex) < 2) {
+    return(tibble(feature = fc, PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1], term = NA_character_, estimate = NA_real_, p.value = NA_real_, model_component = "not_estimable", n = nrow(dat)))
+  }
+  use_system <- n_distinct(dat$System) > 1 && min(table(dat$System)) >= 2
+  use_batch <- n_distinct(dat$Batch) > 1 && min(table(dat$Batch)) >= 2
+  covars <- c(if (use_batch) "Batch", if (use_system) "System")
+  form <- as.formula(paste0("`", fc, "` ~ Group * Sex", if (length(covars) > 0) paste0(" + ", paste(covars, collapse = " + ")) else ""))
+  model_string <- paste(deparse(form), collapse = " ")
+  fit <- try(lm(form, data = dat), silent = TRUE)
+  if (inherits(fit, "try-error")) return(tibble(feature = fc, PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1], term = NA_character_, estimate = NA_real_, p.value = NA_real_, model_component = "not_estimable", n = nrow(dat)))
+  cf <- coef(summary(fit)) %>% as.data.frame() %>% rownames_to_column("term") %>% as_tibble()
+  names(cf) <- str_replace_all(names(cf), fixed("Pr(>|t|)"), "p.value")
+  names(cf) <- str_replace_all(names(cf), fixed("Estimate"), "estimate")
+  coef_tbl <- cf %>%
+    transmute(
+      feature = fc,
+      PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1],
+      term,
+      estimate,
+      p.value,
+      model_component = case_when(
+        str_detect(term, ":") ~ "Group_x_Sex_interaction",
+        str_detect(term, "^Group") ~ "Group_main_or_contrast_term",
+        str_detect(term, "^Sex") ~ "Sex_main_effect",
+        TRUE ~ "covariate_or_intercept"
+      ),
+      n = nrow(dat),
+      model = model_string
+    )
+  emm_tbl <- dat %>%
+    group_by(Group, Sex) %>%
+    summarise(estimated_marginal_mean = mean(.data[[fc]], na.rm = TRUE), sem = sem(.data[[fc]]), n_cell = n(), .groups = "drop") %>%
+    mutate(
+      feature = fc,
+      PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1],
+      term = paste("EMM", Group, Sex, sep = "_"),
+      estimate = estimated_marginal_mean,
+      p.value = NA_real_,
+      model_component = "estimated_marginal_mean",
+      n = n_cell,
+      model = model_string
+    ) %>%
+    select(feature, PrimaryFeatureLabel, term, estimate, p.value, model_component, n, model)
+  sex_contrasts <- map_dfr(levels(dat$Sex), function(sx) {
+    dd <- dat %>% filter(Sex == sx)
+    map_dfr(contrast_pairs, function(pair) {
+      ref <- pair[1]; comp <- pair[2]
+      x <- dd[[fc]][as.character(dd$Group) == ref]
+      y <- dd[[fc]][as.character(dd$Group) == comp]
+      tibble(feature = fc, PrimaryFeatureLabel = fd$PrimaryFeatureLabel[1], term = paste0(comp, "-", ref, "_within_", sx), estimate = mean(y, na.rm = TRUE) - mean(x, na.rm = TRUE), p.value = tryCatch(t.test(y, x)$p.value, error = function(e) NA_real_), model_component = "within_sex_group_contrast", n = sum(is.finite(x)) + sum(is.finite(y)), model = model_string)
+    })
+  })
+  bind_rows(coef_tbl, emm_tbl, sex_contrasts)
+}) %>%
+  mutate(
+    p_holm = p.adjust(p.value, method = "holm"),
+    p_fdr = p.adjust(p.value, method = "BH"),
+    SexSpecificClaimRule = case_when(
+      model_component == "Group_x_Sex_interaction" & !is.na(p_fdr) & p_fdr < 0.10 ~ "sex-specific claim supported by interaction",
+      model_component == "within_sex_group_contrast" ~ "sex-stratified descriptive result unless interaction is supported",
+      TRUE ~ "not a sex-specific claim"
+    )
+  )
+write_table(interaction_models, file.path(output_dir, "stats_tables/systems_group_sex_interaction_models.csv"))
+
+if (nrow(interaction_models) > 0) {
+  p_interaction <- interaction_models %>%
+    filter(model_component == "Group_x_Sex_interaction", !is.na(estimate)) %>%
+    mutate(
+      PlotFeatureLabel = make.unique(str_trunc(PrimaryFeatureLabel, 42)),
+      PlotFeatureLabel = factor(PlotFeatureLabel, levels = rev(unique(PlotFeatureLabel)))
+    ) %>%
+    ggplot(aes(estimate, PlotFeatureLabel, fill = p_fdr < 0.10)) +
+    geom_vline(xintercept = 0, linewidth = 0.2, colour = "grey55") +
+    geom_col(width = 0.65, colour = "white", linewidth = 0.15) +
+    labs(title = "Group x sex interaction screen", subtitle = "Sex-specific claims require supported interaction or descriptive labeling", x = "Interaction coefficient", y = NULL, fill = "FDR < 0.10") +
+    make_nature_theme(base_size = 6)
+  save_plot_svg_pdf(p_interaction, file.path(output_dir, "figures/publication_panels/Fig_group_sex_interaction_effects"), width = 145, height = 95)
+}
 
 # ------------------------------------------------
 # INTERPRETABILITY LAYER: MODULE SCORECARDS + NAMED BIOLOGICAL SCORES
@@ -1757,6 +2417,49 @@ if (nrow(named_biological_scores_long) > 0) {
       selfcontained = pandoc_available
     )
   }
+}
+
+sleep_score_features <- named_biological_scores_long %>%
+  filter(Metric %in% c(
+    "sleep_like_fraction_score",
+    "sleep_bout_duration_score",
+    "sleep_fragmentation_score",
+    "active_phase_quiescence_score",
+    "inactive_phase_consolidation_score"
+  ))
+
+systems_sleep_like_inactivity_summary <- sleep_score_features %>%
+  group_by(Sex, Group, Metric, ScoreLabel) %>%
+  summarise(
+    n = sum(is.finite(Score)),
+    mean = mean(Score, na.rm = TRUE),
+    ci_low = mean_ci(Score)["low"],
+    ci_high = mean_ci(Score)["high"],
+    median = median(Score, na.rm = TRUE),
+    interpretation = "sleep-like inactivity / quiescence-like inactivity only; no EEG-validated sleep claim",
+    .groups = "drop"
+  )
+write_table(systems_sleep_like_inactivity_summary, file.path(output_dir, "tables/systems_sleep_like_inactivity_summary.csv"))
+
+if (nrow(sleep_score_features) > 0) {
+  p_sleep_like <- sleep_score_features %>%
+    filter(is.finite(Score)) %>%
+    mutate(ScoreLabel = factor(ScoreLabel, levels = rev(unique(ScoreLabel)))) %>%
+    ggplot(aes(Group, Score, colour = Group, fill = Group)) +
+    geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.24, linewidth = 0.25) +
+    geom_point(position = position_jitter(width = 0.10, height = 0), size = 1.25, alpha = 0.78, stroke = 0.18) +
+    facet_grid(ScoreLabel ~ Sex, scales = "free_y") +
+    scale_colour_manual(values = group_colors, drop = FALSE) +
+    scale_fill_manual(values = group_colors, drop = FALSE) +
+    labs(
+      title = "Sleep-like inactivity and quiescence-like organization",
+      subtitle = "RFID-derived inactivity structure; not EEG-validated sleep",
+      x = NULL,
+      y = "Composite z-score"
+    ) +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "none")
+  save_plot_svg_pdf(p_sleep_like, file.path(output_dir, "figures/publication_panels/Fig_sleep_like_inactivity_by_group_sex"), width = 170, height = 125)
 }
 
 p_module_scorecard <- module_scorecards_base %>%
@@ -2722,7 +3425,30 @@ available_outcomes <- available_outcomes[map_lgl(available_outcomes, ~ any(is.fi
 
 if (length(available_outcomes) > 0) {
   calc_outcome_assoc <- function(feature_set, feature_set_name) {
-    map_dfr(available_outcomes, function(outcome) {
+    empty_assoc <- tibble(
+      outcome = character(),
+      FeatureSet = character(),
+      feature = character(),
+      n = integer(),
+      spearman_rho = numeric(),
+      spearman_ci_low = numeric(),
+      spearman_ci_high = numeric(),
+      spearman_p = numeric(),
+      pearson_r = numeric(),
+      pearson_ci_low = numeric(),
+      pearson_ci_high = numeric(),
+      pearson_p = numeric(),
+      spearman_fdr = numeric(),
+      sig = character(),
+      ReportingCorrection = character(),
+      TestMethod = character(),
+      ConfidenceInterval = character(),
+      Direction = character()
+    )
+    if (length(feature_set) == 0) {
+      return(empty_assoc %>% left_join(feature_dictionary, by = "feature"))
+    }
+    assoc <- map_dfr(available_outcomes, function(outcome) {
       y <- safe_numeric(systems_features[[outcome]])
       map_dfr(feature_set, function(fc) {
         n_pair <- sum(is.finite(y) & is.finite(systems_features[[fc]]))
@@ -2745,7 +3471,11 @@ if (length(available_outcomes) > 0) {
           pearson_p = safe_cor_p(systems_features[[fc]], y, "pearson")
         )
       })
-    }) %>%
+    })
+    if (nrow(assoc) == 0) {
+      return(empty_assoc %>% left_join(feature_dictionary, by = "feature"))
+    }
+    assoc %>%
       group_by(outcome, FeatureSet) %>%
       mutate(
         spearman_fdr = p.adjust(spearman_p, method = "BH"),
@@ -2961,6 +3691,8 @@ if (length(available_outcomes) > 0) {
       loo_rmse = rmse,
       cv_r2_vs_mean = cv_r2,
       pearson_r_permutation_p = permutation_p,
+      ModelLeakageClass = "safe_for_prediction",
+      ModelTemporalRule = "Uses pre-endpoint module scores built from first-active-window and duration-robust behavioral summaries; RES/SUS labels are not predictors.",
       ModelFamily = "Module-level linear model ladder, leave-one-animal-out cross-validation",
       Preprocessing = "Features are collapsed into biologically interpretable z-scored module scores before modeling"
     )
@@ -3144,6 +3876,252 @@ if (length(available_outcomes) > 0) {
     make_nature_theme(base_size = 7)
   save_plot_svg_pdf(p_pred, file.path(output_dir, "figures/publication_panels/Fig_systems_prospective_crossvalidated_prediction"), width = 135, height = 75)
 
+}
+
+systems_endpoint_leakage_audit <- bind_rows(
+  feature_dictionary %>%
+    transmute(
+      ItemType = "feature",
+      Item = feature,
+      SourceScript,
+      FeatureUseClass,
+      ClaimType,
+      LeakageClass,
+      TemporalRule = case_when(
+        LeakageClass == "safe_for_prediction" ~ "pre-endpoint first-active-window behavioral feature",
+        LeakageClass == "leaky_not_for_prediction" ~ "full-experiment or post-endpoint-relevant feature; do not use for prospective prediction",
+        ClaimType == "associative" ~ "associative only unless temporal ordering is independently justified",
+        TRUE ~ "descriptive only"
+      ),
+      ReviewerLabel = case_when(
+        LeakageClass == "safe_for_prediction" ~ "safe_for_prediction",
+        LeakageClass == "leaky_not_for_prediction" ~ "leaky_not_for_prediction",
+        ClaimType == "associative" ~ "prospective_endpoint_association",
+        TRUE ~ "descriptive_group_contrast"
+      )
+    ),
+  tibble(
+    ItemType = "group_contrast",
+    Item = "RES/SUS/CON group contrasts",
+    SourceScript = "12_systems_neuroscience_summary.R",
+    FeatureUseClass = "primary_secondary_or_exploratory",
+    ClaimType = "descriptive",
+    LeakageClass = "descriptive_group_contrast",
+    TemporalRule = "RES/SUS labels are derived from post-paradigm CombZ; group contrasts are descriptive phenotype contrasts.",
+    ReviewerLabel = "descriptive_group_contrast"
+  ),
+  if (exists("prediction_perf")) {
+    prediction_perf %>%
+      transmute(
+        ItemType = "prediction_model",
+        Item = Model,
+        SourceScript = "12_systems_neuroscience_summary.R",
+        FeatureUseClass = "primary_or_secondary_module_scores",
+        ClaimType = "predictive",
+        LeakageClass = ModelLeakageClass,
+        TemporalRule = ModelTemporalRule,
+        ReviewerLabel = "safe_for_prediction"
+      )
+  } else tibble()
+) %>%
+  distinct()
+write_table(systems_endpoint_leakage_audit, file.path(output_dir, "tables/systems_endpoint_leakage_audit.csv"))
+
+# ------------------------------------------------
+# OPTIONAL BEHAVIOR-PROTEOMICS BRIDGE
+# ------------------------------------------------
+
+proteomics_module_candidates <- c(
+  "RNP_module", "RNA_processing_module", "Mito_module", "OXPHOS_module", "Translation_module",
+  "Ribosomal_module", "Proteostasis_module", "Endolysosomal_module"
+)
+proteomics_feature_cols <- names(systems_features)[str_detect(names(systems_features), "^proteomics_module__")]
+behavior_proteomics_axes <- unique(na.omit(c(
+  early_movement_mean,
+  make_feature_name("raw", "behavior", primary_bin_level, "Entropy", "acf1", prospective_prediction_context),
+  pick_feature("Entropy.*rmssd|entropy.*rmssd", require_robust = TRUE),
+  pick_feature("sleep_like_fraction_score|sleep_fragmentation_score|sleep_bout_duration_score", require_robust = TRUE),
+  pick_feature("social_withdrawal_score|social_withdrawal", require_robust = TRUE),
+  pick_feature("stress_adaptation_index|systems_resilience_score", require_robust = TRUE)
+)))
+
+systems_behavior_proteomics_bridge <- if (length(proteomics_feature_cols) > 0 && length(behavior_proteomics_axes) > 0) {
+  map_dfr(c("pooled", as.character(sex_levels)), function(stratum) {
+    dat <- systems_features
+    if (stratum != "pooled") dat <- dat %>% filter(as.character(Sex) == stratum)
+    map_dfr(behavior_proteomics_axes, function(bf) {
+      map_dfr(proteomics_feature_cols, function(pf) {
+        x <- safe_numeric(dat[[bf]])
+        y <- safe_numeric(dat[[pf]])
+        n_pair <- sum(is.finite(x) & is.finite(y))
+        if (n_pair < 6) {
+          return(tibble(Stratum = stratum, behavior_feature = bf, proteomics_module = pf, n = n_pair, spearman_rho = NA_real_, spearman_p = NA_real_, partial_rho_sex_adjusted = NA_real_, bootstrap_ci_low = NA_real_, bootstrap_ci_high = NA_real_))
+        }
+        ci <- bootstrap_cor_ci(x, y, "spearman", n_boot = 500, seed = 11)
+        partial_rho <- NA_real_
+        if (stratum == "pooled" && n_distinct(dat$Sex[is.finite(x) & is.finite(y)]) > 1) {
+          ok <- is.finite(x) & is.finite(y) & !is.na(dat$Sex)
+          rx <- residuals(lm(x[ok] ~ factor(dat$Sex[ok])))
+          ry <- residuals(lm(y[ok] ~ factor(dat$Sex[ok])))
+          partial_rho <- safe_cor(rx, ry, "spearman")
+        }
+        tibble(
+          Stratum = stratum,
+          behavior_feature = bf,
+          proteomics_module = pf,
+          n = n_pair,
+          spearman_rho = safe_cor(x, y, "spearman"),
+          spearman_p = safe_cor_p(x, y, "spearman"),
+          partial_rho_sex_adjusted = partial_rho,
+          bootstrap_ci_low = ci["low"],
+          bootstrap_ci_high = ci["high"]
+        )
+      })
+    })
+  }) %>%
+    left_join(feature_dictionary %>% select(behavior_feature = feature, BehaviorLabel = PrimaryFeatureLabel, FeatureUseClass), by = "behavior_feature") %>%
+    mutate(
+      proteomics_module = str_remove(proteomics_module, "^proteomics_module__"),
+      spearman_fdr = p.adjust(spearman_p, method = "BH"),
+      InterpretationLabel = case_when(
+        n < 8 ~ "underpowered",
+        FeatureUseClass %in% c("primary", "secondary") & !is.na(spearman_fdr) & spearman_fdr < 0.10 & abs(spearman_rho) >= 0.50 ~ "candidate mechanistic bridge",
+        !is.na(spearman_fdr) & spearman_fdr < 0.10 ~ "associative molecular correlate",
+        TRUE ~ "exploratory only"
+      )
+    )
+} else {
+  tibble(
+    Stratum = "not_available",
+    behavior_feature = NA_character_,
+    proteomics_module = NA_character_,
+    n = 0L,
+    spearman_rho = NA_real_,
+    spearman_p = NA_real_,
+    partial_rho_sex_adjusted = NA_real_,
+    bootstrap_ci_low = NA_real_,
+    bootstrap_ci_high = NA_real_,
+    BehaviorLabel = NA_character_,
+    FeatureUseClass = NA_character_,
+    spearman_fdr = NA_real_,
+    InterpretationLabel = if (is.null(proteomics_module_file)) "proteomics_module_file_not_provided" else "proteomics_modules_not_detected"
+  )
+}
+write_table(systems_behavior_proteomics_bridge, file.path(output_dir, "tables/systems_behavior_proteomics_bridge.csv"))
+
+if (nrow(systems_behavior_proteomics_bridge) > 0 && any(is.finite(systems_behavior_proteomics_bridge$spearman_rho))) {
+  p_prot_bridge <- systems_behavior_proteomics_bridge %>%
+    filter(Stratum == "pooled", is.finite(spearman_rho)) %>%
+    mutate(
+      BehaviorLabel = factor(str_trunc(coalesce(BehaviorLabel, behavior_feature), 38), levels = rev(unique(str_trunc(coalesce(BehaviorLabel, behavior_feature), 38)))),
+      proteomics_module = factor(str_replace_all(proteomics_module, "_", " "))
+    ) %>%
+    ggplot(aes(proteomics_module, BehaviorLabel, fill = spearman_rho)) +
+    geom_tile(colour = "white", linewidth = 0.22) +
+    geom_text(aes(label = sig_label(spearman_fdr)), size = 1.8) +
+    scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey90") +
+    labs(title = "Behavior-proteomics bridge", subtitle = "Associative molecular correlates of primary behavioral axes", x = NULL, y = NULL, fill = "rho") +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 40, hjust = 1), legend.position = "right")
+  save_plot_svg_pdf(p_prot_bridge, file.path(output_dir, "figures/publication_panels/Fig_behavior_proteomics_bridge"), width = 160, height = 105)
+}
+
+# ------------------------------------------------
+# LEAVE-ONE-CONTEXT AND BIN-SIZE ROBUSTNESS
+# ------------------------------------------------
+
+context_robustness_eval <- function(fc, context_col) {
+  if (!context_col %in% names(systems_features)) return(tibble())
+  dat <- systems_features %>%
+    select(AnimalNum, Group, Sex, context = all_of(context_col), value = all_of(fc)) %>%
+    filter(is.finite(value), !is.na(Group), !is.na(context), context != "")
+  if (nrow(dat) < 8 || n_distinct(dat$context) < 2) return(tibble())
+  full_eff <- group_contrasts %>%
+    filter(feature == fc, contrast %in% c("SUS-CON", "RES-CON", "SUS-RES")) %>%
+    arrange(desc(abs(hedges_g))) %>%
+    slice_head(n = 1)
+  map_dfr(unique(dat$context), function(level_out) {
+    dd <- dat %>% filter(context != level_out)
+    if (nrow(dd) < 6 || n_distinct(dd$Group) < 2) {
+      return(tibble(feature = fc, ContextType = context_col, LevelLeftOut = as.character(level_out), n = nrow(dd), effect_after_leaveout = NA_real_, full_effect = ifelse(nrow(full_eff) > 0, full_eff$hedges_g[1], NA_real_), robustness_class = "not_estimable"))
+    }
+    pair <- if (nrow(full_eff) > 0) str_split(full_eff$contrast[1], "-", simplify = TRUE) else matrix(c("SUS", "CON"), nrow = 1)
+    comp <- pair[1, 1]; ref <- pair[1, 2]
+    eff <- hedges_g(dd$value[as.character(dd$Group) == ref], dd$value[as.character(dd$Group) == comp])
+    full <- ifelse(nrow(full_eff) > 0, full_eff$hedges_g[1], NA_real_)
+    tibble(
+      feature = fc,
+      ContextType = context_col,
+      LevelLeftOut = as.character(level_out),
+      n = nrow(dd),
+      effect_after_leaveout = eff,
+      full_effect = full,
+      effect_percent_change = 100 * (eff - full) / pmax(abs(full), 1e-9),
+      robustness_class = case_when(
+        !is.finite(eff) | !is.finite(full) ~ "not_estimable",
+        sign(eff) != sign(full) ~ paste0(str_to_lower(context_col), "_sensitive"),
+        abs(effect_percent_change) > 50 ~ paste0(str_to_lower(context_col), "_sensitive"),
+        nrow(dd) < 12 ~ "directionally stable but underpowered",
+        TRUE ~ "robust"
+      )
+    )
+  })
+}
+
+systems_leave_one_context_out_robustness <- map_dfr(unique(primary_feature_registry$feature), function(fc) {
+  bind_rows(
+    tibble(feature = fc, ContextType = "AnimalNum", LevelLeftOut = systems_features$AnimalNum, n = nrow(systems_features) - 1L) %>%
+      mutate(effect_after_leaveout = NA_real_, full_effect = NA_real_, effect_percent_change = NA_real_, robustness_class = "leave-one-animal tracked by LOOCV where predictive"),
+    context_robustness_eval(fc, "Batch"),
+    context_robustness_eval(fc, "System")
+  )
+}) %>%
+  left_join(primary_feature_registry %>% select(feature, PrimaryFeatureLabel, ClaimTier), by = "feature")
+write_table(systems_leave_one_context_out_robustness, file.path(output_dir, "tables/systems_leave_one_context_out_robustness.csv"))
+
+systems_bin_size_sensitivity_summary <- feature_dictionary %>%
+  filter(feature %in% usable_features | FeatureUseClass %in% c("primary", "secondary")) %>%
+  group_by(Metric, Statistic, Context, Source, Domain) %>%
+  summarise(
+    available_bin_levels = paste(sort(unique(BinLevel)), collapse = ";"),
+    n_bin_levels = n_distinct(BinLevel),
+    includes_primary_bin = primary_bin_level %in% BinLevel,
+    any_primary_or_secondary = any(FeatureUseClass %in% c("primary", "secondary")),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    robustness_class = case_when(
+      n_bin_levels >= 3 & includes_primary_bin ~ "robust",
+      n_bin_levels >= 2 ~ "directionally stable but underpowered",
+      any_primary_or_secondary ~ "bin-size sensitive",
+      TRUE ~ "not estimable"
+    )
+  )
+write_table(systems_bin_size_sensitivity_summary, file.path(output_dir, "tables/systems_bin_size_sensitivity_summary.csv"))
+
+primary_robustness_plot_tbl <- bind_rows(
+  batch_system_cage_audit %>%
+    transmute(PrimaryFeatureLabel, RobustnessAxis = "Batch/System covariates", robustness_class = interpretation_flag),
+  systems_leave_one_context_out_robustness %>%
+    filter(ContextType %in% c("Batch", "System")) %>%
+    group_by(PrimaryFeatureLabel, RobustnessAxis = ContextType) %>%
+    summarise(robustness_class = if_else(any(str_detect(robustness_class, "sensitive")), first(robustness_class[str_detect(robustness_class, "sensitive")]), "robust"), .groups = "drop"),
+  systems_bin_size_sensitivity_summary %>%
+    filter(any_primary_or_secondary %in% TRUE) %>%
+    transmute(PrimaryFeatureLabel = paste(Metric, Statistic, Context, sep = " | "), RobustnessAxis = "Bin-size availability", robustness_class)
+)
+if (nrow(primary_robustness_plot_tbl) > 0) {
+  p_primary_robust <- primary_robustness_plot_tbl %>%
+    mutate(
+      PrimaryFeatureLabel = factor(str_trunc(PrimaryFeatureLabel, 44), levels = rev(unique(str_trunc(PrimaryFeatureLabel, 44)))),
+      robustness_class = factor(robustness_class)
+    ) %>%
+    ggplot(aes(RobustnessAxis, PrimaryFeatureLabel, fill = robustness_class)) +
+    geom_tile(colour = "white", linewidth = 0.22) +
+    labs(title = "Primary feature robustness summary", x = NULL, y = NULL, fill = "Classification") +
+    make_nature_theme(base_size = 6) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "right")
+  save_plot_svg_pdf(p_primary_robust, file.path(output_dir, "figures/qc/Fig_primary_feature_robustness"), width = 160, height = 105)
 }
 
 # ------------------------------------------------
@@ -3386,15 +4364,65 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
       theme_void()
   }
 
-  dashboard <- ((p_latent_dash | p_heat_small) / (p_pc1_outcome | p_pred_dash)) +
-    patchwork::plot_layout(heights = c(1.05, 0.95)) +
+  p_dashboard_trajectory <- if (exists("p_first_active_movement") && inherits(p_first_active_movement, "ggplot")) {
+    p_first_active_movement +
+      labs(title = "A. First active movement trajectory", subtitle = paste0("Raw binned behavior; first 12 h after ", first_cage_change)) +
+      theme(legend.position = "none")
+  } else {
+    ggplot() + annotate("text", x = 0, y = 0, label = "First-active movement trajectory unavailable", size = 3) + theme_void()
+  }
+
+  primary_heat_tbl <- group_contrasts %>%
+    filter(feature %in% c(primary_claim_features, secondary_claim_features), is.finite(hedges_g)) %>%
+    left_join(primary_feature_registry %>% select(feature, PrimaryFeatureLabel, ClaimTier), by = "feature") %>%
+    mutate(
+      PrimaryFeatureLabel = factor(str_trunc(coalesce(PrimaryFeatureLabel, feature), 42), levels = rev(unique(str_trunc(coalesce(PrimaryFeatureLabel, feature), 42)))),
+      contrast = factor(contrast, levels = c("RES-CON", "SUS-CON", "SUS-RES"))
+    )
+  p_dashboard_heat <- if (nrow(primary_heat_tbl) > 0) {
+    primary_heat_tbl %>%
+      ggplot(aes(contrast, PrimaryFeatureLabel, fill = hedges_g)) +
+      geom_tile(colour = "white", linewidth = 0.22) +
+      geom_text(aes(label = sig_label(p_fdr)), size = 1.75) +
+      facet_grid(Sex ~ ., scales = "free_y", space = "free_y") +
+      scale_fill_gradient2(low = "#3d3b6e", mid = "white", high = "#e63947", midpoint = 0, na.value = "grey90") +
+      labs(title = "B. Primary feature effects", subtitle = "Hedges g; symbols denote BH FDR", x = NULL, y = NULL, fill = "g") +
+      make_nature_theme(base_size = 5.5) +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1), legend.position = "right")
+  } else {
+    p_heat_small + labs(title = "B. Module effects", subtitle = "Primary-feature heatmap unavailable")
+  }
+
+  p_dashboard_sleep <- if (exists("p_sleep_like") && inherits(p_sleep_like, "ggplot")) {
+    p_sleep_like + labs(title = "C. Sleep-like inactivity", subtitle = "Quiescence-like inactivity, not EEG sleep") + theme(legend.position = "none")
+  } else {
+    ggplot() + annotate("text", x = 0, y = 0, label = "Sleep-like inactivity panel unavailable", size = 3) + theme_void()
+  }
+
+  p_dashboard_interaction <- if (exists("p_interaction") && inherits(p_interaction, "ggplot")) {
+    p_interaction + labs(title = "D. Group x sex interaction screen", subtitle = "Sex-specific claims require interaction support")
+  } else {
+    ggplot() + annotate("text", x = 0, y = 0, label = "Group x sex interaction model unavailable", size = 3) + theme_void()
+  }
+
+  p_dashboard_prediction <- p_pred_dash +
+    labs(title = paste0("E. Prospective ", primary_outcome, " association"), subtitle = "Pre-endpoint features only")
+
+  p_dashboard_proteomics <- if (exists("p_prot_bridge") && inherits(p_prot_bridge, "ggplot")) {
+    p_prot_bridge + labs(title = "F. Behavior-proteomics bridge", subtitle = "Associative molecular correlate")
+  } else {
+    ggplot() + annotate("text", x = 0, y = 0, label = "F. Proteomics bridge unavailable\n(proteomics_module_file not provided)", size = 2.8) + theme_void()
+  }
+
+  dashboard <- ((p_dashboard_trajectory | p_dashboard_heat) / (p_dashboard_sleep | p_dashboard_interaction) / (p_dashboard_prediction | p_dashboard_proteomics)) +
+    patchwork::plot_layout(heights = c(1.1, 0.95, 0.95)) +
     patchwork::plot_annotation(
       title = "Behavioral dynamics of stress susceptibility",
-      subtitle = paste0("Focused dashboard: integrated state space, module-level phenotype map and prospective prediction; lower ", primary_outcome, " = worse endpoint"),
-      caption = "RES/SUS are CombZ-derived labels. Prediction uses first-active-window features only. Nonlinear/HMM/social/phase/inactivity panels are exported as supplemental or exploratory outputs."
+      subtitle = paste0("Primary claim dashboard: early trajectories, primary features, quiescence-like inactivity, interaction tests and pre-endpoint ", primary_outcome, " prediction"),
+      caption = "RES/SUS are CombZ-derived labels; group contrasts are descriptive. Prediction uses pre-endpoint first-active-window features only. PCA/UMAP and high-dimensional nonlinear outputs are supplementary architecture views."
     )
 
-  save_plot_svg_pdf(dashboard, file.path(output_dir, "figures/Fig_integrated_systems_dashboard"), width = 210, height = 165)
+  save_plot_svg_pdf(dashboard, file.path(output_dir, "figures/Fig_integrated_systems_dashboard"), width = 230, height = 245)
 }
 
 # ------------------------------------------------
@@ -3466,6 +4494,68 @@ systems_visualization_guide <- tibble(
     "Interactive HTML is not intended as a manuscript figure."
   )
 )
+
+systems_visualization_guide <- bind_rows(
+  tibble(
+    Figure = c(
+      "Fig_chip_loss_dropout_timeline",
+      "Fig_chip_loss_movement_proximity_diagnostics",
+      "Fig_batch_system_feature_bias",
+      "Fig_group_balance_by_batch_system",
+      "Fig_group_sex_interaction_effects",
+      "Fig_sleep_like_inactivity_by_group_sex",
+      "Fig_first_active_movement_trajectory_by_group_sex",
+      "Fig_first_active_entropy_acf1_or_instability",
+      "Fig_primary_feature_robustness",
+      "Fig_behavior_proteomics_bridge"
+    ),
+    PrimaryQuestion = c(
+      "Which animal epochs show RFID dropout/dead-tag signatures?",
+      "Do suspected dropout periods show implausible movement/social-contact collapse?",
+      "Are primary feature effects sensitive to batch/system covariates?",
+      "Are group and sex balanced across acquisition batch/system?",
+      "Which primary features show Group x Sex interaction evidence?",
+      "Do groups differ in RFID-derived sleep-like inactivity/quiescence organization?",
+      "What is the raw first-active movement trajectory underlying the primary early-behavior claim?",
+      "What is the raw first-active entropy trajectory underlying entropy persistence/instability summaries?",
+      "Are primary features stable across context and bin-size checks?",
+      "Do primary behavioral axes associate with optional proteomics module scores?"
+    ),
+    ManuscriptUse = c(
+      "QC supplement",
+      "QC supplement",
+      "Reviewer robustness panel",
+      "QC supplement",
+      "Main or reviewer panel for sex-specific claims",
+      "Main sleep-like inactivity panel",
+      "Main trajectory panel",
+      "Main or supplementary early-entropy panel",
+      "Reviewer robustness panel",
+      "Optional associative panel only when proteomics table is provided"
+    ),
+    Caution = c(
+      "Flags are conservative and should trigger raw-trace review.",
+      "Movement/proximity collapse can reflect biology or tag failure; use with timeline.",
+      "Covariate models are underpowered when batch/system cells are sparse.",
+      "Imbalance is a design/QC issue, not a phenotype.",
+      "Sex-stratified claims need interaction support or descriptive labeling.",
+      "Use sleep-like/quiescence-like wording only; no EEG sleep claim.",
+      "Raw trajectories are descriptive; statistics are in primary feature tables.",
+      "Entropy trajectory supports but does not replace ACF1/RMSSD summaries.",
+      "Classifications are conservative reviewer-facing labels.",
+      "Proteomics associations are molecular correlates, not causal mechanisms."
+    )
+  ),
+  systems_visualization_guide
+) %>%
+  mutate(
+    LeakageControlLabel = case_when(
+      str_detect(Figure, "prediction|CombZ|prospective") ~ "safe_for_prediction_if_pre_endpoint_features_only",
+      str_detect(Figure, "proteomics") ~ "associative_or_exploratory",
+      str_detect(Figure, "chip|batch|robustness|balance") ~ "QC-only",
+      TRUE ~ "descriptive_group_contrast"
+    )
+  )
 
 systems_output_naming_conventions <- tibble(
   Convention = c(
@@ -3595,6 +4685,16 @@ systems_claim_hierarchy <- tibble(
     "Attractor/manifold metrics are validated biomarkers."
   )
 )
+
+systems_claim_hierarchy <- systems_claim_hierarchy %>%
+  mutate(
+    LeakageControlLabel = case_when(
+      ClaimType == "predictive" ~ "prospective_endpoint_association_requires_pre_endpoint_features",
+      ClaimType == "associative" ~ "associative_not_causal_or_prospective_without_temporal_justification",
+      ClaimType == "exploratory" ~ "exploratory_supplement_only",
+      TRUE ~ "descriptive_group_contrast"
+    )
+  )
 
 systems_interpretation_guide <- feature_dictionary %>%
   distinct(
