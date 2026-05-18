@@ -47,7 +47,8 @@ output_dir <- file.path(base_dir, "analysis_ready/06_behavioral_dynamics/early_p
 
 # Endpoint file should contain one row per animal or repeated rows with a stable endpoint.
 # If NULL, the script tries to read the outcome from input_file.
-endpoint_file <- NULL
+endpoint_file <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/SIS_Analysis/E9_Behavior_Data.xlsx"
+endpoint_excel_sheet <- "zScore"  # sheet name for Excel endpoint files; NULL = first sheet
 outcome_col <- "CombZ"
 
 # Primary prospective window: first 12 h active phase after the first cage change.
@@ -389,7 +390,12 @@ write_table(feature_wide %>% filter(!contains_short_duration_epoch %in% TRUE), f
 
 endpoint_dat <- NULL
 if (!is.null(endpoint_file) && file.exists(endpoint_file)) {
-  endpoint_raw <- read_behavior_table(endpoint_file)
+  ext <- tools::file_ext(endpoint_file) %>% tolower()
+  endpoint_raw <- if (ext %in% c("xlsx", "xls") && !is.null(endpoint_excel_sheet)) {
+    readxl::read_excel(endpoint_file, sheet = endpoint_excel_sheet)
+  } else {
+    read_behavior_table(endpoint_file)
+  }
   endpoint_animal_col <- first_existing_col(endpoint_raw, c("AnimalNum", "Animal", "MouseID", "Mouse", "ID", "RFID", "animal_id"), TRUE, "endpoint animal column")
   endpoint_dat <- endpoint_raw %>%
     transmute(AnimalNum = .data[[endpoint_animal_col]], outcome = suppressWarnings(as.numeric(.data[[outcome_col]]))) %>%
