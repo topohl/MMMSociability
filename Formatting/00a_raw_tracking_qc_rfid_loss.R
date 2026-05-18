@@ -39,7 +39,27 @@
 # 0. SETTINGS
 # -----------------------------
 
-WORKING_DIR <- getwd()
+DEFAULT_WORKING_DIR <- "S:/Lab_Member/Tobi/Experiments/Exp9_Social-Stress/Analysis/Behavior/RFID/MMMSociability"
+
+detect_working_dir <- function(default_dir = DEFAULT_WORKING_DIR) {
+  candidates <- unique(c(
+    default_dir,
+    getwd(),
+    normalizePath(file.path(getwd(), "MMMSociability"), winslash = "/", mustWork = FALSE)
+  ))
+
+  candidates <- candidates[dir.exists(file.path(candidates, "raw_data"))]
+  if (length(candidates) == 0) {
+    stop(
+      "Could not find a project directory containing raw_data/. ",
+      "Set DEFAULT_WORKING_DIR to the MMMSociability analysis folder."
+    )
+  }
+
+  normalizePath(candidates[1], winslash = "/", mustWork = TRUE)
+}
+
+WORKING_DIR <- detect_working_dir()
 RAW_DIR <- file.path(WORKING_DIR, "raw_data")
 OUT_DIR <- file.path(WORKING_DIR, "raw_tracking_qc_rfid_loss")
 
@@ -130,6 +150,15 @@ parse_datetime_raw <- function(x) {
   if (inherits(x, "POSIXct")) return(x)
   out <- suppressWarnings(as.POSIXct(x, format = "%d.%m.%Y %H:%M:%S", tz = "UTC"))
   if (all(is.na(out))) {
+    out <- suppressWarnings(as.POSIXct(x, format = "%d.%m.%Y %H:%M", tz = "UTC"))
+  }
+  if (all(is.na(out))) {
+    out <- suppressWarnings(lubridate::dmy_hms(x, tz = "UTC", quiet = TRUE))
+  }
+  if (all(is.na(out))) {
+    out <- suppressWarnings(lubridate::dmy_hm(x, tz = "UTC", quiet = TRUE))
+  }
+  if (all(is.na(out))) {
     out <- suppressWarnings(lubridate::ymd_hms(x, tz = "UTC", quiet = TRUE))
   }
   out
@@ -139,9 +168,45 @@ map_position_id <- function(df) {
   df %>%
     mutate(
       xPos = suppressWarnings(as.numeric(xPos)),
-      yPos = suppressWarnings(as.numeric(yPos))
+      yPos = suppressWarnings(as.numeric(yPos)),
+      xPos_binned = dplyr::case_when(
+        is.na(xPos) ~ NA_real_,
+        xPos < 100 ~ 0,
+        xPos < 200 ~ 100,
+        xPos < 300 ~ 200,
+        TRUE ~ 300
+      ),
+      yPos_binned = dplyr::case_when(
+        is.na(yPos) ~ NA_real_,
+        yPos < 116 ~ 0,
+        TRUE ~ 116
+      )
     ) %>%
-    left_join(POSITION_MAP, by = c("xPos", "yPos"))
+    left_join(POSITION_MAP, by = c("xPos_binned" = "xPos", "yPos_binned" = "yPos"))
+}
+
+safe_min_posix <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(as.POSIXct(NA, origin = "1970-01-01", tz = "UTC"))
+  min(x)
+}
+
+safe_max_posix <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(as.POSIXct(NA, origin = "1970-01-01", tz = "UTC"))
+  max(x)
+}
+
+safe_min_numeric <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  min(x)
+}
+
+safe_max_numeric <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  max(x)
 }
 
 read_raw_file <- function(batch, cage_change) {
@@ -156,6 +221,19 @@ read_raw_file <- function(batch, cage_change) {
   message("Reading raw AnimalPos file: ", path)
 
   dat <- readr::read_delim(path, delim = ";", show_col_types = FALSE, progress = FALSE)
+  normalized_names <- tolower(gsub("[^A-Za-z0-9]+", "_", names(dat)))
+  normalized_names <- gsub("^_|_$", "", normalized_names)
+  names(dat) <- dplyr::recode(
+    normalized_names,
+    date_time = "DateTime",
+    datetime = "DateTime",
+    animal = "Animal",
+    x_pos = "xPos",
+    xpos = "xPos",
+    y_pos = "yPos",
+    ypos = "yPos",
+    .default = names(dat)
+  )
 
   required <- c("DateTime", "Animal", "xPos", "yPos")
   missing <- setdiff(required, names(dat))
@@ -174,8 +252,8 @@ read_raw_file <- function(batch, cage_change) {
     ) %>%
     tidyr::separate(Animal, into = c("AnimalID", "System"), sep = "[_-]", remove = FALSE, fill = "right", extra = "merge") %>%
     mutate(
-      AnimalID = as.character(AnimalID),
-      System = as.character(System),
+      AnimalID = stringr::str_trim(as.character(AnimalID)),
+      System = stringr::str_trim(as.character(System)),
       Phase = if_else(
         format(DateTime, "%H:%M", tz = "UTC") >= "18:30" |
           format(DateTime, "%H:%M", tz = "UTC") < "06:30",
@@ -202,7 +280,8 @@ save_svg <- function(filename, plot, width = 12, height = 7) {
     width = width,
     height = height,
     units = "in",
-    device = "svg"
+    device = "svg",
+    limitsize = FALSE
   )
 }
 
@@ -226,6 +305,8 @@ excluded_path <- file.path(RAW_DIR, "excluded_animals.csv")
 existing_excluded <- character(0)
 if (file.exists(excluded_path)) {
   existing_excluded <- readLines(excluded_path, warn = FALSE)
+  existing_excluded <- stringr::str_trim(existing_excluded)
+  existing_excluded <- existing_excluded[!tolower(existing_excluded) %in% c("animalid", "animal_id", "animal")]
   existing_excluded <- existing_excluded[nzchar(existing_excluded)]
 }
 
@@ -270,10 +351,10 @@ qc_by_animal_phase <- raw_seq %>%
   summarise(
     n_raw_reads = n(),
     n_valid_position_reads = sum(valid_position, na.rm = TRUE),
-    first_time = min(DateTime, na.rm = TRUE),
-    last_time = max(DateTime, na.rm = TRUE),
+    first_time = safe_min_posix(DateTime),
+    last_time = safe_max_posix(DateTime),
     median_inter_read_gap_sec = median(inter_read_gap_sec, na.rm = TRUE),
-    max_inter_read_gap_sec = max(inter_read_gap_sec, na.rm = TRUE),
+    max_inter_read_gap_sec = safe_max_numeric(inter_read_gap_sec),
     n_unique_positions = n_distinct(PositionID, na.rm = TRUE),
     dominant_position_fraction = {
       pos <- PositionID[!is.na(PositionID)]
@@ -282,25 +363,32 @@ qc_by_animal_phase <- raw_seq %>%
     transition_rate = mean(position_changed, na.rm = TRUE),
     stationary_fraction = mean(stationary_read, na.rm = TRUE),
     longest_stationary_run = longest_true_run(stationary_read),
-    max_rolling_stationary_fraction = max(rolling_stationary_fraction, na.rm = TRUE),
-    min_rolling_transition_rate = min(rolling_transition_rate, na.rm = TRUE),
-    candidate_valid_until = first_candidate_valid_until(cur_data_all()),
+    max_rolling_stationary_fraction = safe_max_numeric(rolling_stationary_fraction),
+    min_rolling_transition_rate = safe_min_numeric(rolling_transition_rate),
+    candidate_valid_until = first_candidate_valid_until(tibble::tibble(
+      DateTime = DateTime,
+      candidate_chip_loss_onset = candidate_chip_loss_onset
+    )),
     .groups = "drop"
   ) %>%
   mutate(
-    max_inter_read_gap_sec = if_else(is.infinite(max_inter_read_gap_sec), NA_real_, max_inter_read_gap_sec),
-    min_rolling_transition_rate = if_else(is.infinite(min_rolling_transition_rate), NA_real_, min_rolling_transition_rate),
     candidate_valid_until = as.POSIXct(candidate_valid_until, origin = "1970-01-01", tz = "UTC"),
-    flag_position_fixation = !is.na(dominant_position_fraction) &
+    enough_reads_for_static_qc = n_valid_position_reads >= QC_THRESHOLDS$min_reads_for_window_qc,
+    flag_position_fixation = enough_reads_for_static_qc & !is.na(dominant_position_fraction) &
       dominant_position_fraction >= QC_THRESHOLDS$dominant_position_fraction_high,
-    flag_low_transition_rate = !is.na(transition_rate) &
+    flag_low_transition_rate = enough_reads_for_static_qc & !is.na(transition_rate) &
       transition_rate <= QC_THRESHOLDS$transition_rate_low,
-    flag_long_stationary_run = !is.na(longest_stationary_run) &
+    flag_long_stationary_run = enough_reads_for_static_qc & !is.na(longest_stationary_run) &
       longest_stationary_run >= QC_THRESHOLDS$longest_stationary_run_high,
     flag_rolling_stationary_collapse = !is.na(candidate_valid_until),
-    flag_large_inter_read_gap = !is.na(max_inter_read_gap_sec) &
+    info_large_inter_read_gap = !is.na(max_inter_read_gap_sec) &
       max_inter_read_gap_sec >= QC_THRESHOLDS$max_inter_read_gap_sec_high,
-    n_raw_qc_flags = rowSums(across(starts_with("flag_")), na.rm = TRUE),
+    n_raw_qc_flags = rowSums(cbind(
+      flag_position_fixation,
+      flag_low_transition_rate,
+      flag_long_stationary_run,
+      flag_rolling_stationary_collapse
+    ), na.rm = TRUE),
     raw_tracking_qc_class = case_when(
       n_raw_qc_flags >= 3 ~ "high_suspicion",
       n_raw_qc_flags == 2 ~ "moderate_suspicion",
@@ -317,11 +405,11 @@ qc_by_animal <- qc_by_animal_phase %>%
     n_review = sum(raw_tracking_qc_class == "review", na.rm = TRUE),
     n_moderate = sum(raw_tracking_qc_class == "moderate_suspicion", na.rm = TRUE),
     n_high = sum(raw_tracking_qc_class == "high_suspicion", na.rm = TRUE),
-    max_raw_qc_flags = max(n_raw_qc_flags, na.rm = TRUE),
-    worst_dominant_position_fraction = max(dominant_position_fraction, na.rm = TRUE),
-    lowest_transition_rate = min(transition_rate, na.rm = TRUE),
-    longest_stationary_run_any_window = max(longest_stationary_run, na.rm = TRUE),
-    earliest_candidate_valid_until = min(candidate_valid_until, na.rm = TRUE),
+    max_raw_qc_flags = safe_max_numeric(n_raw_qc_flags),
+    worst_dominant_position_fraction = safe_max_numeric(dominant_position_fraction),
+    lowest_transition_rate = safe_min_numeric(transition_rate),
+    longest_stationary_run_any_window = safe_max_numeric(longest_stationary_run),
+    earliest_candidate_valid_until = safe_min_posix(candidate_valid_until),
     suggested_decision = case_when(
       n_high > 0 ~ "manual_review_high_suspicion_possible_chip_loss",
       n_moderate > 0 ~ "manual_review_moderate_suspicion",
@@ -331,12 +419,7 @@ qc_by_animal <- qc_by_animal_phase %>%
     .groups = "drop"
   ) %>%
   mutate(
-    lowest_transition_rate = if_else(is.infinite(lowest_transition_rate), NA_real_, lowest_transition_rate),
-    earliest_candidate_valid_until = as.POSIXct(
-      ifelse(is.infinite(earliest_candidate_valid_until), NA, earliest_candidate_valid_until),
-      origin = "1970-01-01",
-      tz = "UTC"
-    )
+    earliest_candidate_valid_until = as.POSIXct(earliest_candidate_valid_until, origin = "1970-01-01", tz = "UTC")
   )
 
 suggested_valid_until <- qc_by_animal_phase %>%
